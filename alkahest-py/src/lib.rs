@@ -264,6 +264,7 @@ mod lattice;
 mod linprog;
 mod matgroup;
 mod pde;
+mod pde_m3;
 
 // ---------------------------------------------------------------------------
 // V1-3: Structured Python exception hierarchy
@@ -24008,6 +24009,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ffield::register(m)?;
     fpgroup::register(m)?;
     pde::register(m)?;
+    pde_m3::register(m)?;
     lattice::register(m)?;
     linprog::register(m)?;
     fex::register(m)?;

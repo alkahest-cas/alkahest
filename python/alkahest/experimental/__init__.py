@@ -57,6 +57,17 @@ PDE solver (milestone M1; see ``alkahest.experimental._pdsolve``):
   quasilinear by characteristics, Cauchy problems (non-characteristic check,
   breaking time), complete and singular integrals (Clairaut, standard forms,
   Hamilton–Jacobi separation, Lagrange–Charpit)
+PDE milestone M3 (see ``alkahest.experimental._pde_m3``):
+- :func:`sturm_liouville` / :class:`SturmLiouville` → :class:`Eigensystem`:
+  eigenvalues in closed form or as a :func:`RootOfFamily` with a pole-free
+  defining equation and certified enclosures, eigenfunctions, weight, norms,
+  ``λ = 0`` / negative-eigenvalue case analysis; Bessel, Legendre, Chebyshev,
+  Hermite and Laguerre problems; every family verified exactly
+- :func:`transform_solve` → :class:`TransformSolution`: Fourier in ``x`` on a
+  line, Laplace in ``t`` and sine / cosine images on half-lines; closed forms or
+  kernel representations with the kernel verified by substitution;
+  :func:`fourier_sine_transform` / :func:`fourier_cosine_transform` and their
+  inverses; ``E-PDE-150…199``, ``E-TRANSFORM-021…024``
 
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
@@ -778,6 +789,22 @@ from alkahest.experimental._pde import (
 
 # PDE solver (milestone M1): `pdsolve` over method tiers, first order.
 from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
+# PDE milestone M3: the Sturm–Liouville eigenproblem solver and the transform
+# methods (Fourier / Laplace / sine-cosine images), with the half-line
+# sine / cosine transforms.
+from alkahest.experimental._pde_m3 import (
+    EigenFamily,
+    EigenMode,
+    Eigensystem,
+    SturmLiouville,
+    TransformSolution,
+    fourier_cosine_transform,
+    fourier_sine_transform,
+    inverse_fourier_cosine_transform,
+    inverse_fourier_sine_transform,
+    sturm_liouville,
+    transform_solve,
+)
 from alkahest.experimental.novelty import (
     NoveltyMatch,
     NoveltyVerdict,
@@ -869,6 +896,17 @@ __all__ = [
     # and capped; above the cap it refuses (E-STAB-008) rather than guessing,
     # and a bound comes back as `Distance(at_most=...)`, not as an int.
     "PDE",
+    "EigenFamily",
+    "EigenMode",
+    "Eigensystem",
+    "SturmLiouville",
+    "TransformSolution",
+    "fourier_cosine_transform",
+    "fourier_sine_transform",
+    "inverse_fourier_cosine_transform",
+    "inverse_fourier_sine_transform",
+    "sturm_liouville",
+    "transform_solve",
     "STABILIZER_MAX_DISTANCE_SEARCH_DIM",
     "STABILIZER_MAX_MATRIX_ENUMERATION",
     "STABILIZER_MAX_QUBITS",

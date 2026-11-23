@@ -1,0 +1,23 @@
+[
+  {"id": "dd_L1", "source": "Haberman ch. 2 & 5, Strauss ch. 4 (Dirichlet)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["dirichlet", "dirichlet"], "closed_form": true},
+  {"id": "nn_L1", "source": "Haberman ch. 2, Strauss ch. 4 (Neumann)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["neumann", "neumann"], "closed_form": true},
+  {"id": "dn_L1", "source": "Haberman ch. 2 exercises (mixed)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["dirichlet", "neumann"], "closed_form": true},
+  {"id": "nd_L2", "source": "Haberman ch. 2 exercises (mixed)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "2", "bc": ["neumann", "dirichlet"], "closed_form": true},
+  {"id": "periodic_pi", "source": "Haberman ch. 2 (ring), Strauss ch. 4 (periodic)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "-pi", "b": "pi", "bc": "periodic", "closed_form": true},
+  {"id": "dr_h1", "source": "Haberman ch. 5 (Robin, h = 1), Strauss ch. 4", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["dirichlet", ["robin", "1", "1"]], "closed_form": false},
+  {"id": "nr_h1", "source": "Haberman ch. 5 exercises (Neumann / Robin)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["neumann", ["robin", "1", "1"]], "closed_form": false},
+  {"id": "rr_11", "source": "Strauss ch. 4 (Robin at both ends, a0 = al = 1)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": [["robin", "-1", "1"], ["robin", "1", "1"]], "closed_form": false},
+  {"id": "dr_hm2", "source": "Strauss ch. 4 (Robin with a negative eigenvalue)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "1", "a": "0", "b": "1", "bc": ["dirichlet", ["robin", "-2", "1"]], "closed_form": false},
+  {"id": "dd_q2", "source": "Haberman ch. 5 (q = 2)", "kind": "general", "var": "x", "p": "1", "q": "2", "w": "1", "a": "0", "b": "1", "bc": ["dirichlet", "dirichlet"], "closed_form": true},
+  {"id": "dd_w4", "source": "Haberman ch. 5 (weight 4)", "kind": "general", "var": "x", "p": "1", "q": "0", "w": "4", "a": "0", "b": "1", "bc": ["dirichlet", "dirichlet"], "closed_form": true},
+  {"id": "euler_12", "source": "Haberman ch. 5 (Euler equation (x X')' + lambda X/x = 0)", "kind": "general", "var": "x", "p": "x", "q": "0", "w": "1/x", "a": "1", "b": "2", "bc": ["dirichlet", "dirichlet"], "closed_form": true},
+  {"id": "bessel0_dir", "source": "Haberman ch. 7 (circular membrane), Strauss ch. 10", "kind": "bessel", "var": "r", "order": "0", "radius": "1", "bc": "dirichlet", "closed_form": false},
+  {"id": "bessel1_dir", "source": "Haberman ch. 7, Strauss ch. 10 (order 1)", "kind": "bessel", "var": "r", "order": "1", "radius": "1", "bc": "dirichlet", "closed_form": false},
+  {"id": "bessel2_dir", "source": "Haberman ch. 7, Strauss ch. 10 (order 2)", "kind": "bessel", "var": "r", "order": "2", "radius": "1", "bc": "dirichlet", "closed_form": false},
+  {"id": "bessel0_neu", "source": "Haberman ch. 7 exercises (Neumann)", "kind": "bessel", "var": "r", "order": "0", "radius": "1", "bc": "neumann", "closed_form": false},
+  {"id": "bessel0_rob", "source": "Haberman ch. 7 exercises (radius 2, R'(2) + R(2) = 0)", "kind": "bessel", "var": "r", "order": "0", "radius": "2", "bc": ["robin", "1", "1"], "closed_form": false},
+  {"id": "legendre", "source": "Haberman ch. 7, Strauss ch. 10 (Legendre)", "kind": "legendre", "var": "x", "closed_form": true},
+  {"id": "chebyshev", "source": "DLMF 18.8 (Chebyshev T)", "kind": "chebyshev", "var": "x", "closed_form": true},
+  {"id": "hermite", "source": "Strauss ch. 9 (harmonic oscillator), DLMF 18.8", "kind": "hermite", "var": "x", "closed_form": true},
+  {"id": "laguerre", "source": "Strauss ch. 9 (hydrogen radial), DLMF 18.8", "kind": "laguerre", "var": "x", "closed_form": true}
+]

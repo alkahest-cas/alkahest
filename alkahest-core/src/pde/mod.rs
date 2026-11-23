@@ -41,6 +41,16 @@
 //!   characteristics, Cauchy problems, complete integrals); every answer is
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
 //! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
+//! * [`sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
+//!   [`SturmLiouvilleProblem`] → [`Eigensystem`] (closed-form or
+//!   `RootOfFamily` eigenvalues with certified enclosures, eigenfunctions,
+//!   weights, norms, `λ = 0` / negative-eigenvalue case analysis; Bessel,
+//!   Legendre, Chebyshev, Hermite and Laguerre problems).
+//! * [`transform_methods`] — (M3) [`fourier_method`], [`laplace_method`],
+//!   [`image_method`] (sine / cosine transforms) and [`transform_solve`]:
+//!   closed forms or verified kernel representations.
+//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0) and
+//!   `E-PDE-150 … E-PDE-199` (M3).
 
 pub mod classify;
 pub mod error;
@@ -53,7 +63,6 @@ pub mod solve;
 pub mod sum;
 pub mod transform;
 pub mod verify;
-mod m3_probe;
 pub mod sturm_liouville;
 pub mod transform_methods;
 
@@ -79,7 +88,16 @@ pub use sum::{
     kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
     INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
+pub use sturm_liouville::{
+    family_enclosures, sturm_liouville, sturm_liouville_with, EigenEnclosure, EigenFamily,
+    EigenMode, EigenVerification, Eigensystem, EndCondition, FamilyRef, LowerSpectrum, SlBoundary,
+    SlOptions, SturmLiouvilleProblem,
+};
 pub use transform::{transformed_name, TransformKind};
+pub use transform_methods::{
+    fourier_method, image_method, laplace_method, transform_solve, KernelTerm, SolutionKind,
+    TransformCheck, TransformSolution,
+};
 pub use verify::{
     verify_pde_solution, verify_solution, PdeVerification, ResidualCheck, VerificationStatus,
 };

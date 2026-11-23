@@ -764,6 +764,9 @@ pub struct EigenFamily {
     pub eigenvalue_of_frequency: ExprId,
     /// The eigenfunctions of `λ_n` (one; two for periodic problems).
     pub eigenfunctions: Vec<ExprId>,
+    /// The same as functions of [`Self::frequency_var`] (they satisfy the
+    /// ODE identically in it).
+    pub eigenfunctions_of_frequency: Vec<ExprId>,
     /// `∫ w X_n²` per eigenfunction, when it closes.
     pub norms_squared: Vec<Option<ExprId>>,
     /// Whether `ν_n` is in closed form.
@@ -870,28 +873,21 @@ impl EigenFamily {
 
     /// The `k`-th eigenfunction(s).
     pub fn eigenfunctions_at(&self, k: i64, pool: &ExprPool) -> Result<Vec<ExprId>, PdeError> {
-        if self.closed_form {
-            return Ok(self
-                .eigenfunctions
-                .iter()
-                .map(|&f| {
-                    let e = subs1(f, self.index, pool.integer(k), pool);
-                    let e = crate::orthopoly::expand_orthopoly(e, pool).unwrap_or(e);
-                    simp(e, pool)
-                })
-                .collect());
-        }
-        let m = member(self.frequency, k, pool)?;
+        let nu = self.frequency_at(k, pool)?;
         Ok(self
-            .eigenfunctions
+            .eigenfunctions_of_frequency
             .iter()
-            .map(|&f| simp(replace_node(f, self.frequency, m, pool), pool))
+            .map(|&f| {
+                let e = subs1(f, self.frequency_var, nu, pool);
+                let e = crate::orthopoly::expand_orthopoly(e, pool).unwrap_or(e);
+                simp(e, pool)
+            })
             .collect())
     }
 
-
     /// Certified enclosures of `λ_first … λ_{first+count−1}`, after
-    /// substituting `params` (parameter → number).
+    /// substituting `params` (parameter → number); see
+    /// [`family_enclosures`].
     ///
     /// # Errors
     ///
@@ -904,53 +900,101 @@ impl EigenFamily {
         bits: u32,
         pool: &ExprPool,
     ) -> Result<Vec<EigenEnclosure>, PdeError> {
-        let mut out = Vec::new();
-        let prec = bits.max(53);
-        let lam_expr = simp(subs(self.eigenvalue_of_frequency, params, pool), pool);
-        for j in 0..count as i64 {
-            let k = self.first + j;
-            let nu_ball = if self.closed_form {
-                let e = simp(
-                    subs1(subs(self.frequency, params, pool), self.index, pool.integer(k), pool),
-                    pool,
-                );
-                IntervalEval::new(prec + 32).eval(e, pool)
-            } else {
-                let m = member(subs(self.frequency, params, pool), k.max(1), pool)?;
-                let (lo, hi) = root_family_enclosure(m, prec, pool)?;
-                let mid = Float::with_val(prec + 32, &lo + &hi) / 2u32;
-                let rad = Float::with_val_round(prec + 32, &hi - &mid, rug::float::Round::Up).0;
-                Some(ArbBall {
-                    mid,
-                    rad,
-                    prec: prec + 32,
-                })
-            };
-            let ball = nu_ball.and_then(|b| {
-                let mut ie = IntervalEval::new(prec + 32);
-                ie.bind(self.frequency_var, b);
-                ie.bind(self.index, ArbBall::from_f64(k as f64, prec + 32));
-                ie.eval(lam_expr, pool)
-            });
-            let b = ball.ok_or_else(|| {
-                PdeError::RootFamilyNotCertified(format!(
-                    "λ_{k} = {} has no ball enclosure (a parameter is symbolic?)",
-                    pool.display(self.eigenvalue)
-                ))
-            })?;
-            if !(b.lo().is_finite() && b.hi().is_finite()) {
-                return Err(PdeError::RootFamilyNotCertified(format!(
-                    "λ_{k}: non-finite enclosure"
-                )));
-            }
-            out.push(EigenEnclosure {
-                index: k,
-                lo: b.lo(),
-                hi: b.hi(),
-            });
-        }
-        Ok(out)
+        family_enclosures(
+            FamilyRef {
+                index: self.index,
+                first: self.first,
+                frequency_var: self.frequency_var,
+                frequency: self.frequency,
+                eigenvalue_of_frequency: self.eigenvalue_of_frequency,
+                closed_form: self.closed_form,
+            },
+            count,
+            params,
+            bits,
+            pool,
+        )
     }
+}
+
+/// The data of an [`EigenFamily`] that its enclosures depend on — what a
+/// caller holding the family's expressions (e.g. from Python) passes to
+/// [`family_enclosures`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FamilyRef {
+    /// [`EigenFamily::index`].
+    pub index: ExprId,
+    /// [`EigenFamily::first`].
+    pub first: i64,
+    /// [`EigenFamily::frequency_var`].
+    pub frequency_var: ExprId,
+    /// [`EigenFamily::frequency`].
+    pub frequency: ExprId,
+    /// [`EigenFamily::eigenvalue_of_frequency`].
+    pub eigenvalue_of_frequency: ExprId,
+    /// [`EigenFamily::closed_form`].
+    pub closed_form: bool,
+}
+
+/// Certified enclosures of the first `count` eigenvalues of a family.
+///
+/// # Errors
+///
+/// `E-PDE-031` when a root cannot be certified (or a parameter is still
+/// symbolic).
+pub fn family_enclosures(
+    fam: FamilyRef,
+    count: usize,
+    params: &HashMap<ExprId, ExprId>,
+    bits: u32,
+    pool: &ExprPool,
+) -> Result<Vec<EigenEnclosure>, PdeError> {
+    let mut out = Vec::new();
+    let prec = bits.max(53);
+    let lam_expr = simp(subs(fam.eigenvalue_of_frequency, params, pool), pool);
+    for j in 0..count as i64 {
+        let k = fam.first + j;
+        let nu_ball = if fam.closed_form {
+            let e = simp(
+                subs1(subs(fam.frequency, params, pool), fam.index, pool.integer(k), pool),
+                pool,
+            );
+            IntervalEval::new(prec + 32).eval(e, pool)
+        } else {
+            let m = member(subs(fam.frequency, params, pool), k.max(1), pool)?;
+            let (lo, hi) = root_family_enclosure(m, prec, pool)?;
+            let mid = Float::with_val(prec + 32, &lo + &hi) / 2u32;
+            let rad = Float::with_val_round(prec + 32, &hi - &mid, rug::float::Round::Up).0;
+            Some(ArbBall {
+                mid,
+                rad,
+                prec: prec + 32,
+            })
+        };
+        let ball = nu_ball.and_then(|b| {
+            let mut ie = IntervalEval::new(prec + 32);
+            ie.bind(fam.frequency_var, b);
+            ie.bind(fam.index, ArbBall::from_f64(k as f64, prec + 32));
+            ie.eval(lam_expr, pool)
+        });
+        let b = ball.ok_or_else(|| {
+            PdeError::RootFamilyNotCertified(format!(
+                "λ_{k} = {} has no ball enclosure (a parameter is symbolic?)",
+                pool.display(fam.eigenvalue_of_frequency)
+            ))
+        })?;
+        if !(b.lo().is_finite() && b.hi().is_finite()) {
+            return Err(PdeError::RootFamilyNotCertified(format!(
+                "λ_{k}: non-finite enclosure"
+            )));
+        }
+        out.push(EigenEnclosure {
+            index: k,
+            lo: b.lo(),
+            hi: b.hi(),
+        });
+    }
+    Ok(out)
 }
 
 /// Options for [`sturm_liouville_with`].
@@ -982,6 +1026,12 @@ impl SlOptions {
     /// Default options with `count` enclosures.
     pub fn with_enclosures(mut self, count: usize) -> Self {
         self.enclosures = count;
+        self
+    }
+
+    /// Default options with enclosures `bits` wide.
+    pub fn with_bits(mut self, bits: u32) -> Self {
+        self.bits = bits;
         self
     }
 
