@@ -52,11 +52,11 @@ use crate::kernel::{ExprData, ExprId, ExprPool};
 pub type IntegrationCertWithheld = &'static str;
 
 /// The antiderivative or integrand uses a special function (`erf`, `Si`,
-/// `Ei`, `li`, …) whose derivative Mathlib (at the pinned v4.9.0) lacks.
+/// `Ei`, `li`, …) that Mathlib (at the pinned v4.36.0) does not define.
 pub const WITHHELD_SPECIAL_FUNCTION: IntegrationCertWithheld = "withheld_special_function";
 /// The antiderivative is a `RootSum` over the roots of a polynomial.
 pub const WITHHELD_ROOTSUM: IntegrationCertWithheld = "withheld_rootsum";
-/// A function with no encoded derivative lemma (`tanh`, `asinh`, `atan2`, …).
+/// A function with no encoded derivative lemma (`atanh`, `atan2`, …).
 pub const WITHHELD_UNSUPPORTED_FUNCTION: IntegrationCertWithheld = "withheld_unsupported_function";
 /// A node the printer cannot render faithfully (float, huge literal,
 /// piecewise, a symbol that is not a Lean identifier, symbolic exponent …).
@@ -322,6 +322,17 @@ enum Fn1 {
     Acos,
     Sinh,
     Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    /// `erf`, by its defining integral (Mathlib has no `erf`; see [`SPECIAL_DEFS`]).
+    Erf,
+    /// `erfi`, by its defining integral.
+    Erfi,
+    /// The sine integral `Si`, by its defining integral `∫₀ˣ sinc`.
+    Si,
+    /// `Real.sinc` — only introduced by the derivative of `Si`.
+    Sinc,
 }
 
 impl Fn1 {
@@ -338,6 +349,12 @@ impl Fn1 {
             "acos" => Fn1::Acos,
             "sinh" => Fn1::Sinh,
             "cosh" => Fn1::Cosh,
+            "tanh" => Fn1::Tanh,
+            "asinh" => Fn1::Asinh,
+            "acosh" => Fn1::Acosh,
+            "erf" => Fn1::Erf,
+            "erfi" => Fn1::Erfi,
+            "Si" => Fn1::Si,
             _ => return None,
         })
     }
@@ -354,6 +371,13 @@ impl Fn1 {
             Fn1::Acos => "Real.arccos",
             Fn1::Sinh => "Real.sinh",
             Fn1::Cosh => "Real.cosh",
+            Fn1::Tanh => "Real.tanh",
+            Fn1::Asinh => "Real.arsinh",
+            Fn1::Acosh => "Real.arcosh",
+            Fn1::Erf => "alkahestErf",
+            Fn1::Erfi => "alkahestErfi",
+            Fn1::Si => "alkahestSi",
+            Fn1::Sinc => "Real.sinc",
         }
     }
 }
@@ -396,6 +420,7 @@ enum Cond {
     Pos(ExprId),
     GtM1(ExprId),
     Lt1(ExprId),
+    Gt1(ExprId),
     CosNe0(ExprId),
 }
 
@@ -935,7 +960,7 @@ impl<'a> Ctx<'a> {
             wl.clone(),
             format!("{rl} * {icl}"),
             format!(
-                "by linear_combination (-({wl}) * {icl}) * (Real.sq_sqrt (show (0:ℝ) ≤ {radicand} by norm_num)) + (({rl}) * {icl}) * (mul_inv_cancel {fact})"
+                "by linear_combination (-({wl}) * {icl}) * (Real.sq_sqrt (show (0:ℝ) ≤ {radicand} by norm_num)) + (({rl}) * {icl}) * (mul_inv_cancel₀ {fact})"
             ),
             RelKind::Subst {
                 v: w,
@@ -966,7 +991,7 @@ impl<'a> Ctx<'a> {
         self.push_rel(
             format!("({u_lean}) * {lean}"),
             "1".into(),
-            format!("mul_inv_cancel {fact}"),
+            format!("mul_inv_cancel₀ {fact}"),
             RelKind::Inverse {
                 w: id,
                 u: u.clone(),
@@ -1089,7 +1114,14 @@ impl<'a> Ctx<'a> {
                         }
                         Ok(Poly::var(self.fun_atom(f, &al, ap)))
                     }
-                    Fn1::Asin | Fn1::Acos if self.is_const(a) => Err(WITHHELD_CONSTANT_SIGN),
+                    Fn1::Asin | Fn1::Acos | Fn1::Acosh if self.is_const(a) => {
+                        Err(WITHHELD_CONSTANT_SIGN)
+                    }
+                    Fn1::Acosh => {
+                        // `Real.arcosh` agrees with the principal `acosh` only on `[1, ∞)`.
+                        self.hyp(format!("1 < {al}"), Cond::Gt1(a));
+                        Ok(Poly::var(self.fun_atom(f, &al, ap)))
+                    }
                     Fn1::Log if self.is_const(a) => {
                         // `Real.log c` agrees with the complex log only for c > 0.
                         if !surely_positive(a, self.pool) {
@@ -1448,6 +1480,126 @@ impl<'a> Ctx<'a> {
                             format!("(({pf}).sqrt ({hp}).ne')"),
                             format!("({da}) / (2 * Real.sqrt ({al}))"),
                             dp.mul(&w)?.scale(&Rational::from((1, 2))),
+                        )
+                    }
+                    Fn1::Erf | Fn1::Erfi => {
+                        // `erf' u = 2/√π · exp(-u²)`, `erfi' u = 2/√π · exp(u²)`
+                        // (the lemmas in [`SPECIAL_DEFS`]). `π` and `√π` are
+                        // spelled as the printer spells them, so they meet the
+                        // answer's own `√π` atom.
+                        self.fun_atom(f, &al, ap.clone());
+                        let pi = match self.by_lean.get("Real.pi") {
+                            Some(&id) => id,
+                            None => self.new_atom("Real.pi".into(), AKind::Free, 0),
+                        };
+                        let r = self.sqrt_atom(
+                            "Real.pi",
+                            Poly::var(pi),
+                            Some("Real.pi_pos.le".into()),
+                        );
+                        let rl = self.atoms[r as usize].lean.clone();
+                        self.have(format!("{rl} ≠ 0"), "by positivity".into());
+                        let w = self.inv_poly(&Poly::var(r), &rl)?;
+                        let (arg_l, arg_p, lemma) = if f == Fn1::Erf {
+                            (format!("-({al}) ^ 2"), ap.pow(2)?.neg(), "alkahestErf_hasDerivAt")
+                        } else {
+                            (format!("({al}) ^ 2"), ap.pow(2)?, "alkahestErfi_hasDerivAt")
+                        };
+                        let e = self.fun_atom(Fn1::Exp, &arg_l, arg_p);
+                        let el = self.atoms[e as usize].lean.clone();
+                        node(
+                            format!("(HasDerivAt.comp (h := fun ({x} : ℝ) => {al}) {x} ({lemma} ({al})) {pf})"),
+                            format!("(2 / {rl} * {el}) * ({da})"),
+                            Poly::var(e)
+                                .mul(&w)?
+                                .mul(&dp)?
+                                .scale(&Rational::from(2)),
+                        )
+                    }
+                    Fn1::Si => {
+                        // `Si' u = sinc u`, and `sinc u = sin u / u` for `u ≠ 0`.
+                        self.fun_atom(Fn1::Si, &al, ap.clone());
+                        let ne = self.ne0_fact(a)?;
+                        let w = self.inv_poly(&ap, &al)?;
+                        let sn = self.fun_atom(Fn1::Sin, &al, ap.clone());
+                        let sc = self.fun_atom(Fn1::Sinc, &al, ap.clone());
+                        if !self.has_rule(sc) {
+                            let snl = self.atoms[sn as usize].lean.clone();
+                            let scl = self.atoms[sc as usize].lean.clone();
+                            self.push_rel(
+                                scl,
+                                format!("{snl} / ({al})"),
+                                format!("Real.sinc_of_ne_zero {ne}"),
+                                RelKind::Subst {
+                                    v: sc,
+                                    e: Poly::var(sn).mul(&w)?,
+                                },
+                            );
+                        }
+                        node(
+                            format!("(HasDerivAt.comp (h := fun ({x} : ℝ) => {al}) {x} (alkahestSi_hasDerivAt ({al})) {pf})"),
+                            format!("Real.sinc ({al}) * ({da})"),
+                            Poly::var(sc).mul(&dp)?,
+                        )
+                    }
+                    Fn1::Sinc => return Err(WITHHELD_UNSUPPORTED_FUNCTION),
+                    Fn1::Tanh => {
+                        // Mathlib has no `HasDerivAt.tanh`: differentiate
+                        // `sinh u / cosh u` and move to `tanh u` along
+                        // `Real.tanh_eq_sinh_div_cosh` (an everywhere-equality,
+                        // so `congr_of_eventuallyEq` applies).
+                        let s = self.fun_atom(Fn1::Sinh, &al, ap.clone());
+                        let c = self.fun_atom(Fn1::Cosh, &al, ap.clone());
+                        self.fun_atom(Fn1::Tanh, &al, ap);
+                        let cl = self.atoms[c as usize].lean.clone();
+                        self.have(format!("{cl} ≠ 0"), format!("(Real.cosh_pos ({al})).ne'"));
+                        let w = self.inv_poly(&Poly::var(c), &cl)?;
+                        let dpoly = Poly::var(c)
+                            .pow(2)?
+                            .sub(&Poly::var(s).pow(2)?)
+                            .mul(&dp)?
+                            .mul(&w.pow(2)?)?;
+                        node(
+                            format!(
+                                "(HasDerivAt.congr_of_eventuallyEq (f₁ := fun ({x} : ℝ) => Real.tanh ({al})) \
+                                 ((({pf}).sinh).fun_div (({pf}).cosh) (Real.cosh_pos _).ne') \
+                                 (Filter.Eventually.of_forall fun ({x} : ℝ) => Real.tanh_eq_sinh_div_cosh ({al})))"
+                            ),
+                            format!(
+                                "((Real.cosh ({al}) * ({da})) * Real.cosh ({al}) - Real.sinh ({al}) * (Real.sinh ({al}) * ({da}))) / Real.cosh ({al}) ^ 2"
+                            ),
+                            dpoly,
+                        )
+                    }
+                    Fn1::Asinh => {
+                        self.fun_atom(Fn1::Asinh, &al, ap.clone());
+                        let rad = format!("1 + ({al}) ^ 2");
+                        let hp = self.have(format!("0 < {rad}"), "by positivity".into());
+                        let rad_poly = Poly::one().add(&ap.pow(2)?);
+                        let r = self.sqrt_atom(&rad, rad_poly, Some(format!("({hp}).le")));
+                        let rl = self.atoms[r as usize].lean.clone();
+                        self.have(format!("{rl} ≠ 0"), format!("(Real.sqrt_pos.mpr {hp}).ne'"));
+                        let w = self.inv_poly(&Poly::var(r), &rl)?;
+                        node(
+                            format!("(({pf}).arsinh)"),
+                            format!("(Real.sqrt ({rad}))⁻¹ * ({da})"),
+                            w.mul(&dp)?,
+                        )
+                    }
+                    Fn1::Acosh => {
+                        let h1 = self.hyp(format!("1 < {al}"), Cond::Gt1(a));
+                        self.fun_atom(Fn1::Acosh, &al, ap.clone());
+                        let rad = format!("({al}) ^ 2 - 1");
+                        let hp = self.have(format!("0 < {rad}"), "by nlinarith".into());
+                        let rad_poly = ap.pow(2)?.sub(&Poly::one());
+                        let r = self.sqrt_atom(&rad, rad_poly, Some(format!("({hp}).le")));
+                        let rl = self.atoms[r as usize].lean.clone();
+                        self.have(format!("{rl} ≠ 0"), format!("(Real.sqrt_pos.mpr {hp}).ne'"));
+                        let w = self.inv_poly(&Poly::var(r), &rl)?;
+                        node(
+                            format!("(HasDerivAt.comp (h := fun ({x} : ℝ) => {al}) {x} (Real.hasDerivAt_arcosh (show ({al}) ∈ Set.Ioi 1 from {h1})) {pf})"),
+                            format!("(Real.sqrt ({rad}))⁻¹ * ({da})"),
+                            w.mul(&dp)?,
                         )
                     }
                 })
@@ -1813,6 +1965,28 @@ impl<'a> Ctx<'a> {
             }
         }
 
+        // --- tanh = sinh / cosh ----------------------------------------------
+        for (id, _, arg, al) in self.fun_atoms(&[Fn1::Tanh]) {
+            if self.has_rule(id) {
+                continue;
+            }
+            let s = self.fun_atom(Fn1::Sinh, &al, arg.clone());
+            let c = self.fun_atom(Fn1::Cosh, &al, arg.clone());
+            let sl = self.atoms[s as usize].lean.clone();
+            let cl = self.atoms[c as usize].lean.clone();
+            self.have(format!("{cl} ≠ 0"), format!("(Real.cosh_pos ({al})).ne'"));
+            let w = self.inv_poly(&Poly::var(c), &cl)?;
+            self.push_rel(
+                self.atoms[id as usize].lean.clone(),
+                format!("{sl} / {cl}"),
+                format!("Real.tanh_eq_sinh_div_cosh ({al})"),
+                RelKind::Subst {
+                    v: id,
+                    e: Poly::var(s).mul(&w)?,
+                },
+            );
+        }
+
         // --- cosh² - sinh² = 1 ---------------------------------------------
         let hyps = self.fun_atoms(&[Fn1::Sinh, Fn1::Cosh]);
         let mut done: Vec<Poly> = Vec::new();
@@ -2141,6 +2315,7 @@ fn cond_holds(c: Cond, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> bool {
         Cond::Pos(e) => ok(eval_f64(e, env, pool), &|v| v > 1e-12),
         Cond::GtM1(e) => ok(eval_f64(e, env, pool), &|v| v > -1.0 + 1e-12),
         Cond::Lt1(e) => ok(eval_f64(e, env, pool), &|v| v < 1.0 - 1e-12),
+        Cond::Gt1(e) => ok(eval_f64(e, env, pool), &|v| v > 1.0 + 1e-12),
         Cond::CosNe0(e) => ok(eval_f64(e, env, pool), &|v| v.cos().abs() > 1e-9),
     }
 }
@@ -2309,6 +2484,57 @@ fn strip_log_abs(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>)
     out
 }
 
+/// Definitions for special functions Mathlib does not define, each by its
+/// standard defining integral, with the derivative lemma the certificate uses
+/// (`(name, Lean source)`; a certificate mentions `name (`).
+/// The definitions are the textbook ones — `erf x = 2/√π ∫₀ˣ e^(-t²) dt`,
+/// `erfi x = 2/√π ∫₀ˣ e^(t²) dt`, `Si x = ∫₀ˣ sin t / t dt` (with Mathlib's
+/// `Real.sinc` as the continuous integrand) — and the lemmas are proved from
+/// Mathlib's FTC, so a certificate using them assumes nothing new.
+const SPECIAL_DEFS: [(&str, &str); 3] = [
+    (
+        "alkahestErf",
+        "/-- `erf x = 2/√π · ∫₀ˣ exp (-t²) dt` (its defining integral; Mathlib has no `erf`). -/\n\
+         noncomputable def alkahestErf (x : ℝ) : ℝ :=\n  \
+         2 / Real.sqrt Real.pi * ∫ t in (0 : ℝ)..x, Real.exp (-t ^ 2)\n\n\
+         theorem alkahestErf_hasDerivAt (x : ℝ) :\n    \
+         HasDerivAt alkahestErf (2 / Real.sqrt Real.pi * Real.exp (-x ^ 2)) x :=\n  \
+         ((Continuous.integral_hasStrictDerivAt (by fun_prop) 0 x).hasDerivAt).const_mul _\n\n",
+    ),
+    (
+        "alkahestErfi",
+        "/-- `erfi x = 2/√π · ∫₀ˣ exp (t²) dt` (its defining integral). -/\n\
+         noncomputable def alkahestErfi (x : ℝ) : ℝ :=\n  \
+         2 / Real.sqrt Real.pi * ∫ t in (0 : ℝ)..x, Real.exp (t ^ 2)\n\n\
+         theorem alkahestErfi_hasDerivAt (x : ℝ) :\n    \
+         HasDerivAt alkahestErfi (2 / Real.sqrt Real.pi * Real.exp (x ^ 2)) x :=\n  \
+         ((Continuous.integral_hasStrictDerivAt (by fun_prop) 0 x).hasDerivAt).const_mul _\n\n",
+    ),
+    (
+        "alkahestSi",
+        "/-- The sine integral `Si x = ∫₀ˣ sin t / t dt`, with `Real.sinc` as the integrand. -/\n\
+         noncomputable def alkahestSi (x : ℝ) : ℝ :=\n  \
+         ∫ t in (0 : ℝ)..x, Real.sinc t\n\n\
+         theorem alkahestSi_hasDerivAt (x : ℝ) : HasDerivAt alkahestSi (Real.sinc x) x :=\n  \
+         (Real.continuous_sinc.integral_hasStrictDerivAt 0 x).hasDerivAt\n\n",
+    ),
+];
+
+/// Lean imports for `HasDerivAt` integration certificates, plus the FTC and
+/// `sinc` modules when a definition from [`SPECIAL_DEFS`] is used.
+fn hasderiv_header_with(special: bool) -> String {
+    let h = hasderiv_header();
+    if !special {
+        return h;
+    }
+    h.replacen(
+        "\n\nset_option",
+        "\nimport Mathlib.Analysis.SpecialFunctions.Trigonometric.Sinc\n\
+         import Mathlib.MeasureTheory.Integral.IntervalIntegral.FundThmCalculus\n\nset_option",
+        1,
+    )
+}
+
 /// Lean imports for `HasDerivAt` integration certificates.
 pub(crate) fn hasderiv_header() -> String {
     "import Mathlib.Tactic\n\
@@ -2318,12 +2544,19 @@ pub(crate) fn hasderiv_header() -> String {
      import Mathlib.Analysis.Calculus.Deriv.Mul\n\
      import Mathlib.Analysis.Calculus.Deriv.Inv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.DerivHyp\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.InverseDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n\
      import Mathlib.Analysis.SpecialFunctions.Sqrt\n\
      import Mathlib.Analysis.SpecialFunctions.Pow.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Arsinh\n\
+     import Mathlib.Analysis.SpecialFunctions.Arcosh\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n"
     .to_string()
 }
@@ -2449,15 +2682,25 @@ pub fn emit_integration_hasderiv_cert(
 
     let display_f = pool.display(integrand).to_string();
     let display_big = pool.display(antiderivative).to_string();
+    let mut defs = String::new();
+    for (name, def) in SPECIAL_DEFS {
+        let needle = format!("{name} (");
+        if stated_big_lean.contains(&needle)
+            || stated_small_lean.contains(&needle)
+            || body.contains(&needle)
+        {
+            defs.push_str(def);
+        }
+    }
     let src = format!(
-        "{}-- ∫ {display_f} d{x} = {display_big}\n\
+        "{}{defs}-- ∫ {display_f} d{x} = {display_big}\n\
          -- Certified via the derivative relation on the domain given by the hypotheses:\n\
          -- HasDerivAt (fun {x} => F) f {x}.\n\
          set_option linter.unusedVariables false in\n\
          set_option maxHeartbeats 4000000 in\n\
          theorem alkahest_integral {binders} :\n    \
          HasDerivAt (fun ({x} : ℝ) => {stated_big_lean}) ({stated_small_lean}) {x} := by\n{body}",
-        hasderiv_header()
+        hasderiv_header_with(!defs.is_empty())
     );
     if src.len() > MAX_SRC_BYTES {
         return Err(WITHHELD_TOO_LARGE);
@@ -2592,10 +2835,77 @@ mod tests {
 
     #[test]
     fn special_functions_have_reasons() {
-        let r = emit(|p, x| (p.func("erf", vec![x]), p.func("exp", vec![x])));
+        let r = emit(|p, x| (p.func("Ei", vec![x]), p.func("exp", vec![x])));
         assert_eq!(r, Err(WITHHELD_SPECIAL_FUNCTION));
-        let r = emit(|p, x| (p.func("tanh", vec![x]), x));
+        let r = emit(|p, x| (p.func("atan2", vec![x, x]), x));
         assert_eq!(r, Err(WITHHELD_UNSUPPORTED_FUNCTION));
+    }
+
+    #[test]
+    fn erf_and_si_certify_through_their_defining_integrals() {
+        // ∫ exp(-x²) = √π/2 · erf x
+        let src = emit(|p, x| {
+            let sqrt_pi = p.func("sqrt", vec![p.symbol("pi", Domain::Real)]);
+            let big = p.mul(vec![p.func("erf", vec![x]), sqrt_pi, p.rational(1, 2)]);
+            let small = p.func(
+                "exp",
+                vec![p.mul(vec![p.pow(x, p.integer(2)), p.integer(-1)])],
+            );
+            (big, small)
+        })
+        .expect("erf cert");
+        assert!(src.contains("noncomputable def alkahestErf"), "{src}");
+        assert!(src.contains("alkahestErf_hasDerivAt"), "{src}");
+        assert!(!src.contains("def alkahestSi"), "{src}");
+        // ∫ sin x / x = Si x on x ≠ 0
+        let src = emit(|p, x| {
+            (
+                p.func("Si", vec![x]),
+                p.mul(vec![p.func("sin", vec![x]), p.pow(x, p.integer(-1))]),
+            )
+        })
+        .expect("Si cert");
+        assert!(src.contains("Real.sinc_of_ne_zero"), "{src}");
+        assert!(src.contains("(h1 : (x : ℝ) ≠ 0)"), "{src}");
+        // A wrong special-function answer still does not reduce.
+        let r = emit(|p, x| (p.func("erf", vec![x]), p.func("exp", vec![x])));
+        assert_eq!(r, Err(WITHHELD_IDENTITY));
+    }
+
+    #[test]
+    fn hyperbolic_answers_certify() {
+        // ∫ tanh x = log(cosh x): tanh is related to sinh/cosh, no hypothesis.
+        let src = emit(|p, x| {
+            (
+                p.func("log", vec![p.func("cosh", vec![x])]),
+                p.func("tanh", vec![x]),
+            )
+        })
+        .expect("tanh cert");
+        assert!(src.contains("Real.tanh_eq_sinh_div_cosh"), "{src}");
+        assert!(!src.contains("(h1 :"), "{src}");
+        // ∫ sech² x = tanh x: the derivative goes through sinh / cosh.
+        let src = emit(|p, x| {
+            let c = p.func("cosh", vec![x]);
+            (p.func("tanh", vec![x]), p.pow(c, p.integer(-2)))
+        })
+        .expect("d tanh cert");
+        assert!(src.contains("congr_of_eventuallyEq"), "{src}");
+        // ∫ 1/√(1+x²) = asinh x
+        let src = emit(|p, x| {
+            let r = p.func("sqrt", vec![p.add(vec![p.integer(1), p.pow(x, p.integer(2))])]);
+            (p.func("asinh", vec![x]), p.pow(r, p.integer(-1)))
+        })
+        .expect("asinh cert");
+        assert!(src.contains(".arsinh"), "{src}");
+        // ∫ 1/√(x²-1) = acosh x on x > 1
+        let src = emit(|p, x| {
+            let r = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)])]);
+            (p.func("acosh", vec![x]), p.pow(r, p.integer(-1)))
+        })
+        .expect("acosh cert");
+        assert!(src.contains("Real.hasDerivAt_arcosh"), "{src}");
+        assert!(src.contains("(h1 : 1 < (x : ℝ))"), "{src}");
     }
 
     #[test]

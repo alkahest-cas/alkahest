@@ -174,7 +174,7 @@ pub trait Primitive: 'static + Send + Sync {
     /// the emitter withholds the certificate — either because a side
     /// condition isn't encoded yet, or because the diff step is recorded
     /// under the generic `diff_primitive_registry` rule name with no
-    /// closing tactic in v4.9.0. Returning `Some` here when the emitter
+    /// closing tactic. Returning `Some` here when the emitter
     /// can't back it up would make the `capabilities()["primitives"]`
     /// agent-contract signal a false promise. When you make a new
     /// primitive's certificate actually typecheck (add a
@@ -1237,7 +1237,7 @@ pub mod builtins {
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
-            // Mathlib v4.9.0 has no `hasDerivAt_tanh`. The emitter constructs
+            // Mathlib has no `hasDerivAt_tanh`. The emitter constructs
             // the pointwise derivative from `Real.hasDerivAt_sinh` /
             // `Real.hasDerivAt_cosh` via `HasDerivAt.div` and reconciles
             // Alkahest's `1 - tanh²` with `1/cosh²` using

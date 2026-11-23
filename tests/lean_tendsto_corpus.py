@@ -124,7 +124,7 @@ STRICT_CASES = [
     ),
     (
         "tendsto_one_plus_div_rpow_exp",
-        "tendsto_one_plus_div_rpow_exp",
+        "Real.tendsto_one_add_div_rpow_exp",
         _one_plus_inv_pow,
     ),
     (
@@ -144,7 +144,7 @@ STRICT_CASES = [
     ),
     (
         "tendsto_one_plus_div_rpow_exp_two",
-        "tendsto_one_plus_div_rpow_exp",
+        "Real.tendsto_one_add_div_rpow_exp",
         _one_plus_two_over_x_pow,
     ),
     # `xⁿ · exp(−x) → 0`, both interned factor orders and the bare-`x` case.

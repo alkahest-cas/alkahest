@@ -458,12 +458,12 @@ def test_lean_int_x_log_x_certifies_but_diff_of_its_F_withholds():
 
 
 def test_lean_withholds_non_elementary_integrate_certificate():
-    """An antiderivative with a special function (here `∫ exp(-x²) dx`, an
-    `erf` answer: Mathlib has no `erf` derivative) stays withheld rather than
-    emitting an admission, and says why."""
+    """An antiderivative with a special function Mathlib does not define (here
+    `∫ exp(x)/x dx`, an `Ei` answer) stays withheld rather than emitting an
+    admission, and says why."""
     p = pool()
     x = p.symbol("x")
-    r = integrate(exp(-(x**2)), x)
+    r = integrate(exp(x) / x, x)
     assert r.certificate is None
     assert r.certificate_status["detail"] == "withheld_special_function"
     with pytest.raises(alkahest.CertificateUnavailableError):
@@ -852,7 +852,7 @@ def test_lean_tendsto_sin_over_x_certificate():
 
 
 def test_lean_tendsto_one_plus_inv_pow_certificate():
-    """lim_{x→+∞} (1+1/x)^x = e emits Filter.Tendsto via tendsto_one_plus_div_rpow_exp."""
+    """lim_{x→+∞} (1+1/x)^x = e emits Filter.Tendsto via Real.tendsto_one_add_div_rpow_exp."""
     p = pool()
     x = p.symbol("x")
     r = limit((1 + 1 / x) ** x, x, p.pos_infinity())
@@ -860,7 +860,7 @@ def test_lean_tendsto_one_plus_inv_pow_certificate():
     assert isinstance(cert, str)
     assert cert
     assert "sorry" not in cert
-    assert "tendsto_one_plus_div_rpow_exp" in cert
+    assert "Real.tendsto_one_add_div_rpow_exp" in cert
     assert to_lean(r) == cert
 
 
@@ -885,7 +885,7 @@ def test_lean_tendsto_withholds_unrecognised_finite():
     assert r.certificate is None
     with pytest.raises(alkahest.CertificateUnavailableError):
         to_lean(r)
-    # (1+x)^{1/x} → e as x → 0 has no v4.9.0 one-liner (the Mathlib lemma is at +∞).
+    # (1+x)^{1/x} → e as x → 0 has no Mathlib one-liner (the Mathlib lemma is at +∞).
     r2 = limit((1 + x) ** (1 / x), x, p.integer(0))
     assert r2.certificate is None
     with pytest.raises(alkahest.CertificateUnavailableError):

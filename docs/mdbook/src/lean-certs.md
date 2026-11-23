@@ -76,8 +76,51 @@ The CI pipeline (`.github/workflows/lean.yml`) generates a deliberately small,
 strict corpus of basic arithmetic rewrites and `d/dx x³`. Every corpus entry
 must have the expected non-empty derivation log, must contain no `sorry`,
 `admit`, or `axiom`, and must typecheck with warnings treated as errors. The
-pinned Lean 4.9 compiler does not provide a `--no-sorries` command-line flag,
-so the source admission check is explicit in both the generator and CI.
+Lean compiler has no `--no-sorries` command-line flag, so the source admission
+check is explicit in both the generator and CI.
+
+### Toolchain and porting notes
+
+The checker is pinned in `lean/`: `lean-toolchain` (Lean 4 **v4.36.0**), the
+Mathlib tag in `lakefile.lean` (**v4.36.0**) and the exact dependency revisions
+in the committed `lake-manifest.json`. CI downloads Mathlib's prebuilt oleans
+with `lake exe cache get`, so Mathlib is never built from source. To check a
+certificate locally:
+
+```bash
+cd lean && lake exe cache get
+lake env lean -DwarningAsError=true -DautoImplicit=false path/to/cert.lean
+```
+
+The pin moved from v4.9.0 (mid-2024) to v4.36.0. What changed in the emitted
+Lean:
+
+- **Linters.** Every certificate switches off `linter.unusedSimpArgs`,
+  `linter.unusedTactic` and `linter.unreachableTactic`. These are style
+  linters; under `-DwarningAsError=true` they would reject a proof whose
+  `simp` set names a lemma it did not need. `sorry` is still a warning and
+  still fails the check.
+- **Lemma renames.** `mul_inv_cancel` → `mul_inv_cancel₀` (fields),
+  `Nat.Ico_succ_right` → `Finset.Ico_add_one_right_eq_Icc`,
+  `Set.not_mem_uIcc_of_lt` → `Set.notMem_uIcc_of_lt`,
+  `tendsto_one_plus_div_rpow_exp` → `Real.tendsto_one_add_div_rpow_exp`,
+  `differentiableAt_id'` → `differentiableAt_id`, `differentiableAt_inv.mpr h`
+  → `differentiableAt_inv h`, `deriv_pow''` → `deriv_fun_pow`, and
+  `if_pos`/`if_neg` → `ite_eq_left`/`ite_eq_right`.
+- **Pointwise vs. lambda forms.** `HasDerivAt.add`/`.mul`/`.neg`/`.pow`/…
+  and `deriv_add`/`deriv_mul`/… now state the derivative of `f + g` (a
+  function-level sum), while their `fun_`-prefixed twins (`HasDerivAt.fun_add`,
+  `deriv_fun_mul`, …) state it for `fun x => f x + g x`. Certificates that
+  `rw` or `simpa` against a lambda use the `fun_` forms; `simp` sets carry both.
+- **Moved modules.** The `sinh`/`cosh` derivative lemmas live in
+  `Mathlib.Analysis.SpecialFunctions.Trigonometric.DerivHyp`; the interval-FTC
+  lemmas in `Mathlib.MeasureTheory.Integral.IntervalIntegral.{Basic,FundThmCalculus}`;
+  `Finset` big operators in `Mathlib.Algebra.BigOperators.Group.Finset.Basic`.
+- **New coverage.** Mathlib v4.36 has `HasDerivAt.arsinh` and
+  `Real.hasDerivAt_arcosh`, so integration certificates now cover `asinh` and
+  `acosh` (on `1 < u`), and `tanh` through `Real.tanh_eq_sinh_div_cosh`. It still
+  has no `erf`, `Si`, `Ei` or `li`; answers using them stay withheld with
+  `withheld_special_function`.
 
 1. Generates proof files via `tests/lean_corpus.py`
 2. Compiles them with the pinned Lean/Mathlib toolchain (with Mathlib cached)
@@ -179,7 +222,7 @@ The strict CI corpus currently covers:
   identity via `sum_range_sub` / `sum_Ico_eq_sum_range` — never as the false
   rewrite `F = G`. Infinite Basel sums and `gamma` encodings stay withheld.
 - The discrete product `∏_{k=1}^{n} k = n!`, via Mathlib
-  `Finset.prod_Ico_id_eq_factorial` (v4.9.0 has no `prod_Icc_id`).
+  `Finset.prod_Ico_id_eq_factorial`.
 - Resultants, stated as `Matrix.det` of the Sylvester matrix of `p` and `q`
   equal to the result, for Sylvester matrices up to 7×7. The determinant is
   expanded by a controlled `simp only` lemma set (the full simp set rewrites

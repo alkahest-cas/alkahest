@@ -78,6 +78,11 @@ INTEGRANDS = [
     "1/(1/cos(x))^2",
     "sinh(x)^2*cosh(x)",
     "exp(x)*sin(exp(x))*cos(exp(x))^2",
+    # special functions defined in the certificate by their integrals
+    "exp(-x^2)",
+    "x^2*exp(-x^2)",
+    "sin(x)/x",
+    "sin(2*x)/x",
 ]
 
 # Below this many certificates the emitter is considered broken.
