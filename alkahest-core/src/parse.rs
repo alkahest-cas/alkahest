@@ -897,6 +897,15 @@ impl<'a> Parser<'a> {
         if name == crate::poly::root_of::ROOT_OF {
             return self.parse_root_of(offset);
         }
+        if matches!(
+            name,
+            crate::pde::sum::SUM
+                | crate::pde::sum::INDEXED
+                | crate::pde::sum::KRONECKER_DELTA
+                | crate::pde::root_family::ROOT_OF_FAMILY
+        ) {
+            return self.parse_pde_head(name, offset);
+        }
         if !is_known_func(name) {
             return Err(ParseError::unknown_func(
                 format!("unknown function '{name}'"),
@@ -957,6 +966,60 @@ impl<'a> Parser<'a> {
 }
 
 impl Parser<'_> {
+    /// `Sum(body, k, lo, hi)`, `Indexed(x, i)`, `KroneckerDelta(i, j)` and
+    /// `RootOfFamily(F, λ, n, branch)` — the PDE layer's reserved heads
+    /// (`crate::pde`), built through their validating constructors so a
+    /// printed node reads back as the identical node.
+    fn parse_pde_head(&mut self, name: &str, offset: usize) -> Result<ExprId, ParseError> {
+        let span = (offset, offset + name.len());
+        self.advance(); // consume "("
+        let mut args = Vec::new();
+        if self.peek().tok != Tok::RParen {
+            args.push(self.parse_expr(0)?);
+            while self.peek().tok == Tok::Comma {
+                self.advance();
+                args.push(self.parse_expr(0)?);
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        let arity = match name {
+            crate::pde::sum::SUM | crate::pde::root_family::ROOT_OF_FAMILY => 4,
+            _ => 2,
+        };
+        if args.len() != arity {
+            return Err(ParseError::syntax(
+                format!("{name} takes {arity} arguments, got {}", args.len()),
+                span,
+            ));
+        }
+        let pool = self.pool;
+        let r = match name {
+            crate::pde::sum::SUM => crate::pde::sum::sum(args[0], args[1], args[2], args[3], pool),
+            crate::pde::sum::INDEXED => crate::pde::sum::indexed(args[0], args[1], pool),
+            crate::pde::sum::KRONECKER_DELTA => {
+                Ok(crate::pde::sum::kronecker_delta(args[0], args[1], pool))
+            }
+            _ => {
+                let branch = pool.with(args[3], |d| match d {
+                    ExprData::Integer(n) => n.0.to_i64(),
+                    _ => None,
+                });
+                match branch {
+                    Some(b) => {
+                        crate::pde::root_family::root_of_family(args[0], args[1], args[2], b, pool)
+                    }
+                    None => {
+                        return Err(ParseError::syntax(
+                            "RootOfFamily: the branch must be an integer".to_string(),
+                            span,
+                        ))
+                    }
+                }
+            }
+        };
+        r.map_err(|e| ParseError::syntax(e.to_string(), span))
+    }
+
     /// The calls that make printed derivatives of undefined functions read
     /// back (see `crate::diff::undefined`); `Ok(None)` when `name` is none of
     /// them.
