@@ -93,6 +93,25 @@ fn burgers_breaking_time() {
 }
 
 #[test]
+fn quasilinear_cauchy_quadratic_relation() {
+    let f = fx();
+    let p = &f.pool;
+    // u_y + u² u_x = 0, u(x, 0) = x  ⇒  u = x − u² y (explicit forms are
+    // singular at y = 0, the relation is not).
+    let eq = p.add(vec![
+        dd(&f, f.y),
+        p.mul(vec![p.pow(f.u, p.integer(2)), dd(&f, f.x)]),
+    ]);
+    let ic = p.func("u", vec![f.x, p.integer(0)]);
+    let prob = PdeProblem::new(&[eq], &[f.u], p)
+        .unwrap()
+        .ic(ic, f.x, p)
+        .unwrap();
+    let s = pdsolve(&prob, &PdsolveOptions::default(), p).unwrap();
+    assert!(s.verification.status.is_verified());
+}
+
+#[test]
 fn characteristic_data_is_refused() {
     let f = fx();
     let p = &f.pool;

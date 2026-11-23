@@ -103,7 +103,7 @@
     | corpus | problems | Alkahest | Mathematica 14.3 | SymPy 1.14 |
     |---|---|---|---|---|
     | SymPy's `test_pde.py` | 25 | 25 | 25 | 24 |
-    | textbook (Debnath, Sneddon, Evans) | 46 + 1 must-refuse | 45 | 39 | 13 |
+    | textbook (Debnath, Sneddon, Evans) | 46 + 1 must-refuse | 46 | 39 | 13 |
     | Abbasi benchmark, first-order handbook chapter (sample) | 155 | 32 | 82 (65 without unevaluated integrals) | 11 |
 
     Mathematica returns no general solution for the quasilinear and Cauchy–Burgers problems of the textbook set. The Abbasi sample is dominated by Riccati/Abel characteristics, arbitrary coefficient functions `f(x)` and symbolic exponents, where an answer needs unevaluated integrals or hypergeometric functions; `pdsolve` refuses those (`E-PDE-051`).

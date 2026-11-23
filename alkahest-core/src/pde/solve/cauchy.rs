@@ -425,8 +425,23 @@ pub(crate) fn impose(
             // same relation is the push order, which the stable sort keeps).
             good.sort_by_key(|c| pool.depth(c.value));
             inverse.sort_by_key(|c| pool.depth(c.value));
-            let mut out: Vec<Candidate> = good.into_iter().chain(inverse).collect();
-            out.truncate(10);
+            // Distinct candidates only, at most six explicit and four
+            // implicit ones: an explicit form can be unverifiable on the data
+            // (`(−1 + √(1 + 4xt))/(2t)` at `t = 0`) where its relation is not.
+            let mut seen = std::collections::HashSet::new();
+            let (mut n_exp, mut n_imp) = (0, 0);
+            let mut out: Vec<Candidate> = Vec::new();
+            for c in good.into_iter().chain(inverse) {
+                if !seen.insert((c.value, c.implicit)) {
+                    continue;
+                }
+                let n = if c.implicit { &mut n_imp } else { &mut n_exp };
+                if *n >= if c.implicit { 4 } else { 6 } {
+                    continue;
+                }
+                *n += 1;
+                out.push(c);
+            }
             if out.is_empty() {
                 return Err(PdeError::CauchyUnsupported(
                     "the data parameters could not be eliminated from the first integrals".into(),
