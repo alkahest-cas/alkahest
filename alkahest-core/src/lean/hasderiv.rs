@@ -711,6 +711,12 @@ impl<'a> Ctx<'a> {
                 }
             }
             Shape::Func(name, args) => {
+                if name == "abs" && args.len() == 1 {
+                    // Printed for the statement only: `log |a|` is proved
+                    // through `Real.log_abs`; any other `abs` is withheld by
+                    // the derivative pass.
+                    return Ok(format!("abs ({})", self.lean(args[0])?));
+                }
                 let f = Fn1::from_name(&name).ok_or_else(|| special_function_reason(&name))?;
                 if args.len() != 1 {
                     return Err(WITHHELD_UNSUPPORTED_NODE);
@@ -2243,6 +2249,66 @@ fn respell_rational_powers(
     Ok(out)
 }
 
+/// `log(abs(a))` → `log(a)` throughout (other `abs` nodes are kept).
+fn strip_log_abs(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>) -> ExprId {
+    if let Some(&r) = memo.get(&e) {
+        return r;
+    }
+    enum Shape {
+        Leaf,
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String, Vec<ExprId>),
+    }
+    let shape = pool.with(e, |d| match d {
+        ExprData::Add(xs) => Shape::Add(xs.clone()),
+        ExprData::Mul(xs) => Shape::Mul(xs.clone()),
+        ExprData::Pow { base, exp } => Shape::Pow(*base, *exp),
+        ExprData::Func { name, args } => Shape::Func(name.clone(), args.clone()),
+        _ => Shape::Leaf,
+    });
+    let out = match shape {
+        Shape::Leaf => e,
+        Shape::Add(xs) => {
+            let ys = xs.iter().map(|&c| strip_log_abs(c, pool, memo)).collect();
+            pool.add(ys)
+        }
+        Shape::Mul(xs) => {
+            let ys = xs.iter().map(|&c| strip_log_abs(c, pool, memo)).collect();
+            pool.mul(ys)
+        }
+        Shape::Pow(b, x) => {
+            let b2 = strip_log_abs(b, pool, memo);
+            pool.pow(b2, x)
+        }
+        Shape::Func(name, xs) => {
+            let inner_abs = (name == "log" && xs.len() == 1)
+                .then(|| {
+                    pool.with(xs[0], |d| match d {
+                        ExprData::Func { name, args } if name == "abs" && args.len() == 1 => {
+                            Some(args[0])
+                        }
+                        _ => None,
+                    })
+                })
+                .flatten();
+            match inner_abs {
+                Some(a) => {
+                    let a2 = strip_log_abs(a, pool, memo);
+                    pool.func("log", vec![a2])
+                }
+                None => {
+                    let ys = xs.iter().map(|&c| strip_log_abs(c, pool, memo)).collect();
+                    pool.func(name, ys)
+                }
+            }
+        }
+    };
+    memo.insert(e, out);
+    out
+}
+
 /// Lean imports for `HasDerivAt` integration certificates.
 pub(crate) fn hasderiv_header() -> String {
     "import Mathlib.Tactic\n\
@@ -2275,7 +2341,19 @@ pub fn emit_integration_hasderiv_cert(
     let mut memo = HashMap::new();
     let antiderivative = respell_rational_powers(antiderivative, pool, &mut memo)?;
     let integrand = respell_rational_powers(integrand, pool, &mut memo)?;
+    // `Real.log |a| = Real.log a` holds for every real `a` (`Real.log_abs`),
+    // so `log |a|` is certified as `log a`: same derivative `a'/a`, same
+    // domain `a ≠ 0`. The statement keeps the `abs`; one `simp only` step
+    // removes it from the goal.
+    let stated_big = antiderivative;
+    let stated_small = integrand;
+    let mut abs_memo = HashMap::new();
+    let antiderivative = strip_log_abs(antiderivative, pool, &mut abs_memo);
+    let integrand = strip_log_abs(integrand, pool, &mut abs_memo);
+    let has_log_abs = antiderivative != stated_big || integrand != stated_small;
     let mut cx = Ctx::new(pool, var)?;
+    let stated_big_lean = cx.lean(stated_big)?;
+    let stated_small_lean = cx.lean(stated_small)?;
     let big_f = cx.lean(antiderivative)?;
     let small_f = cx.lean(integrand)?;
     let node = cx.deriv(antiderivative)?;
@@ -2318,6 +2396,9 @@ pub fn emit_integration_hasderiv_cert(
         binders.push_str(&format!(" ({} : {})", f.name, f.prop));
     }
     let mut body = String::new();
+    if has_log_abs {
+        body.push_str("  simp only [Real.log_abs]\n");
+    }
     for f in cx.facts.iter().filter(|f| f.proof.is_some()) {
         body.push_str(&format!(
             "  have {} : {} := {}\n",
@@ -2376,7 +2457,7 @@ pub fn emit_integration_hasderiv_cert(
          set_option linter.unusedVariables false in\n\
          set_option maxHeartbeats 4000000 in\n\
          theorem alkahest_integral {binders} :\n    \
-         HasDerivAt (fun ({x} : ℝ) => {big_f}) ({small_f}) {x} := by\n{body}",
+         HasDerivAt (fun ({x} : ℝ) => {stated_big_lean}) ({stated_small_lean}) {x} := by\n{body}",
         hasderiv_header()
     );
     if src.len() > MAX_SRC_BYTES {
@@ -2474,6 +2555,33 @@ mod tests {
             )
         });
         assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn log_abs_and_log_of_negative_certify() {
+        // ∫ 1/x = log|x| on x ≠ 0
+        let src = emit(|p, x| {
+            (
+                p.func("log", vec![p.func("abs", vec![x])]),
+                p.pow(x, p.integer(-1)),
+            )
+        })
+        .expect("cert");
+        assert!(src.contains("Real.log (abs ((x : ℝ)))"), "{src}");
+        assert!(src.contains("simp only [Real.log_abs]"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
+        // ∫ 1/(x - 1) = log(1 - x) on 1 - x ≠ 0
+        let src = emit(|p, x| {
+            let one_minus = p.add(vec![p.integer(1), p.mul(vec![p.integer(-1), x])]);
+            let x_minus = p.add(vec![x, p.integer(-1)]);
+            (
+                p.func("log", vec![one_minus]),
+                p.pow(x_minus, p.integer(-1)),
+            )
+        })
+        .expect("cert");
+        assert!(src.contains("≠ 0"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
     }
 
     #[test]
