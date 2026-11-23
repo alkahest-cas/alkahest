@@ -91,6 +91,7 @@ _BASIS = {
     "sqrt3": (math.sqrt(3.0), 1.5),
     "e": (math.e, 1.5),
     "log2": (math.log(2.0), 2.0),
+    "log3": (math.log(3.0), 2.5),
 }
 
 
@@ -203,6 +204,8 @@ def _basis_expr(name: str, pool: Any) -> Any:
         return _ak.sqrt(pool.integer(3))
     if name == "log2":
         return _ak.log(pool.integer(2))
+    if name == "log3":
+        return _ak.log(pool.integer(3))
     raise KeyError(name)
 
 
@@ -213,7 +216,13 @@ def _close(a: float, b: float, rel: float) -> bool:
 def snap_candidates(
     v: float, *, max_den: int = 1000, rel_tol: float = 1e-7, limit: int = 8
 ) -> list[tuple[Const, str]]:
-    """Exact constants within ``rel_tol`` of ``v``, simplest first.
+    """Exact constants close to ``v``, simplest first.
+
+    A candidate of description cost ``c`` (bits of its numerators,
+    denominators and basis constants) is accepted only within
+    ``rel_tol · 2^-c`` of ``v``: a more complicated constant has to match
+    more digits, so a dense supply of complicated candidates cannot "match"
+    an arbitrary number.
 
     Returns ``(Const, how)`` with ``how`` one of ``"rational"`` (continued
     fractions), ``"constant"`` (a rational multiple of a basis monomial),
@@ -231,9 +240,10 @@ def snap_candidates(
     for m, mv, _cost in _MONOMIALS:
         r = v / mv
         q = Fraction(r).limit_denominator(max_den)
-        if q != 0 and _close(float(q), r, rel_tol):
+        if q != 0:
             c = Const(((q, m),))
-            found.setdefault(c, "rational" if not m else "constant")
+            if _close(c.value(), v, rel_tol * 2.0 ** -c.cost()):
+                found.setdefault(c, "rational" if not m else "constant")
     # Two-term relations v = r0 + r1*K with PSLQ.
     try:
         from . import PslqError  # type: ignore[attr-defined]
@@ -247,7 +257,7 @@ def snap_candidates(
         if rel and rel[0] != 0 and rel[1] != 0 and rel[2] != 0:
             a, b, c = rel
             const = Const(((Fraction(-b, a), ()), (Fraction(-c, a), ((n, 1),))))
-            if _close(const.value(), v, rel_tol):
+            if _close(const.value(), v, rel_tol * 2.0 ** -const.cost()):
                 found.setdefault(const, "pslq")
     # Three-term relations v = r0 + r1*K1 + r2*K2 with LLL.
     from .lattice import lll_reduce_rows
@@ -279,7 +289,7 @@ def snap_candidates(
                 )
             )
             const = Const(tuple(t for t in const.terms if t[0] != 0))
-            if _close(const.value(), v, rel_tol):
+            if _close(const.value(), v, rel_tol * 2.0 ** -const.cost()):
                 found.setdefault(const, "lll")
     out = sorted(found.items(), key=lambda kv: (kv[0].cost(), abs(kv[0].value() - v)))
     return out[:limit]
@@ -911,6 +921,11 @@ def _verify_residuals(pool: Any, pde: list[Any], bc: list[Any], ic: list[Any]) -
     return v
 
 
+def _interior_verified(v: dict | None) -> bool:
+    """Every PDE residual (not the boundary ones) proved zero."""
+    return bool(v) and bool(v.get("pde")) and all(c["status"] == "proved_zero" for c in v["pde"])
+
+
 def _status_counts(v: dict) -> dict:
     return {
         "status": v["status"],
@@ -956,7 +971,7 @@ def finalize(
     tau: float = 0.05,
     group_tol: float = 1e-6,
     max_den: int = 1000,
-    snap_tol: float = 1e-6,
+    snap_tol: float = 1e-4,
     loss_tol: float | None = None,
     family: dict | None = None,
     domain: tuple[float, float] | None = None,
@@ -981,8 +996,9 @@ def finalize(
     group_tol : float
         Leaf weights within this relative distance are tied.
     max_den, snap_tol : int, float
-        Snapping: denominators / relation coefficients up to ``max_den``,
-        candidates within ``snap_tol`` (relative) of the fitted value.
+        Snapping: denominators / relation coefficients up to ``max_den``;
+        a candidate of description cost ``c`` bits must lie within
+        ``snap_tol · 2^-c`` (relative) of the fitted value.
     loss_tol : float, optional
         The gate for every pin, filter, tie and snap. Default:
         ``max(100·loss₀, 1e-20)`` for residual losses, ``loss₀ + 1e-4·|loss₀|``
@@ -1064,10 +1080,24 @@ def finalize(
                 bd = _fex.sample_initial_slice(500, dim, domain[0], domain[1], time, 0.0, rng)
             else:
                 bd = _fex.sample_box_boundary(500, dim, domain[0], domain[1], rng)
-    ev = _fex.Evaluator(tpl, problem, pts, bd)
-    least_squares = problem.loss == "least_squares"
-    rf = _Refitter(ev, e, theta, least_squares)
     log: list[str] = []
+    eig: dict[str, Any] = {}
+    fit_problem = problem
+    fit_bd = bd
+    if kind == "eigen":
+        # The Monte Carlo Rayleigh quotient's minimiser is biased; the
+        # residual −Δu + V u − λ u vanishes pointwise at an exact eigenpair,
+        # whatever the points. Alternate a least-squares fit of θ for fixed λ
+        # with the projection λ = ⟨−Δu + V u, u⟩ / ⟨u, u⟩ (the postprocessing
+        # of Liang & Yang, §4.4.2), then snap λ and fit to the exact λ.
+        theta, lam, lam_exact, fit_problem = _refine_eigen(
+            problem, tpl, e, theta, pts, max_den, snap_tol, log
+        )
+        fit_bd = None
+        eig = {"estimate": lam, "exact": lam_exact}
+    ev = _fex.Evaluator(tpl, fit_problem, pts, fit_bd)
+    least_squares = fit_problem.loss == "least_squares"
+    rf = _Refitter(ev, e, theta, least_squares)
     n = tpl.n_params
     kinds = tpl.slot_kinds
     offs = tpl.param_offsets
@@ -1089,10 +1119,10 @@ def finalize(
     if not (loss_cur <= loss_initial):
         th_cur, loss_cur = theta.copy(), loss_initial
     if loss_tol is None:
-        if problem.loss == "rayleigh":
+        if fit_problem.loss == "rayleigh":
             loss_tol = loss_cur + 1e-4 * abs(loss_cur)
         else:
-            loss_tol = max(100.0 * loss_cur, 1e-20)
+            loss_tol = loss_cur + max(1e-20, min(100.0, 1e-3 / max(loss_cur, 1e-300)) * loss_cur)
     log.append(f"refit: loss {loss_initial:.3e} -> {loss_cur:.3e}; gate {loss_tol:.3e}")
 
     def attempt(new_fixed: dict[int, Const], new_groups: list[list[int]], label: str) -> bool:
@@ -1168,10 +1198,16 @@ def finalize(
         c = snap_candidates(v, max_den=max_den, rel_tol=snap_tol, limit=1)
         return bool(c) and c[0][0].cost() <= 4.0
 
+    def is_bias(k: int) -> bool:
+        slot = max(s for s in range(len(offs)) if offs[s] <= k and kinds[s] != "binary")
+        return (kinds[slot] == "leaf" and k == offs[slot] + dim) or (
+            kinds[slot] == "unary" and k == offs[slot] + 1
+        )
+
     def order_key(g: list[int]) -> tuple:
         k = g[0]
         slot = max(s for s in range(len(offs)) if offs[s] <= k and kinds[s] != "binary")
-        return (0 if kinds[slot] == "unary" else 1, -slot, k)
+        return (0 if is_bias(k) else 1, 0 if kinds[slot] == "unary" else 1, -slot, k)
 
     for g in sorted(list(groups), key=order_key):
         if g not in groups:
@@ -1179,7 +1215,8 @@ def finalize(
         v = float(np.mean(th_cur[g]))
         if simple(v):
             continue
-        for target in (1 if v >= 0 else -1, 0):
+        targets = (0,) if is_bias(g[0]) else (1 if v >= 0 else -1, 0)
+        for target in targets:
             c = Const.rational(target)
             nf = dict(fixed)
             for k in g:
@@ -1261,10 +1298,22 @@ def finalize(
         "log": log,
     }
 
+    if kind == "eigen":
+        out["eigenvalue"] = str(eig["exact"]) if eig.get("exact") is not None else None
+        out["eigenvalue_estimate"] = eig.get("estimate")
     # Problem constants in exact form.
     src_exact, src_note = _exact_sources(problem, kind, time)
     out["problem_constants"] = src_note
-    if kind == "expr":
+    trivial = all_exact and _ak.is_zero(expr) is True
+    out["trivial"] = trivial
+    if trivial:
+        # u = 0 solves every homogeneous problem; it is never a recovery.
+        verification["concrete"] = {
+            "status": "trivial_solution",
+            "verified": False,
+            "reason": "the candidate is identically zero",
+        }
+    elif kind == "expr":
         verification["concrete"] = {
             "status": "unverified",
             "verified": False,
@@ -1272,11 +1321,8 @@ def finalize(
         }
     elif all_exact and src_exact is not None:
         if kind == "eigen":
-            lam = _eigenvalue_estimate(ev, e, th_cur, problem, pts)
-            cands = [c for c, _ in snap_candidates(lam, max_den=max_den, rel_tol=1e-6)]
-            src_exact["eigenvalue"] = cands[0].to_expr(pool) if cands else None
-            out["eigenvalue"] = str(cands[0]) if cands else None
-            out["eigenvalue_estimate"] = lam
+            lam_c = eig.get("exact")
+            src_exact["eigenvalue"] = lam_c.to_expr(pool) if lam_c is not None else None
         if kind != "eigen" or src_exact.get("eigenvalue") is not None:
             verification["concrete"] = _verify_concrete(
                 kind, expr, coords, time, src_exact, domain, spec, pool
@@ -1287,7 +1333,7 @@ def finalize(
         )
 
     # Lift to symbolic d.
-    if symbolic_d and kind in ("poisson", "transport", "cubic_schrodinger", "eigen"):
+    if symbolic_d and not trivial and kind in ("poisson", "transport", "cubic_schrodinger", "eigen"):
         lifted = _lift_and_verify(
             tpl, e, fixed, groups, problem, kind, time, domain, family, all_exact, out
         )
@@ -1413,6 +1459,7 @@ def _verify_concrete(kind, expr, coords, time, src, domain, spec, pool) -> dict:
             for x, b in _faces(coords, time, domain, pool):
                 bcs.append(_ak.subs(expr - g, {x: b}))
     v = _verify_residuals(pool, [res], bcs, ics)
+    v["interior_verified"] = _interior_verified(v)
     v["boundary"] = (
         "initial slice t = 0"
         if time is not None and has_bc
@@ -1421,23 +1468,82 @@ def _verify_concrete(kind, expr, coords, time, src, domain, spec, pool) -> dict:
     return v
 
 
-def _eigenvalue_estimate(ev, e, th, problem, pts) -> float:
-    """``(-Δu + V u) / u`` averaged over sample points where ``|u|`` is not
-    small."""
-    sel = pts[: min(len(pts), 200)]
-    u, _g, lap = ev.jets(e, th, sel)
+def _potential_values(problem: Any, pts: np.ndarray) -> np.ndarray:
     pot = problem.spec.get("potential")
     if pot is None:
-        V = np.zeros(len(sel))
-    else:
-        fn = _ak.lambdify(pot, problem.x) if hasattr(_ak, "lambdify") else None
-        if fn is not None:
-            V = np.asarray([float(fn(*p)) for p in sel])
-        else:
-            V = np.asarray([_ak.eval_expr(pot, dict(zip(problem.x, map(float, p)))) for p in sel])
-    mask = np.abs(u) > 1e-3 * np.max(np.abs(u))
-    lam = (-lap[mask] + V[mask] * u[mask]) / u[mask]
-    return float(np.median(lam))
+        return np.zeros(len(pts))
+    xs = problem.x
+    return np.asarray(
+        [float(_ak.eval_expr(pot, {x: float(v) for x, v in zip(xs, p)})) for p in pts]
+    )
+
+
+def _eigen_twin(problem: Any, lam: Any) -> Any:
+    """``−Δu + V u − λ u = 0`` with the normalised loss ``mean(r²) / mean(u²)``
+    (scale-invariant, so the trivial ``u = 0`` is not a minimiser); no
+    boundary rows."""
+    from . import fex as _fex
+
+    jet = problem.jet
+    pot = problem.spec.get("potential")
+    pool = jet.pool
+    lam_e = lam if isinstance(lam, _ak.Expr) else pool.float(float(lam), 53)
+    op = -jet.lap - lam_e * jet.u
+    if pot is not None:
+        op = op + pot * jet.u
+    return _fex.Problem.from_operator(
+        jet, op, rhs=0.0, bc=None, bc_weight=0.0, loss="normalized", power=2.0
+    )
+
+
+def _refine_eigen(problem, tpl, e, theta, pts, max_den, snap_tol, log):
+    from . import fex as _fex
+
+    sel = np.asarray(pts)[: min(len(pts), 4000)]
+    V = _potential_values(problem, sel)
+    th = np.array(theta, dtype=float)
+    ev0 = _fex.Evaluator(tpl, problem, sel, None)
+
+    def project(t):
+        u, _g, lap = ev0.jets(e, t, sel)
+        den = float(u @ u)
+        return float(((-lap + V * u) @ u) / den) if den > 0 else math.nan
+
+    # The eigenproblem is homogeneous: rescale u so the root scale is ±1
+    # (a Rayleigh fit may return any scale), and hold it there.
+    root = len(tpl.slot_kinds) - 1
+    hold: dict[int, float] = {}
+    if tpl.slot_kinds[root] == "unary":
+        o = tpl.param_offsets[root]
+        if th[o] != 0.0:
+            c = abs(th[o])
+            th[o] /= c
+            th[o + 1] /= c
+        hold = {o: float(th[o])}
+    lam = project(th)
+    free = [[k] for k in range(tpl.n_params) if k not in hold]
+    loss = math.inf
+    rounds = 0
+    for rounds in range(1, 31):
+        ev = _fex.Evaluator(tpl, _eigen_twin(problem, lam), sel, None)
+        rf = _Refitter(ev, e, th, False)
+        th_new, loss = rf.fit(free, hold, np.array([th[g[0]] for g in free]), max_iter=40)
+        lam_new = project(th_new)
+        if not math.isfinite(lam_new):
+            break
+        th = th_new
+        done = abs(lam_new - lam) <= 1e-13 * max(1.0, abs(lam))
+        lam = lam_new
+        if done:
+            break
+    log.append(f"eigen refinement: λ ≈ {lam!r} after {rounds} rounds (residual loss {loss:.3e})")
+    cands = snap_candidates(lam, max_den=max_den, rel_tol=snap_tol, limit=1)
+    lam_exact = cands[0][0] if cands else None
+    if lam_exact is None:
+        log.append("eigenvalue: no exact form; continuing with the float λ")
+        return th, lam, None, _eigen_twin(problem, lam)
+    log.append(f"eigenvalue snapped: λ = {lam_exact}")
+    return th, lam, lam_exact, _eigen_twin(problem, lam_exact.to_expr(problem.jet.pool))
 
 
 def _interval_residual(kind, tpl, e, th, coords, time, src, problem, pts, m, rng) -> dict | None:
@@ -1606,7 +1712,7 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
         if lam is None:
             report["reason"] = "no exact eigenvalue"
             return report
-        cands = [c for c, _ in snap_candidates(out["eigenvalue_estimate"], rel_tol=1e-6)]
+        cands = [c for c, _ in snap_candidates(out["eigenvalue_estimate"], rel_tol=1e-4)]
         src_ph["eigenvalue"] = lift.const(cands[0])
 
     # Residuals in placeholders.
@@ -1646,14 +1752,24 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
     combos = list(itertools.product(*[range(len(a)) for a in alts])) if alts else [()]
 
     def combo_key(cmb):
-        cs = sum(abs(a[j][1]) for j, a, c in zip(cmb, alts, cand) if c)
-        cost = sum(a[j][0].cost() + 1.5 * abs(a[j][1]) for j, a in zip(cmb, alts))
-        return (cs, cost)
+        return sum(a[j][0].cost() + 1.5 * abs(a[j][1]) for j, a in zip(cmb, alts))
 
     combos.sort(key=combo_key)
+
+    def family_of(mp: dict) -> dict:
+        return {
+            key: str(_simp(_ak.subs(val, mp))) for key, val in src_ph.items() if val is not None
+        }
+
     tried = 0
     best = None
+    others: list[dict] = []
+    extra_budget = 48
     for cmb in combos[:256]:
+        if best is not None and best[0]["verified"]:
+            extra_budget -= 1
+            if extra_budget < 0 or len(others) >= 2:
+                break
         tried += 1
         mp = {}
         for s, j, a in zip(syms, cmb, alts):
@@ -1666,21 +1782,22 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
         bcs = [_ak.subs(r, mp) for r in bc_ph]
         ics = [_ak.subs(r, mp) for r in ic_ph]
         v = _verify_residuals(pool, pde_r, bcs, ics)
-        if best is None:
-            best = (v, mp)
-        if v["verified"]:
-            best = (v, mp)
-            break
-    v, mp = best
+        # Rank: fully verified > the PDE itself verified > neither.
+        score = 2 if v["verified"] else (1 if _interior_verified(v) else 0)
+        if best is None or score > best[2]:
+            best = (v, mp, score)
+        elif v["verified"]:
+            others.append({"expr": _simp(_ak.subs(u_ph, mp)), "family": family_of(mp)})
+    v, mp, _score = best
     report.update(v)
+    report["interior_verified"] = _interior_verified(v)
     report["alternatives_tried"] = tried
-    u_sym = _simp(_ak.subs(u_ph, mp))
-    report["expr"] = u_sym
-    fam = {}
-    for key, val in src_ph.items():
-        if val is not None:
-            fam[key] = str(_simp(_ak.subs(val, mp)))
-    report["family"] = fam
+    report["expr"] = _simp(_ak.subs(u_ph, mp))
+    report["family"] = family_of(mp)
+    # Other families (cost order) that the candidate also solves for every
+    # d and that agree with the problem at the fitted d: the lift from one
+    # dimension is not unique, so they are reported, not hidden.
+    report["other_families"] = others
     report["operator"] = _operator_text(kind)
     report["candidate_constants"] = n_cand
     if has_bc:

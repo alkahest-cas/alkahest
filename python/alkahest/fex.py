@@ -711,6 +711,12 @@ def fit(
 # ---------------------------------------------------------------------------
 
 
+def _local_method(ev: Evaluator) -> str:
+    """Levenberg–Marquardt for a residual loss, BFGS otherwise (a Rayleigh
+    quotient or a normalised loss has no residual vector)."""
+    return "lm" if ev.problem.loss == "least_squares" else "bfgs"
+
+
 def _prune(
     ev: Evaluator,
     best: FitResult,
@@ -735,7 +741,7 @@ def _prune(
             es = np.tile(np.asarray(e, dtype=np.int64), (restarts, 1))
             th0 = tpl.init_params(restarts, rng)
             th0[0] = best.theta
-            r = min(ev.fit(es, th0, method="lm", max_iter=iters), key=lambda x: x.loss)
+            r = min(ev.fit(es, th0, method=_local_method(ev), max_iter=iters), key=lambda x: x.loss)
             if r.loss <= cutoff:
                 best = r
                 changed = True
@@ -773,7 +779,7 @@ def search(
     greedy: float = 0.1,
     percentile: float = 0.5,
     lr: float = 0.05,
-    score_method: str = "lm",
+    score_method: str | None = None,
     score_iters: int = 20,
     score_restarts: int = 2,
     pool_size: int = 10,
@@ -810,6 +816,8 @@ def search(
     rng = rng if rng is not None else np.random.default_rng()
     t0 = time.perf_counter()
     ev = Evaluator(template, problem, points, boundary)
+    if score_method is None:
+        score_method = _local_method(ev)
     arities = template.slot_arities
     logits = [np.zeros(k) for k in arities]
     m1 = [np.zeros(k) for k in arities]
@@ -884,7 +892,7 @@ def search(
         es = np.tile(np.asarray(r.e, dtype=np.int64), (finetune_restarts, 1))
         th0 = template.init_params(finetune_restarts, rng)
         th0[0] = r.theta
-        res = ev.fit(es, th0, method="lm", max_iter=finetune_iters)
+        res = ev.fit(es, th0, method=_local_method(ev), max_iter=finetune_iters)
         finals.append((key, min(res, key=lambda x: x.loss)))
 
     # Among families that solve the problem to within `tie_loss`, prefer the
