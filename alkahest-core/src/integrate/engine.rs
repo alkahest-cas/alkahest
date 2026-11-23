@@ -3685,7 +3685,16 @@ fn integrate_dispatch(
             // Re-verified against `expr`; not re-entrant.
             crate::budget::check()?;
             if let Some(r) = super::algebraic::try_rationalized_cofactor(expr, var, pool) {
-                return Ok(r);
+                // Its termwise logarithms can be negative on the integrand's
+                // real domain (`log(√(1−x²)/x − 1/x)` for `0 < x < 1`): give
+                // the real branch, re-gated (see `real_log`).
+                let value = super::real_log::realify_logs(r.value, expr, var, pool);
+                if value == r.value {
+                    return Ok(r);
+                }
+                let mut log = r.log;
+                log.push(RewriteStep::simple("real_valued_logs", r.value, value));
+                return Ok(DerivedExpr::with_log(value, log));
             }
 
             // ── Tier 4: pre-normalisation + parametric closed forms ─────────
