@@ -42,7 +42,7 @@ fn end_from(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>) -> PyResult<EndConditi
     }
     let t: Bound<'_, PyTuple> = ob.extract()?;
     let tag: String = t.get_item(0)?.extract()?;
-    if tag.to_ascii_lowercase() != "robin" || t.len() != 3 {
+    if !tag.eq_ignore_ascii_case("robin") || t.len() != 3 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "a tuple end condition is ('robin', alpha, beta)",
         ));
