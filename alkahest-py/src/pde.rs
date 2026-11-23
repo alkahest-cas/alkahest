@@ -106,6 +106,9 @@ fn naming_str(n: JetNaming) -> &'static str {
     }
 }
 
+/// `(unknown, alpha, symbol)` as `JetSpace.jets_in` returns it.
+type JetTriple = (Py<PyAny>, Vec<u32>, Py<PyAny>);
+
 /// A multi-index jet space `J^k`: independent variables, unknowns and a
 /// maximum order, with the bijection ``Derivative(u(x, t), …) ↔ u_xt``.
 ///
@@ -292,6 +295,8 @@ impl PyJetSpace {
 
     /// Replace every jet symbol in ``expr`` by its derivative (inverse of
     /// :meth:`to_jets`).
+    // The Python name mirrors `JetSpace::from_jets`; it is not a constructor.
+    #[allow(clippy::wrong_self_convention)]
     fn from_jets(&self, py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let id = expr_in(expr, &self.pool, "JetSpace.from_jets")?;
         let out = {
@@ -312,11 +317,7 @@ impl PyJetSpace {
 
     /// The jet coordinates occurring in ``expr`` as ``(unknown, alpha,
     /// symbol)`` triples, highest-ranked first.
-    fn jets_in(
-        &self,
-        py: Python<'_>,
-        expr: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<(Py<PyAny>, Vec<u32>, Py<PyAny>)>> {
+    fn jets_in(&self, py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<Vec<JetTriple>> {
         let id = expr_in(expr, &self.pool, "JetSpace.jets_in")?;
         let cs = {
             let p = self.pool.borrow(py);
@@ -877,7 +878,7 @@ fn _pde_root_family_enclosure(
     let e = expr_in(root, &pool, "RootOfFamily.enclosure")?;
     let p = pool.borrow(py);
     let (lo, hi) = alkahest_core::pde::root_family_enclosure(e, bits, &p.inner).map_err(pde_err)?;
-    let digits = (f64::from(bits) * 0.30103).ceil() as usize + 3;
+    let digits = (f64::from(bits) * std::f64::consts::LOG10_2).ceil() as usize + 3;
     Ok((
         lo.to_string_radix_round(10, Some(digits), rug::float::Round::Down),
         hi.to_string_radix_round(10, Some(digits), rug::float::Round::Up),

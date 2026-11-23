@@ -32,13 +32,17 @@ fn as_int(v: f64) -> Option<i64> {
     (v.is_finite() && (v - v.round()).abs() < 1e-9 && v.abs() < 9.0e15).then(|| v.round() as i64)
 }
 
+/// An evaluator of an arbitrary expression in an environment, with a fresh
+/// memo: the callback [`eval_head_f64`] recurses through.
+pub(crate) type SubEval<'a> = dyn FnMut(ExprId, &HashMap<ExprId, f64>) -> Option<f64> + 'a;
+
 /// Evaluate one PDE head. `sub` evaluates an arbitrary expression in the
 /// given environment with a fresh memo.
 pub(crate) fn eval_head_f64(
     expr: ExprId,
     env: &HashMap<ExprId, f64>,
     pool: &ExprPool,
-    sub: &mut dyn FnMut(ExprId, &HashMap<ExprId, f64>) -> Option<f64>,
+    sub: &mut SubEval<'_>,
 ) -> Option<f64> {
     let (name, args) = pool.with(expr, |d| match d {
         crate::kernel::ExprData::Func { name, args } => Some((name.clone(), args.clone())),
