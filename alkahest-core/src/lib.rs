@@ -23,8 +23,6 @@ pub mod deriv;
 pub mod diff;
 pub mod errors;
 pub mod eval;
-/// Experimental: Finite Expression Method evaluation engine (template IR,
-/// fused residual/Jacobian interpreter, fitting).
 pub mod fex;
 pub mod ffield;
 pub mod flint;

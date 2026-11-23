@@ -18,9 +18,11 @@ from __future__ import annotations
 import math
 
 import alkahest as ak
-import numpy as np
 import pytest
-from alkahest import fex
+
+np = pytest.importorskip("numpy")
+
+from alkahest import fex  # noqa: E402  (needs numpy)
 
 
 def _rng(seed=0):

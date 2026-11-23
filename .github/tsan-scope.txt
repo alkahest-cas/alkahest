@@ -87,3 +87,11 @@ flint::thread_cleanup::
 # budget. Its tests (cyclic/katsura, random ideals) exercise both paths when
 # the `parallel` feature is on.
 poly::groebner::multimodular::
+
+# ── FEX evaluation engine: candidates and point chunks on a Rayon pool ─────
+# `fex::eval` scores batches of candidates in parallel and, inside each, row
+# chunks of the residual/Jacobian; every worker reads the evaluator's shared
+# leaf tables, which are built lazily through `OnceLock` on first use — so two
+# workers can race to initialise the same table. `fex::fit` runs candidate
+# fits and the normal-equation reduction in parallel.
+fex::
