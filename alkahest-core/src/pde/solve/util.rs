@@ -305,16 +305,30 @@ fn solver_isolate(eq: ExprId, v: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     if pool.depth(eq) > 40 {
         return out;
     }
-    if let Ok(crate::solver::SolutionSet::Finite(sols)) =
-        crate::solver::solve_polynomial_system(vec![eq], vec![v], pool)
-    {
-        for s in sols {
-            if let Some(&val) = s.first() {
-                out.push(simp(val, pool));
+    // A rational equation is solved through its numerator (roots of the
+    // denominator are not solutions, and every caller verifies anyway).
+    let num = match crate::poly::cancel::together_parts(eq, vec![v], pool) {
+        Ok((n, _)) => n,
+        Err(_) => eq,
+    };
+    for target in [eq, num] {
+        if let Ok(crate::solver::SolutionSet::Finite(sols)) =
+            crate::solver::solve_polynomial_system(vec![target], vec![v], pool)
+        {
+            for s in sols {
+                if let Some(&val) = s.first() {
+                    let val = simp(val, pool);
+                    if !out.contains(&val) {
+                        out.push(val);
+                    }
+                }
             }
         }
+        let _ = crate::solver::take_solve_side_conditions();
+        if !out.is_empty() || num == eq {
+            break;
+        }
     }
-    let _ = crate::solver::take_solve_side_conditions();
     out
 }
 
