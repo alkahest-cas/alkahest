@@ -3211,6 +3211,29 @@ fn integrate_dispatch(
     // caller entered a `budget::Budget` — see `crate::budget`.
     crate::budget::check()?;
 
+    // `exp(c·log u) = u^c` and `log(exp u) = u` are algebraic dependencies the
+    // Risch tower must not see as fresh transcendental monomials — that is how
+    // `∫ dy/exp(log y)` was certified non-elementary (its answer is `log y`).
+    // Rewrite them first (exact identities; see `exp_log_normal`) and integrate
+    // the normal form, gated against the caller's integrand.
+    let normal = super::exp_log_normal::normalize_exp_log(expr, pool);
+    if normal != expr {
+        match integrate(normal, var, pool) {
+            Ok(r) => {
+                if verify_antiderivative(r.value, expr, var, pool) {
+                    let mut log = DerivationLog::new();
+                    log.push(RewriteStep::simple("exp_log_normalisation", expr, normal));
+                    return Ok(DerivedExpr::with_log(r.value, log.merge(r.log)));
+                }
+            }
+            // The rewrite is an identity, so a certificate for the normal form
+            // is a certificate for `expr`.
+            Err(e @ IntegrationError::NonElementary(_)) => return Err(e),
+            Err(e) if e.is_budget() => return Err(e),
+            Err(_) => {}
+        }
+    }
+
     // `Piecewise` / `abs` / `min` / `max` integrands: split at the roots of the
     // conditions, integrate each smooth piece, glue continuously.
     if let Some(r) = super::piecewise::try_integrate(expr, var, pool) {

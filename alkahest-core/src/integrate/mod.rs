@@ -8,6 +8,7 @@ mod derivative;
 mod elliptic_exact;
 mod elliptic_trig;
 pub mod engine;
+mod exp_log_normal;
 mod feynman;
 pub mod gate;
 pub mod norman;
