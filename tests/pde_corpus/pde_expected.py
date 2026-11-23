@@ -68,6 +68,7 @@ EXPECTED_SOLVED = {
     "tb-burgers-general",
     "tb-burgers-linear",
     "tb-burgers-sine",
+    "tb-burgers-u2",
     "tb-cauchy-3d",
     "tb-cauchy-advection",
     "tb-cauchy-decay-t",
