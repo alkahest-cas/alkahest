@@ -40,8 +40,6 @@
 //!   (M1: first-order linear / semilinear / quasilinear equations by
 //!   characteristics, Cauchy problems, complete integrals); every answer is
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
-//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
-//! * [`sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
 //! * [`mod@sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
 //!   [`SturmLiouvilleProblem`] → [`Eigensystem`] (closed-form or
 //!   `RootOfFamily` eigenvalues with certified enclosures, eigenfunctions,
@@ -83,11 +81,6 @@ pub use root_family::{
 };
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
-};
-pub use sum::{
-    alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
-    kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
-    INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
 pub use sturm_liouville::{
     family_enclosures, sturm_liouville, sturm_liouville_with, EigenEnclosure, EigenFamily,
