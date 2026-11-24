@@ -82,6 +82,20 @@ they must, but not the same ones. Opt out per call with
 `ALKAHEST_JIT_HORNER=0`. From Rust: `compile_with_options(…,
 CodegenOptions::exact())`.
 
+After the Horner pass, **common-pair elimination** (as in Symbolica's evaluator
+optimiser) shares operand pairs that recur in several sums or products: in
+`x·y·sin(x) + x·y·cos(x)`, or across the entries of a Jacobian where the same
+`a·b` sits next to different factors, `a·b` is computed once. The most frequent
+pair is hoisted into a temporary, the counts are redone, and so on until no
+pair occurs twice. It is tried on each Horner candidate and on the whole
+compiled DAG, and kept only when it lowers the operation count. Sums and
+products it rewrites are reassociated, with the same last-bits caveat as
+above; an expression with no repeated pair (such as `Σ sin(kx)·cos(ky)/k`) is
+untouched. On a dense polynomial it finds nothing to add to the Horner scheme:
+231 distinct coefficients need about 230 multiply-adds either way. Switch it off
+alone with `ALKAHEST_JIT_CPE=0` (or `CodegenOptions::with_cpe(false)`);
+`optimize=False` and `ALKAHEST_JIT_HORNER=0` switch off both passes.
+
 ### Real values through complex intermediates
 
 A real-valued closed form can pass through complex numbers on the way:

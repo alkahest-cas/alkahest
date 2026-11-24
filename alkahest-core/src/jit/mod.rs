@@ -80,6 +80,7 @@ mod cranelift_backend;
 pub mod cache;
 pub(crate) mod complex_fallback;
 use complex_fallback::ComplexFallback;
+pub(crate) mod cpe;
 pub(crate) mod optimize;
 use optimize::Lowered;
 
@@ -159,18 +160,32 @@ impl CompileConfig {
 ///   a native tier for a large batch can change in those bits. On by default,
 ///   unless the environment variable `ALKAHEST_JIT_HORNER` is `0`, `false`,
 ///   `off` or `no` when the options are created.
+/// * `cpe` — common-pair elimination: a pair of operands that occurs in
+///   several sums or products (of one output or across the outputs of a
+///   vector compile) is computed once and shared, as in Symbolica's evaluator
+///   optimiser. It runs on each Horner candidate and on the whole DAG after
+///   the Horner pass, and is kept only when it lowers the operation count. A
+///   rewritten sum or product is evaluated in a different order, so it can
+///   differ from [`eval_interp`] in the last few bits, as above. Native tiers
+///   only; on by default unless `ALKAHEST_JIT_CPE` (or, for both passes,
+///   `ALKAHEST_JIT_HORNER`) is `0`, `false`, `off` or `no`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct CodegenOptions {
     /// Rewrite polynomial sums into Horner schemes before lowering.
     pub horner: bool,
+    /// Share operand pairs that recur across sums and products.
+    pub cpe: bool,
 }
 
 impl CodegenOptions {
     /// No rewriting: every evaluator computes exactly the expression given,
     /// bit for bit like [`eval_interp`].
     pub const fn exact() -> Self {
-        Self { horner: false }
+        Self {
+            horner: false,
+            cpe: false,
+        }
     }
 
     /// These options with the Horner pass switched on or off.
@@ -178,17 +193,38 @@ impl CodegenOptions {
         self.horner = on;
         self
     }
+
+    /// These options with common-pair elimination switched on or off.
+    pub const fn with_cpe(mut self, on: bool) -> Self {
+        self.cpe = on;
+        self
+    }
+
+    /// Any pass that changes the expression is on.
+    const fn rewrites(&self) -> bool {
+        self.horner || self.cpe
+    }
+}
+
+/// `true` when the environment variable `name` switches a pass off.
+fn env_off(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    })
 }
 
 impl Default for CodegenOptions {
     fn default() -> Self {
-        let off = std::env::var("ALKAHEST_JIT_HORNER").is_ok_and(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            )
-        });
-        Self { horner: !off }
+        // `ALKAHEST_JIT_HORNER=0` has meant "compile exactly as written"
+        // since before pair elimination existed, so it switches both off.
+        let horner = !env_off("ALKAHEST_JIT_HORNER");
+        Self {
+            horner,
+            cpe: horner && !env_off("ALKAHEST_JIT_CPE"),
+        }
     }
 }
 
@@ -199,8 +235,8 @@ fn lower_for_codegen(
     pool: &ExprPool,
     options: CodegenOptions,
 ) -> Lowered {
-    if options.horner {
-        optimize::lower(outputs, inputs, pool)
+    if options.rewrites() {
+        optimize::lower(outputs, inputs, pool, options.horner, options.cpe)
     } else {
         Lowered::identity(outputs)
     }

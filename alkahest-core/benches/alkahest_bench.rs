@@ -883,6 +883,84 @@ fn bench_hnf(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Codegen optimiser: evaluation of `poly20` / `trig30` from the CAS comparison
+// harness through Cranelift, as written, with the Horner pass, and with Horner
+// plus common-pair elimination. Only with `--features cranelift`; the full
+// 10^6-point timing is `examples/codegen_bench.rs`.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cranelift")]
+fn bench_codegen(c: &mut Criterion) {
+    use alkahest_cas::jit::{compile_with_options, CodegenOptions, CompileConfig, CompileTier};
+    let p = fresh_pool();
+    let x = p.symbol("x", Domain::Real);
+    let y = p.symbol("y", Domain::Real);
+    let fact = |k: u32| (1..=k).fold(rug::Integer::from(1), |a, b| a * b);
+    let mut terms = Vec::new();
+    for i in 0..=20u32 {
+        for j in 0..=(20 - i) {
+            let c = fact(20) / (fact(i) * fact(j) * fact(20 - i - j));
+            let mut f = vec![p.integer(c)];
+            if i > 0 {
+                f.push(p.pow(x, p.integer(i)));
+            }
+            if j > 0 {
+                f.push(p.pow(y, p.integer(j)));
+            }
+            terms.push(p.mul(f));
+        }
+    }
+    let poly20 = p.add(terms);
+    let mut terms: Vec<ExprId> = (1..=30)
+        .map(|k| {
+            p.mul(vec![
+                p.func("sin", vec![p.mul(vec![p.integer(k), x])]),
+                p.func("cos", vec![p.mul(vec![p.integer(k), y])]),
+                p.rational(1, k),
+            ])
+        })
+        .collect();
+    let r2 = p.add(vec![p.pow(x, p.integer(2)), p.pow(y, p.integer(2))]);
+    terms.push(p.mul(vec![
+        p.func("exp", vec![p.mul(vec![p.integer(-1), r2])]),
+        p.func("log", vec![p.add(vec![p.integer(1), p.mul(vec![x, y])])]),
+    ]));
+    let trig30 = p.add(terms);
+
+    let n = 4096;
+    let xs: Vec<f64> = (0..n)
+        .map(|i| 0.05 + 0.9 * (i as f64 + 0.5) / n as f64)
+        .collect();
+    let ys: Vec<f64> = xs.iter().rev().copied().collect();
+    let config = CompileConfig {
+        expected_evals: Some(1 << 20),
+        force_tier: Some(CompileTier::Cranelift),
+    };
+    let mut g = c.benchmark_group("codegen");
+    g.throughput(Throughput::Elements(n as u64));
+    for (name, e) in [("poly20", poly20), ("trig30", trig30)] {
+        for (passes, opts) in [
+            ("exact", CodegenOptions::exact()),
+            ("horner", CodegenOptions::exact().with_horner(true)),
+            (
+                "horner_cpe",
+                CodegenOptions::exact().with_horner(true).with_cpe(true),
+            ),
+        ] {
+            let f = compile_with_options(e, &[x, y], &p, config, opts).expect("compile");
+            let mut out = vec![0.0; n];
+            g.bench_function(format!("{name}_{passes}"), |b| {
+                b.iter(|| f.call_batch(&[&xs, &ys], &mut out));
+            });
+        }
+    }
+    g.finish();
+}
+
+#[cfg(not(feature = "cranelift"))]
+fn bench_codegen(_c: &mut Criterion) {}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -897,6 +975,7 @@ criterion_group!(
     bench_log_overhead,
     bench_simplifier_comparison,
     bench_jit,
+    bench_codegen,
     bench_ball,
     bench_par,
     bench_nvptx,

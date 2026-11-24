@@ -13,6 +13,20 @@
 //! out has 231 terms and 40 distinct powers, each power a double-double
 //! square-and-multiply; the scheme is 230 multiply-adds.
 //!
+//! # Blocked chains
+//!
+//! A Horner chain is a serial dependency: in `(1+x+y)^20` the longest chain
+//! is twenty multiply-adds, each waiting for the last, and on an
+//! out-of-order core the scheme's 230 multiply-adds then took twice the time
+//! their throughput allows. So the pass cuts every chain longer than
+//! eight links into blocks of [`JIT_BLOCK`] links, combined by a second
+//! chain in `v⁴` (two shared squarings per variable): a few more operations,
+//! a quarter of the dependency depth, and on `poly20` about 51 → 34 ns per
+//! point on a Zen 2 core. The public [`horner_multivariate`] keeps one chain
+//! per variable.
+//!
+//! [`horner_multivariate`]: crate::horner_multivariate
+//!
 //! # When a sum is rewritten
 //!
 //! Only when the scheme is clearly cheaper by an operation count
@@ -34,8 +48,22 @@
 //! backends' bit-exact agreement with the interpreter. The rewrite is
 //! switched off with [`CodegenOptions`](super::CodegenOptions) (`horner:
 //! false`) or the environment variable `ALKAHEST_JIT_HORNER=0`.
+//!
+//! # Common-pair elimination
+//!
+//! After the Horner pass, [`super::cpe`] hoists operand pairs that recur in
+//! several n-ary sums and products (across all outputs) into shared nodes.
+//! It runs on every Horner candidate — the greedy scheme, and for sums of up
+//! to [`ALT_MAX_TERMS`] terms a second scheme with the opposite tie-break —
+//! and the cheaper result by operation count (no FMA credit, as for the
+//! gate above) is kept; then once more over the whole DAG, kept only when it
+//! lowers the FMA-aware operation count. The sums it rewrites are
+//! reassociated like the Horner links and round accordingly. It is switched
+//! off with [`CodegenOptions`](super::CodegenOptions) (`cpe: false`) or the
+//! environment variable `ALKAHEST_JIT_CPE=0`.
 
-use crate::horner::multi::{small_positive_exponent, SchemeBuilder, Term};
+use super::cpe;
+use crate::horner::multi::{small_positive_exponent, SchemeBuilder, Term, JIT_BLOCK};
 use crate::kernel::{ExprData, ExprId, ExprPool, IdMap, IdSet};
 
 /// Fewest terms a sum needs before it is considered for rewriting.
@@ -49,6 +77,8 @@ const MAX_SCHEME_DEPTH: u32 = 4096;
 /// Sums with more terms than this are left alone (compile-time guard: the
 /// scheme itself is `O(n log n)`, but the backend then compiles every term).
 pub(crate) const MAX_TERMS: usize = 200_000;
+/// Largest sum for which a second Horner candidate is built and costed.
+pub(crate) const ALT_MAX_TERMS: usize = 4096;
 
 /// The rewritten outputs, and the scheme links a backend may fuse.
 pub(crate) struct Lowered {
@@ -69,20 +99,52 @@ impl Lowered {
     }
 }
 
-/// Run the pass over `outputs`, compiled as functions of `inputs`.
-pub(crate) fn lower(outputs: &[ExprId], inputs: &[ExprId], pool: &ExprPool) -> Lowered {
-    let mut r = Rewriter {
-        pool,
-        inputs: inputs.iter().copied().collect(),
-        is_const: IdMap::default(),
-        memo: IdMap::default(),
-        fma_adds: IdSet::default(),
+/// Run the passes over `outputs`, compiled as functions of `inputs`: the
+/// Horner rewrite when `horner`, common-pair elimination when `cpe`.
+pub(crate) fn lower(
+    outputs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    horner: bool,
+    cpe: bool,
+) -> Lowered {
+    let (mut outputs, mut fma_adds) = if horner {
+        let mut r = Rewriter {
+            pool,
+            inputs: inputs.iter().copied().collect(),
+            is_const: IdMap::default(),
+            memo: IdMap::default(),
+            fma_adds: IdSet::default(),
+            cpe,
+        };
+        let outs: Vec<ExprId> = outputs.iter().map(|&o| r.rewrite(o)).collect();
+        (outs, r.fma_adds)
+    } else {
+        (outputs.to_vec(), IdSet::default())
     };
-    let outputs = outputs.iter().map(|&o| r.rewrite(o)).collect();
-    Lowered {
-        outputs,
-        fma_adds: r.fma_adds,
+    if cpe {
+        let r = cpe::eliminate(&outputs, pool, &IdSet::default());
+        if r.hoisted > 0 {
+            let mut fused = r.remap_set(&fma_adds);
+            fused.extend(r.reassociated.iter().copied());
+            // The final choice credits fused multiply-adds: what matters
+            // here is what the backend will execute.
+            let none = IdSet::default();
+            let before = op_cost_with(&outputs, &none, &fma_adds, true, pool);
+            let after = op_cost_with(&r.outputs, &none, &fused, true, pool);
+            // As for the Horner gate: rewriting a small expression to save
+            // an operation or two is not worth giving up its bit-exact
+            // agreement with the interpreter (a reassociated product can
+            // overflow where the original did not, or the reverse). The
+            // gate counts the shared operations themselves, not the `+0.0`
+            // seeds a rewritten sum also drops.
+            if r.saved >= MIN_SAVING_OPS && after < before {
+                outputs = r.outputs;
+                fma_adds = fused;
+            }
+        }
     }
+    Lowered { outputs, fma_adds }
 }
 
 struct Rewriter<'p> {
@@ -91,6 +153,8 @@ struct Rewriter<'p> {
     is_const: IdMap<bool>,
     memo: IdMap<ExprId>,
     fma_adds: IdSet,
+    /// Run common-pair elimination on each Horner candidate.
+    cpe: bool,
 }
 
 fn children(id: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
@@ -228,18 +292,53 @@ impl Rewriter<'_> {
         if atoms.is_empty() {
             return self.plain_sum(id, args);
         }
-        let mut b = SchemeBuilder::new(self.pool, atoms);
-        let (scheme, depth) = b.build(terms);
-        if depth > MAX_SCHEME_DEPTH {
-            return self.plain_sum(id, args);
+        let n_candidates = if self.cpe && atoms.len() >= 2 && terms.len() <= ALT_MAX_TERMS {
+            2
+        } else {
+            1
+        };
+        // (cost, scheme, nodes the backend may fuse)
+        let mut best: Option<(u64, ExprId, IdSet)> = None;
+        for k in 0..n_candidates {
+            let mut b = SchemeBuilder::new(self.pool, atoms.clone()).with_blocks(JIT_BLOCK);
+            b.prefer_last = k == 1;
+            let t = if k + 1 == n_candidates {
+                std::mem::take(&mut terms)
+            } else {
+                terms.clone()
+            };
+            let (mut scheme, depth) = b.build(t);
+            if depth > MAX_SCHEME_DEPTH {
+                continue;
+            }
+            let mut links: IdSet = b.chain_links.into_iter().collect();
+            // Sums CPE reassociated are evaluated without the `+0.0` seed,
+            // which the cost reflects. The Horner links are not credited the
+            // same way, so with nothing to hoist the decision is exactly the
+            // one made without CPE.
+            let mut reassociated = IdSet::default();
+            if self.cpe {
+                let r = cpe::eliminate(&[scheme], self.pool, &new_stop);
+                if r.hoisted > 0 {
+                    links = r.remap_set(&links);
+                    scheme = r.outputs[0];
+                    reassociated = r.reassociated;
+                }
+            }
+            // Fused multiply-adds are not credited here: they would make any
+            // nesting of unrelated terms look cheaper (each link saves an
+            // operation) while only serialising the sum. The scheme has to
+            // win on structure — shared factors, no powers — alone.
+            let cost = op_cost_with(&[scheme], &new_stop, &reassociated, false, self.pool);
+            if best.as_ref().map_or(true, |b| cost < b.0) {
+                links.extend(reassociated);
+                best = Some((cost, scheme, links));
+            }
         }
-        let links: IdSet = b.chain_links.into_iter().collect();
+        let Some((new_cost, scheme, links)) = best else {
+            return self.plain_sum(id, args);
+        };
         let old_cost = op_cost(id, &old_stop, &IdSet::default(), self.pool);
-        // Fused multiply-adds are not credited here: they would make any
-        // nesting of unrelated terms look cheaper (each link saves an
-        // operation) while only serialising the sum. The scheme has to win
-        // on structure — shared factors, no powers — alone.
-        let new_cost = op_cost(scheme, &new_stop, &IdSet::default(), self.pool);
         let saving = old_cost.saturating_sub(new_cost);
         if saving < MIN_SAVING_OPS || saving * 100 < old_cost * MIN_SAVING_PERCENT {
             return self.plain_sum(id, args);
@@ -250,26 +349,45 @@ impl Rewriter<'_> {
 }
 
 /// Floating-point operation estimate for the DAG under `root`, not looking
-/// below the nodes in `stop`. A link in `fused` evaluates each `Mul`
-/// argument with one multiply-add, so it saves one operation per such
-/// argument.
+/// below the nodes in `stop`, crediting fused multiply-adds for the `Add`
+/// nodes in `fused` (see [`op_cost_with`]).
 pub(crate) fn op_cost(root: ExprId, stop: &IdSet, fused: &IdSet, pool: &ExprPool) -> u64 {
+    op_cost_with(&[root], stop, fused, true, pool)
+}
+
+/// Floating-point operation estimate for the DAG under `roots`, not looking
+/// below the nodes in `stop` (other than the roots themselves).
+///
+/// An `Add` of `n` operands costs `n` (the backends seed a sum with `+0.0`).
+/// A reassociated one — in `fused` — is evaluated without the seed, `n - 1`;
+/// with `credit_fma` each `Mul` operand is folded into the running sum by a
+/// multiply-add as well, which saves one more operation per such operand.
+pub(crate) fn op_cost_with(
+    roots: &[ExprId],
+    stop: &IdSet,
+    fused: &IdSet,
+    credit_fma: bool,
+    pool: &ExprPool,
+) -> u64 {
     let mut seen = IdSet::default();
-    let mut stack = vec![root];
+    let mut stack = roots.to_vec();
     let mut cost = 0u64;
     while let Some(id) = stack.pop() {
-        if !seen.insert(id) || (id != root && stop.contains(&id)) {
+        if !seen.insert(id) || (stop.contains(&id) && !roots.contains(&id)) {
             continue;
         }
         pool.with(id, |d| match d {
             ExprData::Add(a) => {
                 let mut c = a.len() as u64;
                 if fused.contains(&id) {
-                    let muls = a
-                        .iter()
-                        .filter(|&&x| pool.with(x, |d| matches!(d, ExprData::Mul(_))))
-                        .count() as u64;
-                    c = c.saturating_sub(muls);
+                    let muls = if credit_fma {
+                        a.iter()
+                            .filter(|&&x| pool.with(x, |d| matches!(d, ExprData::Mul(_))))
+                            .count() as u64
+                    } else {
+                        0
+                    };
+                    c = c.saturating_sub(muls).saturating_sub(1);
                 }
                 cost += c;
                 stack.extend_from_slice(a);
@@ -346,7 +464,7 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         let e = dense(&pool, x, y, 12);
-        let l = lower(&[e], &[x, y], &pool);
+        let l = lower(&[e], &[x, y], &pool, true, true);
         assert_ne!(l.outputs[0], e);
         assert!(!l.fma_adds.is_empty());
         let stop = IdSet::default();
@@ -385,7 +503,7 @@ mod tests {
             })
             .collect();
         let e = pool.add(terms);
-        let l = lower(&[e], &[x, y], &pool);
+        let l = lower(&[e], &[x, y], &pool, true, true);
         assert_eq!(l.outputs[0], e);
         assert!(l.fma_adds.is_empty());
     }
@@ -401,7 +519,7 @@ mod tests {
             pool.mul(vec![pool.rational(355, 113), x]),
             pool.rational(1, 7),
         ]);
-        assert_eq!(lower(&[e], &[x], &pool).outputs[0], e);
+        assert_eq!(lower(&[e], &[x], &pool, true, true).outputs[0], e);
     }
 
     #[test]
@@ -426,7 +544,7 @@ mod tests {
             .collect();
         terms.push(s);
         let e = pool.add(terms);
-        let l = lower(&[e], &[x, y], &pool);
+        let l = lower(&[e], &[x, y], &pool, true, true);
         assert_ne!(l.outputs[0], e);
         let env: HashMap<ExprId, f64> = [(x, 0.3), (y, 0.6)].into_iter().collect();
         let want = eval_interp(e, &env, &pool).unwrap();
@@ -442,7 +560,7 @@ mod tests {
         let p = dense(&pool, x, y, 8);
         let a = pool.func("exp", vec![p]);
         let b = pool.func("sin", vec![p]);
-        let l = lower(&[a, b], &[x, y], &pool);
+        let l = lower(&[a, b], &[x, y], &pool, true, true);
         let arg = |e: ExprId| {
             pool.with(e, |d| match d {
                 ExprData::Func { args, .. } => args[0],
@@ -451,6 +569,202 @@ mod tests {
         };
         assert_eq!(arg(l.outputs[0]), arg(l.outputs[1]));
         assert_ne!(arg(l.outputs[0]), p);
+    }
+
+    /// `Σ_{k=1}^{30} sin(kx)·cos(ky)/k + exp(-(x²+y²))·log(1+xy)`, the
+    /// comparison harness's `trig30`.
+    fn trig30(pool: &ExprPool, x: ExprId, y: ExprId) -> ExprId {
+        let mut terms: Vec<ExprId> = (1..=30)
+            .map(|k| {
+                let kx = pool.mul(vec![pool.integer(k), x]);
+                let ky = pool.mul(vec![pool.integer(k), y]);
+                let mut f = vec![pool.func("sin", vec![kx]), pool.func("cos", vec![ky])];
+                if k > 1 {
+                    f.push(pool.rational(1, k));
+                }
+                pool.mul(f)
+            })
+            .collect();
+        let r2 = pool.add(vec![
+            pool.pow(x, pool.integer(2)),
+            pool.pow(y, pool.integer(2)),
+        ]);
+        let g = pool.func("exp", vec![pool.mul(vec![pool.integer(-1), r2])]);
+        let l = pool.func(
+            "log",
+            vec![pool.add(vec![pool.integer(1), pool.mul(vec![x, y])])],
+        );
+        terms.push(pool.mul(vec![g, l]));
+        pool.add(terms)
+    }
+
+    fn cost_of(l: &Lowered, pool: &ExprPool) -> u64 {
+        op_cost_with(&l.outputs, &IdSet::default(), &l.fma_adds, true, pool)
+    }
+
+    /// The operation counts of `poly20` through each pass. Hash-consing
+    /// already shares every repeated two-operand node of the scheme, and a
+    /// dense polynomial with 231 distinct coefficients leaves no other pair
+    /// to share, so CPE must not make it worse (Symbolica's evaluator ends
+    /// at the same count: 457 instructions, about 228 multiply-add pairs).
+    #[test]
+    fn poly20_operation_count() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = dense(&pool, x, y, 20);
+        let none = IdSet::default();
+        let written = op_cost_with(&[e], &none, &none, true, &pool);
+        let horner = lower(&[e], &[x, y], &pool, true, false);
+        let both = lower(&[e], &[x, y], &pool, true, true);
+        let (ch, cb) = (cost_of(&horner, &pool), cost_of(&both, &pool));
+        eprintln!("poly20 operations: as written {written}, Horner {ch}, Horner + CPE {cb}");
+        assert!(cb <= ch, "CPE made poly20 dearer: {cb} > {ch}");
+        assert!(cb * 3 < written, "{cb} vs {written}");
+        // 231 coefficients: about 230 multiply-adds, plus about one more
+        // per four links for the blocked chains and their shared powers.
+        assert!(cb <= 300, "{cb}");
+    }
+
+    #[test]
+    fn trig30_is_untouched_by_both_passes() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = trig30(&pool, x, y);
+        let l = lower(&[e], &[x, y], &pool, true, true);
+        assert_eq!(l.outputs[0], e);
+        assert!(l.fma_adds.is_empty());
+    }
+
+    /// The entries of a Jacobian-shaped vector share the pairs `a·b` and
+    /// `a·b·c` with different neighbours; CPE computes them once for all
+    /// outputs.
+    #[test]
+    fn pairs_are_shared_across_outputs() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let s = pool.func("sin", vec![x]);
+        let c = pool.func("cos", vec![y]);
+        let ex = pool.func("exp", vec![pool.mul(vec![x, y])]);
+        let x2 = pool.pow(x, pool.integer(2));
+        let outs: Vec<ExprId> = [s, c, ex, x2]
+            .iter()
+            .map(|&f| pool.mul(vec![x, y, s, c, f, pool.integer(3)]))
+            .collect();
+        let none = IdSet::default();
+        let plain = op_cost_with(&outs, &none, &none, true, &pool);
+        let l = lower(&outs, &[x, y], &pool, true, true);
+        let after = cost_of(&l, &pool);
+        assert!(after + 8 <= plain, "{after} vs {plain}");
+        for &(a, b) in &[(0.3, 0.7), (-1.2, 0.4), (2.5, -0.9)] {
+            let env: HashMap<ExprId, f64> = [(x, a), (y, b)].into_iter().collect();
+            for (o, n) in outs.iter().zip(&l.outputs) {
+                let want = eval_interp(*o, &env, &pool).unwrap();
+                let got = eval_interp(*n, &env, &pool).unwrap();
+                assert!(
+                    (got - want).abs() <= 8.0 * f64::EPSILON * want.abs(),
+                    "{got} vs {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cpe_alone_and_neither_pass() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let fs = [
+            pool.func("sin", vec![x]),
+            pool.func("cos", vec![x]),
+            pool.func("exp", vec![y]),
+            pool.func("tan", vec![y]),
+            pool.func("sin", vec![y]),
+        ];
+        let e = pool.add(
+            fs.iter()
+                .map(|&f| pool.mul(vec![pool.integer(3), x, y, f]))
+                .collect(),
+        );
+        // CPE without the Horner pass still shares 3·x·y.
+        let l = lower(&[e], &[x, y], &pool, false, true);
+        assert_ne!(l.outputs[0], e);
+        // Horner alone has nothing to do on a five-term sum.
+        assert_eq!(lower(&[e], &[x, y], &pool, true, false).outputs[0], e);
+    }
+
+    /// Hoisting one pair saves one operation: not worth reassociating a
+    /// small expression (and giving up its bit-exact agreement with the
+    /// interpreter) for.
+    #[test]
+    fn a_saving_below_the_gate_is_not_taken() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = pool.add(vec![
+            pool.mul(vec![x, y, pool.func("sin", vec![x])]),
+            pool.mul(vec![x, y, pool.func("cos", vec![x])]),
+        ]);
+        assert_eq!(lower(&[e], &[x, y], &pool, true, true).outputs[0], e);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+        /// Random sums of products over a small operand set (so pairs
+        /// recur), several outputs at once: the rewritten outputs agree with
+        /// the originals within the rounding bound of a reassociated sum.
+        #[test]
+        fn cpe_agrees_with_the_expression_as_written(
+            picks in proptest::collection::vec(
+                proptest::collection::vec(proptest::collection::vec(0usize..8, 1..5), 1..9),
+                1..4,
+            ),
+            a in -1.5f64..1.5,
+            b in -1.5f64..1.5,
+        ) {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let y = pool.symbol("y", Domain::Real);
+            let ops = [
+                x,
+                y,
+                pool.func("sin", vec![x]),
+                pool.func("cos", vec![y]),
+                pool.pow(x, pool.integer(2)),
+                pool.integer(3),
+                pool.rational(-2, 7),
+                pool.func("exp", vec![pool.mul(vec![x, y])]),
+            ];
+            let env: HashMap<ExprId, f64> = [(x, a), (y, b)].into_iter().collect();
+            let mut outs = Vec::new();
+            let mut scales = Vec::new();
+            for out in &picks {
+                let mut terms = Vec::new();
+                let mut scale = 0.0f64;
+                for t in out {
+                    let f: Vec<ExprId> = t.iter().map(|&i| ops[i]).collect();
+                    let m = pool.mul(f);
+                    scale += eval_interp(m, &env, &pool).unwrap().abs();
+                    terms.push(m);
+                }
+                outs.push(pool.add(terms));
+                scales.push(scale);
+            }
+            for (horner, cpe) in [(false, true), (true, true)] {
+                let l = lower(&outs, &[x, y], &pool, horner, cpe);
+                for ((o, n), scale) in outs.iter().zip(&l.outputs).zip(&scales) {
+                    let want = eval_interp(*o, &env, &pool).unwrap();
+                    let got = eval_interp(*n, &env, &pool).unwrap();
+                    proptest::prop_assert!(
+                        (got - want).abs() <= 64.0 * f64::EPSILON * scale.max(f64::MIN_POSITIVE),
+                        "{got} vs {want} (scale {scale})"
+                    );
+                }
+            }
+        }
     }
 
     /// Rounding of the compiled Horner scheme against a 256-bit reference,
@@ -475,7 +789,7 @@ mod tests {
                 expected_evals: Some(1 << 20),
                 force_tier: Some(CompileTier::Cranelift),
             };
-            let opts = CodegenOptions::exact().with_horner(horner);
+            let opts = CodegenOptions::exact().with_horner(horner).with_cpe(horner);
             let f = compile_with_options(e, inputs, pool, config, opts).unwrap();
             assert_eq!(f.compile_tier(), CompileTier::Cranelift);
             f
@@ -531,6 +845,49 @@ mod tests {
                 worst_p = worst_p.max(rel(plain.call(&[a, b]), &want));
             }
             assert!(worst_h < 1e-14, "horner {worst_h:e} (plain {worst_p:e})");
+        }
+
+        /// A vector compile with both passes on (pairs shared across the
+        /// outputs, a Horner polynomial among them) against the
+        /// interpreter on the expressions as written.
+        #[test]
+        fn vector_compile_with_cpe_matches_the_interpreter() {
+            use crate::jit::compile_many_with_options;
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let y = pool.symbol("y", Domain::Real);
+            let s = pool.func("sin", vec![x]);
+            let c = pool.func("cos", vec![y]);
+            let p = dense(&pool, x, y, 8);
+            let mut outs: Vec<ExprId> = [s, c, p]
+                .iter()
+                .map(|&f| pool.mul(vec![x, y, s, c, f]))
+                .collect();
+            outs.push(p);
+            outs.push(pool.add(vec![pool.mul(vec![x, y, s]), pool.mul(vec![x, y, c]), x]));
+            let config = CompileConfig {
+                expected_evals: Some(1 << 20),
+                force_tier: Some(CompileTier::Cranelift),
+            };
+            for opts in [
+                CodegenOptions::exact().with_horner(true).with_cpe(true),
+                CodegenOptions::exact().with_cpe(true),
+            ] {
+                let f = compile_many_with_options(&outs, &[x, y], &pool, config, opts).unwrap();
+                let mut got = vec![0.0; outs.len()];
+                for &(a, b) in &[(0.3, 0.7), (-1.2, 0.4), (0.9, -0.95), (0.05, 0.05)] {
+                    f.call(&[a, b], &mut got);
+                    let env: HashMap<ExprId, f64> = [(x, a), (y, b)].into_iter().collect();
+                    for (k, &o) in outs.iter().enumerate() {
+                        let want = eval_interp(o, &env, &pool).unwrap();
+                        assert!(
+                            (got[k] - want).abs() <= 1e-13 * want.abs().max(1.0),
+                            "output {k} at ({a}, {b}): {} vs {want}",
+                            got[k]
+                        );
+                    }
+                }
+            }
         }
 
         proptest! {
