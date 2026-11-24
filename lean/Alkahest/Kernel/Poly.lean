@@ -31,18 +31,20 @@ noncomputable def eval (v : List ℝ) : Mono → ℝ
   | [] => 1
   | (i, e) :: m => v.getD i 0 ^ e * eval v m
 
-/-- Merge step of `Mono.mul` (outer recursion supplied as `rec`). -/
-def mulAux (a : Nat × Nat) (m : Mono) (rec : Mono → Mono) : Mono → Mono
-  | [] => a :: m
-  | b :: n =>
-    if a.1 < b.1 then a :: rec (b :: n)
-    else if b.1 < a.1 then b :: mulAux a m rec n
-    else (a.1, a.2 + b.2) :: rec n
+/-- Merge step of `Mono.mul` (outer recursion supplied as `rec`). Comparisons are
+`Nat.blt` matched as `Bool`s: no `Decidable` instance to unfold in the kernel. -/
+def mulAux (i e : Nat) (m : Mono) (rec : Mono → Mono) : Mono → Mono
+  | [] => (i, e) :: m
+  | (j, f) :: n =>
+    match Nat.blt i j, Nat.blt j i with
+    | true, _ => (i, e) :: rec ((j, f) :: n)
+    | false, true => (j, f) :: mulAux i e m rec n
+    | false, false => (i, e + f) :: rec n
 
 /-- Product of monomials (merge of the sorted lists). -/
 def mul : Mono → Mono → Mono
   | [], n => n
-  | a :: m, n => mulAux a m (mul m) n
+  | (i, e) :: m, n => mulAux i e m (mul m) n
 
 /-- Lexicographic order on dense exponent vectors. -/
 def cmp : Mono → Mono → Ordering
@@ -50,42 +52,70 @@ def cmp : Mono → Mono → Ordering
   | [], _ :: _ => .lt
   | _ :: _, [] => .gt
   | (i, e) :: m, (j, f) :: n =>
-    if i < j then .gt
-    else if j < i then .lt
-    else if e < f then .lt
-    else if f < e then .gt
-    else cmp m n
+    match Nat.blt i j, Nat.blt j i, Nat.blt e f, Nat.blt f e with
+    | true, _, _, _ => .gt
+    | false, true, _, _ => .lt
+    | false, false, true, _ => .lt
+    | false, false, false, true => .gt
+    | false, false, false, false => cmp m n
+
+theorem le_of_blt_false {a b : Nat} (h : Nat.blt a b = false) : b ≤ a := by
+  by_contra hc
+  have ht : Nat.blt a b = true := by rw [Nat.blt_eq]; omega
+  rw [ht] at h
+  exact Bool.noConfusion h
 
 theorem eq_of_cmp_eq : ∀ {m n : Mono}, cmp m n = .eq → m = n
   | [], [], _ => rfl
   | [], _ :: _, h => by simp [cmp] at h
   | _ :: _, [], h => by simp [cmp] at h
   | (i, e) :: m, (j, f) :: n, h => by
-    simp only [cmp] at h
-    split_ifs at h with h1 h2 h3 h4
-    have hij : i = j := by omega
-    have hef : e = f := by omega
-    subst hij hef
-    rw [eq_of_cmp_eq h]
+    unfold cmp at h
+    generalize hb1 : Nat.blt i j = b1 at h
+    generalize hb2 : Nat.blt j i = b2 at h
+    generalize hb3 : Nat.blt e f = b3 at h
+    generalize hb4 : Nat.blt f e = b4 at h
+    cases b1 <;> cases b2 <;> cases b3 <;> cases b4 <;> dsimp only at h <;>
+      try exact absurd h (by decide)
+    have := le_of_blt_false hb1
+    have := le_of_blt_false hb2
+    have := le_of_blt_false hb3
+    have := le_of_blt_false hb4
+    rw [show i = j by omega, show e = f by omega, eq_of_cmp_eq h]
 
-theorem eval_mulAux (v : List ℝ) (a : Nat × Nat) (m : Mono) (rec : Mono → Mono)
+theorem eval_mulAux (v : List ℝ) (i e : Nat) (m : Mono) (rec : Mono → Mono)
     (hrec : ∀ n, eval v (rec n) = eval v m * eval v n) :
-    ∀ n, eval v (mulAux a m rec n) = eval v (a :: m) * eval v n
+    ∀ n, eval v (mulAux i e m rec n) = eval v ((i, e) :: m) * eval v n
   | [] => by simp [mulAux, eval]
-  | b :: n => by
+  | (j, f) :: n => by
     unfold mulAux
-    split_ifs with h1 h2
-    · simp only [eval, hrec]; ring
-    · simp only [eval, eval_mulAux v a m rec hrec n]; ring
-    · have : b.1 = a.1 := by omega
-      obtain ⟨b1, b2⟩ := b
-      simp only at this
+    cases h1 : Nat.blt i j <;> cases h2 : Nat.blt j i <;> dsimp only
+    · have := le_of_blt_false h1
+      have := le_of_blt_false h2
+      have : j = i := by omega
       subst this
       simp only [eval, hrec, pow_add]; ring
+    · simp only [eval, eval_mulAux v i e m rec hrec n]; ring
+    · simp only [eval, hrec]; ring
+    · simp only [eval, hrec]; ring
 
 theorem eval_mul (v : List ℝ) : ∀ m n, eval v (mul m n) = eval v m * eval v n
   | [], n => by simp [mul, eval]
-  | a :: m, n => eval_mulAux v a m (mul m) (eval_mul v m) n
+  | (i, e) :: m, n => eval_mulAux v i e m (mul m) (eval_mul v m) n
+
+/-- Structural Boolean equality. -/
+def beq : Mono → Mono → Bool
+  | [], [] => true
+  | (i, e) :: m, (j, f) :: n => Nat.beq i j && Nat.beq e f && beq m n
+  | _, _ => false
+
+theorem eq_of_beq : ∀ {m n : Mono}, beq m n = true → m = n
+  | [], [], _ => rfl
+  | [], _ :: _, h => by simp [beq] at h
+  | _ :: _, [], h => by simp [beq] at h
+  | (i, e) :: m, (j, f) :: n, h => by
+    simp only [beq, Bool.and_eq_true, Nat.beq_eq] at h
+    rw [h.1.1, h.1.2, eq_of_beq h.2]
 
 end Mono
 
@@ -103,18 +133,21 @@ def const (c : ℚ) : Poly := if c = 0 then [] else [([], c)]
 def atom (i : Nat) : Poly := [([(i, 1)], 1)]
 
 /-- Merge step of `Poly.add`. -/
-def addAux (t : Mono × ℚ) (p : Poly) (rec : Poly → Poly) : Poly → Poly
-  | [] => t :: p
-  | s :: q =>
-    match Mono.cmp t.1 s.1 with
-    | .gt => t :: rec (s :: q)
-    | .lt => s :: addAux t p rec q
-    | .eq => if t.2 + s.2 = 0 then rec q else (t.1, t.2 + s.2) :: rec q
+def addAux (tm : Mono) (tc : ℚ) (p : Poly) (rec : Poly → Poly) : Poly → Poly
+  | [] => (tm, tc) :: p
+  | (sm, sc) :: q =>
+    match Mono.cmp tm sm with
+    | .gt => (tm, tc) :: rec ((sm, sc) :: q)
+    | .lt => (sm, sc) :: addAux tm tc p rec q
+    | .eq =>
+      match (tc + sc).num with
+      | 0 => rec q
+      | _ => (tm, tc + sc) :: rec q
 
 /-- Sum (merge of sorted term lists, cancelling zero coefficients). -/
 def add : Poly → Poly → Poly
   | [], q => q
-  | t :: p, q => addAux t p (add p) q
+  | (tm, tc) :: p, q => addAux tm tc p (add p) q
 
 /-- Scalar multiple. -/
 def scale (c : ℚ) (p : Poly) : Poly :=
@@ -127,12 +160,14 @@ def neg (p : Poly) : Poly := p.map fun t => (t.1, -t.2)
 def sub (p q : Poly) : Poly := add p (neg q)
 
 /-- A term times a polynomial (order-preserving: `Mono.cmp` is a monomial order). -/
-def mulTerm (t : Mono × ℚ) (p : Poly) : Poly := p.map fun s => (Mono.mul t.1 s.1, t.2 * s.2)
+def mulTerm (tm : Mono) (tc : ℚ) : Poly → Poly
+  | [] => []
+  | (sm, sc) :: q => (Mono.mul tm sm, tc * sc) :: mulTerm tm tc q
 
 /-- Product. -/
 def mul : Poly → Poly → Poly
   | [], _ => []
-  | t :: p, q => add (mulTerm t q) (mul p q)
+  | (tm, tc) :: p, q => add (mulTerm tm tc q) (mul p q)
 
 /-- Natural power. -/
 def pow (p : Poly) : Nat → Poly
@@ -143,6 +178,22 @@ def pow (p : Poly) : Nat → Poly
 def ofTerms : List (Mono × ℚ) → Poly
   | [] => []
   | (m, c) :: ts => add (scale c [(m, 1)]) (ofTerms ts)
+
+/-- Structural Boolean equality (coefficients compared by numerator and denominator). -/
+def beq : Poly → Poly → Bool
+  | [], [] => true
+  | (m, c) :: p, (n, d) :: q =>
+    Mono.beq m n && decide (c.num = d.num) && Nat.beq c.den d.den && beq p q
+  | _, _ => false
+
+theorem eq_of_beq : ∀ {p q : Poly}, beq p q = true → p = q
+  | [], [], _ => rfl
+  | [], _ :: _, h => by simp [beq] at h
+  | _ :: _, [], h => by simp [beq] at h
+  | (m, c) :: p, (n, d) :: q, h => by
+    simp only [beq, Bool.and_eq_true, decide_eq_true_eq, Nat.beq_eq] at h
+    obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := h
+    rw [Mono.eq_of_beq h1, eq_of_beq h4, Rat.ext h2 h3]
 
 @[simp] theorem eval_nil (v : List ℝ) : eval v [] = 0 := rfl
 
@@ -157,30 +208,29 @@ theorem eval_const (v : List ℝ) (c : ℚ) : eval v (const c) = c := by
 theorem eval_atom (v : List ℝ) (i : Nat) : eval v (atom i) = v.getD i 0 := by
   simp [atom, eval, Mono.eval]
 
-theorem eval_addAux (v : List ℝ) (t : Mono × ℚ) (p : Poly) (rec : Poly → Poly)
+theorem eval_addAux (v : List ℝ) (tm : Mono) (tc : ℚ) (p : Poly) (rec : Poly → Poly)
     (hrec : ∀ q, eval v (rec q) = eval v p + eval v q) :
-    ∀ q, eval v (addAux t p rec q) = eval v (t :: p) + eval v q
+    ∀ q, eval v (addAux tm tc p rec q) = eval v ((tm, tc) :: p) + eval v q
   | [] => by simp [addAux]
-  | s :: q => by
-    obtain ⟨tm, tc⟩ := t
-    obtain ⟨sm, sc⟩ := s
+  | (sm, sc) :: q => by
     unfold addAux
-    dsimp only
     split
     · simp only [eval_cons, hrec]; ring
-    · simp only [eval_cons, eval_addAux v (tm, tc) p rec hrec q]; ring
+    · simp only [eval_cons, eval_addAux v tm tc p rec hrec q]; ring
     · rename_i h
       have hm : tm = sm := Mono.eq_of_cmp_eq h
       subst hm
-      split_ifs with hz
-      · simp only [eval_cons, hrec]
-        have : (tc : ℝ) + sc = 0 := by exact_mod_cast hz
+      split
+      · rename_i hz
+        have hz' : tc + sc = 0 := Rat.num_eq_zero.1 hz
+        simp only [eval_cons, hrec]
+        have : (tc : ℝ) + sc = 0 := by exact_mod_cast hz'
         linear_combination (-Mono.eval v tm) * this
       · simp only [eval_cons, hrec]; push_cast; ring
 
 theorem eval_add (v : List ℝ) : ∀ p q, eval v (add p q) = eval v p + eval v q
   | [], q => by simp [add]
-  | t :: p, q => eval_addAux v t p (add p) (eval_add v p) q
+  | (tm, tc) :: p, q => eval_addAux v tm tc p (add p) (eval_add v p) q
 
 theorem eval_map (v : List ℝ) (f : ℚ → ℚ) (k : ℝ) (hf : ∀ c, (f c : ℝ) = k * c) :
     ∀ p : Poly, eval v (p.map fun t => (t.1, f t.2)) = k * eval v p
@@ -201,12 +251,10 @@ theorem eval_sub (v : List ℝ) (p q : Poly) : eval v (sub p q) = eval v p - eva
   simp [sub, eval_add, eval_neg]; ring
 
 theorem eval_mulTerm (v : List ℝ) (m : Mono) (c : ℚ) :
-    ∀ p, eval v (mulTerm (m, c) p) = (c : ℝ) * Mono.eval v m * eval v p
+    ∀ p, eval v (mulTerm m c p) = (c : ℝ) * Mono.eval v m * eval v p
   | [] => by simp [mulTerm]
   | (n, d) :: p => by
-    have := eval_mulTerm v m c p
-    simp only [mulTerm, List.map_cons, eval_cons, Mono.eval_mul] at this ⊢
-    rw [this]; push_cast; ring
+    simp only [mulTerm, eval_cons, Mono.eval_mul, eval_mulTerm v m c p]; push_cast; ring
 
 theorem eval_mul (v : List ℝ) : ∀ p q, eval v (mul p q) = eval v p * eval v q
   | [], q => by simp [mul]

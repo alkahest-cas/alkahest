@@ -46,7 +46,10 @@ abbrev NTable := List (Head × Poly)
 /-- Index of the entry `(h, p)`, searching from position `k`. -/
 def find (h : Head) (p : Poly) : NTable → Nat → Option Nat
   | [], _ => none
-  | (h', p') :: t, k => if h' = h ∧ p' = p then some k else find h p t (k + 1)
+  | (h', p') :: t, k =>
+    match decide (h' = h) && Poly.beq p' p with
+    | true => some k
+    | false => find h p t (k + 1)
 
 /-- The atom `(h, p)` as a polynomial, if it is in the table. -/
 def atomOf (NT : NTable) (h : Head) (p : Poly) : Option Poly :=
@@ -149,8 +152,11 @@ theorem find_spec {h : Head} {p : Poly} :
   | [], _, _, hf => by simp [find] at hf
   | (h', p') :: t, k0, k, hf => by
     unfold find at hf
-    split_ifs at hf with hc
-    · obtain ⟨rfl, rfl⟩ := hc
+    split at hf
+    · rename_i hc
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+      obtain ⟨rfl, hp⟩ := hc
+      rw [Poly.eq_of_beq hp] at *
       simp at hf; subst hf; simp
     · obtain ⟨h1, h2⟩ := find_spec hf
       refine ⟨by omega, ?_⟩

@@ -226,12 +226,12 @@ impl AE {
     fn data(&self, out: &mut String) {
         match self {
             AE::Var(i) => {
-                let _ = write!(out, "(.var {i})");
+                let _ = write!(out, "(.var (nat_lit {i}))");
             }
             AE::Zero => out.push_str(".zero"),
             AE::One => out.push_str(".one"),
             AE::Lit(n) => {
-                let _ = write!(out, "(.lit {n})");
+                let _ = write!(out, "(.lit (nat_lit {n}))");
             }
             AE::Pi => out.push_str(".pi"),
             AE::Add(a, b) | AE::Sub(a, b) | AE::Mul(a, b) | AE::Div(a, b) => {
@@ -259,7 +259,7 @@ impl AE {
             AE::Pow(a, n) => {
                 out.push_str("(.pow ");
                 a.data(out);
-                let _ = write!(out, " {n})");
+                let _ = write!(out, " (nat_lit {n}))");
             }
             AE::App(f, a) => {
                 let _ = write!(out, "(.app .{} ", f.ctor());
@@ -1553,9 +1553,17 @@ fn cof_data(p: &Poly, out: &mut String) {
             if k > 0 {
                 out.push_str(", ");
             }
-            let _ = write!(out, "({v}, {e})");
+            let _ = write!(out, "(nat_lit {v}, nat_lit {e})");
         }
-        let _ = write!(out, "], {}, {})", c.numer(), c.denom());
+        // Raw literals: no `OfNat` instance search per number (the elaborator's
+        // cost on large witnesses), and the kernel works on them directly.
+        let n = c.numer();
+        let num = if *n >= 0 {
+            format!("Int.ofNat (nat_lit {n})")
+        } else {
+            format!("Int.negSucc (nat_lit {})", Integer::from(-n) - 1u32)
+        };
+        let _ = write!(out, "], {num}, nat_lit {})", c.denom());
     }
     out.push(']');
 }
@@ -1589,7 +1597,7 @@ impl Proof {
                 atoms.push_str(",\n      ");
             }
             let head = match &a.head {
-                Head::Var(j) => format!("(.var {j})"),
+                Head::Var(j) => format!("(.var (nat_lit {j}))"),
                 Head::Pi => ".pi".to_string(),
                 Head::Fn(f) => format!("(.fn .{})", f.ctor()),
                 Head::Inv => ".inv".to_string(),
@@ -1961,7 +1969,7 @@ mod tests {
     fn log_states_its_domain() {
         let src = emit(|p, x| (p.func("log", vec![x]), p.pow(x, p.integer(-1)))).expect("cert");
         assert!(src.contains("(h1 : x ≠ 0)"), "{src}");
-        assert!(src.contains("(H := [(.ne (.var 0))])"), "{src}");
+        assert!(src.contains("(H := [(.ne (.var (nat_lit 0)))])"), "{src}");
     }
 
     #[test]
@@ -2065,7 +2073,7 @@ mod tests {
         let d = deriv(&e, 0);
         assert_eq!(
             d.data_string(),
-            "(.mul (.mul (.lit 3) (.pow (.var 0) 2)) .one)"
+            "(.mul (.mul (.lit (nat_lit 3)) (.pow (.var (nat_lit 0)) (nat_lit 2))) .one)"
         );
         let mut t = Table::default();
         let p = t.norm(&d).unwrap();
