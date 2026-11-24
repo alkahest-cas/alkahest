@@ -23,6 +23,7 @@ pub mod deriv;
 pub mod diff;
 pub mod errors;
 pub mod eval;
+pub mod fex;
 pub mod ffield;
 pub mod flint;
 pub mod fpgroup;
