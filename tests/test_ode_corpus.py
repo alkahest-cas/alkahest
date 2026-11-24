@@ -227,6 +227,8 @@ def test_hermite_second_solutions_use_real_erfi(oid):
     pool, syms, eq = _setup(entry)
     sol = ex.dsolve(eq, syms["x"], syms["y"], [syms[d] for d in DSYMS[:2]])[0]
     shown = str(sol["y_of_x"])
-    assert "erfi(" in shown and "erf(" not in shown and "I" not in shown, shown
+    assert "erfi(" in shown, shown
+    assert "erf(" not in shown, shown
+    assert "I" not in shown, shown
     y = _bind(sol["y_of_x"], pool, sol["constants"], {}, syms)
     assert math.isfinite(ak.eval_expr(y, {syms["x"]: 0.7}))

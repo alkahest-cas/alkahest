@@ -102,7 +102,8 @@ def test_charlwood_5_is_elementary():
     # ∫ dt/((1+t²)√(t⁴+3t²+3)) = ⅓·atan(t·√(t⁴+3t²+3)), t = tan x; Mathematica
     # answers with EllipticPi.
     F = ak.integrate(ak.parse("cos(x)^2/sqrt(cos(x)^4 + cos(x)^2 + 1)"), x).value
-    assert "atan" in str(F) and "Elliptic" not in str(F)
+    assert "atan" in str(F)
+    assert "Elliptic" not in str(F)
 
 
 def test_still_refused():
