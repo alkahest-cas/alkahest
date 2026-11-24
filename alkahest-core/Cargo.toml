@@ -140,6 +140,11 @@ harness = false
 name = "dump_ptx"
 required-features = ["cuda"]
 
+# Codegen timing for the compile optimiser (Horner + common-pair elimination).
+[[example]]
+name = "codegen_bench"
+required-features = ["cranelift"]
+
 # Scaling / regression harnesses for the parallel simplifier.
 [[example]]
 name = "simplify_scaling"

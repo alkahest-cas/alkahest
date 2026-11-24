@@ -404,12 +404,15 @@ fn codegen_node(
                 "unbound symbol '{name}'"
             ))),
         },
-        ExprData::Add(args) if cg.fma_adds.contains(&node) && has_hw_fma() => {
-            // A Horner link: the sum was reassociated by the optimiser, so
-            // fusing its products is as legitimate as the rewrite itself.
-            // The products' own `fmul` chains become dead and are removed.
-            // No `+0.0` seed either: a reassociated sum does not preserve the
-            // sign of a zero result anyway.
+        ExprData::Add(args) if cg.fma_adds.contains(&node) => {
+            // A Horner link, or a sum common-pair elimination rewrote: the
+            // sum was reassociated by the optimiser, so fusing its products
+            // is as legitimate as the rewrite itself. The products' own
+            // `fmul` chains become dead and are removed. No `+0.0` seed
+            // either: a reassociated sum does not preserve the sign of a zero
+            // result anyway. Without a hardware FMA the products are
+            // multiplied and added separately.
+            let fuse = has_hw_fma();
             let mut acc: Option<Value> = None;
             let mut products: Vec<Vec<ExprId>> = Vec::new();
             for a in &args {
@@ -434,7 +437,20 @@ fn codegen_node(
                 let l = get(last, "Mul child")?;
                 acc = Some(match acc {
                     None => builder.ins().fmul(p, l),
-                    Some(s) => builder.ins().fma(p, l, s),
+                    // x86's `vfmadd213` overwrites its first operand. In a
+                    // two-factor link `v·acc` the canonical order puts the
+                    // variable `v` (older, smaller id) first, and `v` stays
+                    // live for the rest of the scheme, so every link paid a
+                    // register copy. The running value `acc` dies here:
+                    // passing it first lets the result take its register.
+                    // The product is exact inside an FMA, so the order of the
+                    // factors does not change the result.
+                    Some(s) if fuse && rest.len() == 1 => builder.ins().fma(l, p, s),
+                    Some(s) if fuse => builder.ins().fma(p, l, s),
+                    Some(s) => {
+                        let m = builder.ins().fmul(p, l);
+                        builder.ins().fadd(s, m)
+                    }
                 });
             }
             plain(acc.unwrap_or_else(|| builder.ins().f64const(0.0)))

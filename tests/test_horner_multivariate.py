@@ -147,3 +147,39 @@ def test_environment_flag_disables_the_pass():
         [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True
     )
     assert out.stdout.strip() == "True"
+
+
+def _shared_pairs(p, x, y):
+    """Outputs sharing the product x·y·sin(x)·cos(y) next to different factors."""
+    s, c = alkahest.sin(x), alkahest.cos(y)
+    return [x * y * s * c * f for f in (s, c, alkahest.exp(x * y), x**2)] + [x * y * s + x * y * c]
+
+
+def test_common_pair_elimination_agrees_and_opts_out():
+    p = ExprPool()
+    x, y = p.symbol("x"), p.symbol("y")
+    outs = _shared_pairs(p, x, y)
+    fast = compile_expr(outs, [x, y])
+    exact = compile_expr(outs, [x, y], optimize=False)
+    for a, b in _points(300, -2.0, 2.0):
+        got, plain = fast([a, b]), exact([a, b])
+        for k, o in enumerate(outs):
+            want = eval_expr(o, {x: a, y: b})
+            assert plain[k] == want
+            assert abs(got[k] - want) <= 1e-14 * max(1.0, abs(want)), (k, got[k], want)
+
+
+def test_cpe_environment_flag():
+    code = (
+        "import alkahest as a\n"
+        "p = a.ExprPool(); x, y = p.symbol('x'), p.symbol('y')\n"
+        "e = x * y * a.sin(x) + x * y * a.cos(x) + x * y * a.exp(y)\n"
+        "f = a.compile_expr(e, [x, y], expected_evals=1 << 20)\n"
+        "pts = [(0.1 + 0.0137 * k, 0.9 - 0.011 * k) for k in range(60)]\n"
+        "print(all(f([u, v]) == a.eval_expr(e, {x: u, y: v}) for u, v in pts))\n"
+    )
+    env = dict(os.environ, ALKAHEST_JIT_CPE="0")
+    out = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "True"

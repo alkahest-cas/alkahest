@@ -29,6 +29,16 @@ use crate::poly::{ConversionError, MultiPoly};
 /// Longest Horner chain built in one block (see the module docs).
 pub(crate) const CHAIN_CHUNK: usize = 128;
 
+/// Chain block length for the compile pipeline ([`SchemeBuilder::with_blocks`]).
+/// Measured on a Zen 2 core (5-cycle FMA, two FMA pipes) over expanded
+/// `(1+x+y)^20`, `(1+x+y+z)^15`, `(1+x+y+z+w)^8` and `(1+x)^60`: 4 was best
+/// or within noise of best on each.
+pub(crate) const JIT_BLOCK: usize = 4;
+
+/// Chains of at most this many links are left whole: splitting a short
+/// chain adds operations and gains no overlap worth having.
+pub(crate) const BLOCK_MIN_CHAIN: usize = 8;
+
 /// Largest exponent a monomial factor may carry and still be treated as a
 /// power of a variable; a larger one is left as an opaque factor.
 pub(crate) const MAX_TERM_EXPONENT: u32 = 1 << 16;
@@ -77,6 +87,13 @@ pub(crate) struct SchemeBuilder<'p> {
     /// multiply-add (they were reassociated already, so the rounding of the
     /// original form is not being preserved anyway).
     pub(crate) chain_links: Vec<ExprId>,
+    /// Break ties in the greedy choice toward the *higher* atom index
+    /// instead: a second candidate scheme for the compile pipeline to cost.
+    pub(crate) prefer_last: bool,
+    /// Split each Horner chain into blocks of this many links joined by a
+    /// second Horner chain in `v^k` (see [`Self::with_blocks`]); `None`
+    /// builds one chain per variable, as [`horner_multivariate`] does.
+    block: Option<usize>,
     zero: ExprId,
     one: ExprId,
 }
@@ -87,9 +104,66 @@ impl<'p> SchemeBuilder<'p> {
             pool,
             atoms,
             chain_links: Vec::new(),
+            prefer_last: false,
+            block: None,
             zero: pool.integer(0_i32),
             one: pool.integer(1_i32),
         }
+    }
+
+    /// Cut every chain into blocks of `links` links, each evaluated as its
+    /// own Horner chain and the blocks combined by a Horner chain in
+    /// `v^links`: `c₀ + … + c₇v⁷ + v⁸·(c₈ + … )`. A chain of `n` links then
+    /// has a dependency depth of about `links + n/links` instead of `n`
+    /// multiply-adds, which lets an out-of-order core overlap the chains of
+    /// one evaluation point with each other and with the next point, at the
+    /// price of one more multiply-add per block and the shared powers
+    /// `v^links` (squarings, computed once per variable).
+    pub(crate) fn with_blocks(mut self, links: usize) -> Self {
+        self.block = Some(links.max(2));
+        self
+    }
+
+    /// `v^e` by binary powering, each product a two-operand `Mul` that is
+    /// not flattened back into a power, so the squarings are shared by
+    /// every block in `v`.
+    fn squaring_power(&self, var: ExprId, mut e: u32) -> ExprId {
+        let mul_raw = |a: ExprId, b: ExprId| {
+            let mut v = vec![a, b];
+            v.sort_unstable();
+            self.pool.intern(ExprData::Mul(v))
+        };
+        let mut result: Option<ExprId> = None;
+        let mut base = var;
+        loop {
+            if e & 1 == 1 {
+                result = Some(match result {
+                    None => base,
+                    Some(r) => mul_raw(r, base),
+                });
+            }
+            e >>= 1;
+            if e == 0 {
+                break;
+            }
+            base = mul_raw(base, base);
+        }
+        result.unwrap_or(self.one)
+    }
+
+    /// One Horner chain over `groups` (exponent, coefficient, depth),
+    /// relative to the first exponent: `Σ cᵢ·v^(eᵢ − e₀)`.
+    fn chain(&mut self, var: ExprId, groups: &[(u32, ExprId, u32)]) -> (ExprId, u32) {
+        let last = groups[groups.len() - 1];
+        let (mut acc, mut depth) = (last.1, last.2);
+        for i in (0..groups.len() - 1).rev() {
+            let gap = groups[i + 1].0 - groups[i].0;
+            let m = self.mul2(self.power(var, gap), acc);
+            acc = self.pool.add(vec![groups[i].1, m]);
+            depth = depth.max(groups[i].2) + 2;
+            self.chain_links.push(acc);
+        }
+        (acc, depth)
     }
 
     fn coef_expr(&self, coef: &[ExprId]) -> ExprId {
@@ -145,7 +219,7 @@ impl<'p> SchemeBuilder<'p> {
                 counts.bump(a);
             }
         }
-        let Some(v) = counts.best() else {
+        let Some(v) = counts.best(self.prefer_last) else {
             // Constants only.
             let parts = terms
                 .iter()
@@ -172,18 +246,42 @@ impl<'p> SchemeBuilder<'p> {
         }
 
         let var = self.atoms[v as usize];
+        if let Some(block) = self.block {
+            if groups.len() > block.max(BLOCK_MIN_CHAIN) && groups.len() <= block * CHAIN_CHUNK {
+                // (base exponent, block chain, depth), folded from the last
+                // block by links `blockᵢ + v^(eᵢ₊₁ − eᵢ)·acc`.
+                let mut blocks: Vec<(u32, ExprId, u32)> = Vec::new();
+                for chunk in groups.chunks(block) {
+                    let (c, d) = self.chain(var, chunk);
+                    blocks.push((chunk[0].0, c, d));
+                }
+                let Some((mut base, mut acc, mut depth)) = blocks.pop() else {
+                    unreachable!()
+                };
+                while let Some((b, c, d)) = blocks.pop() {
+                    // Not `mul2`: `pool.mul` would splice the shared power
+                    // `v^k` into this product and recompute it per link.
+                    let m = {
+                        let mut f = vec![self.squaring_power(var, base - b), acc];
+                        f.sort_unstable();
+                        self.pool.intern(ExprData::Mul(f))
+                    };
+                    acc = self.pool.add(vec![c, m]);
+                    depth = depth.max(d) + 2;
+                    self.chain_links.push(acc);
+                    base = b;
+                }
+                if base > 0 {
+                    acc = self.mul2(self.power(var, base), acc);
+                    depth += 1;
+                }
+                return (acc, depth);
+            }
+        }
         let mut parts: Vec<(ExprId, u32)> = Vec::new();
         for chunk in groups.chunks(CHAIN_CHUNK) {
             let base = chunk[0].0;
-            let last = chunk[chunk.len() - 1];
-            let (mut acc, mut depth) = (last.1, last.2);
-            for i in (0..chunk.len() - 1).rev() {
-                let gap = chunk[i + 1].0 - chunk[i].0;
-                let m = self.mul2(self.power(var, gap), acc);
-                acc = self.pool.add(vec![chunk[i].1, m]);
-                depth = depth.max(chunk[i].2) + 2;
-                self.chain_links.push(acc);
-            }
+            let (mut acc, mut depth) = self.chain(var, chunk);
             if base > 0 {
                 acc = self.mul2(self.power(var, base), acc);
                 depth += 1;
@@ -195,7 +293,7 @@ impl<'p> SchemeBuilder<'p> {
 }
 
 /// Occurrence counts keyed by atom index, with the deterministic greedy
-/// choice: most occurrences, then lowest index.
+/// choice: most occurrences, then lowest index (highest with `prefer_last`).
 #[derive(Default)]
 struct IdxCounts(Vec<usize>);
 
@@ -208,12 +306,12 @@ impl IdxCounts {
         self.0[a] += 1;
     }
 
-    fn best(&self) -> Option<u32> {
+    fn best(&self, prefer_last: bool) -> Option<u32> {
         let mut best: Option<(usize, usize)> = None;
         for (i, &c) in self.0.iter().enumerate() {
             let better = match best {
                 None => true,
-                Some((_, bc)) => c > bc,
+                Some((_, bc)) => c > bc || (prefer_last && c == bc),
             };
             if c > 0 && better {
                 best = Some((i, c));

@@ -13069,10 +13069,14 @@ fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
 /// `optimize` controls the polynomial pass: sums that are polynomials (in the
 /// inputs and in any non-polynomial subexpression) are rewritten into
 /// multivariate Horner schemes before lowering, when that clearly saves
-/// operations. A rewritten sum rounds differently from the expanded form, so
-/// results can differ from `eval_expr` in the last few bits. `None` (the
-/// default) means on unless the environment variable `ALKAHEST_JIT_HORNER`
-/// is `0`; `False` compiles every expression exactly as written.
+/// operations; then operand pairs that recur in several sums or products
+/// (also across the outputs of a list) are computed once and shared
+/// (common-pair elimination). A rewritten sum rounds differently from the
+/// expanded form, so results can differ from `eval_expr` in the last few
+/// bits. `None` (the default) means on, unless the environment variable
+/// `ALKAHEST_JIT_HORNER` is `0` (both passes off) or `ALKAHEST_JIT_CPE` is
+/// `0` (pair elimination off); `False` compiles every expression exactly as
+/// written.
 #[pyfunction]
 #[pyo3(
     name = "compile_expr",
@@ -13087,7 +13091,7 @@ fn py_compile_expr(
 ) -> PyResult<Py<PyAny>> {
     let mut options = alkahest_core::CodegenOptions::default();
     if let Some(on) = optimize {
-        options = options.with_horner(on);
+        options = options.with_horner(on).with_cpe(on);
     }
     if expr.is_instance_of::<PyList>() || expr.is_instance_of::<PyTuple>() {
         return py_compile_many(py, expr, inputs, options).map(|f| f.to_py_any(py));
