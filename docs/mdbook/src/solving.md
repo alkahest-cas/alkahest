@@ -499,7 +499,7 @@ gb.proof_status                                  # 'proved'
 The exact check is the expensive part of some systems: on katsura-8 it is most of the running time, because every critical pair is reduced to zero over ℤ with coefficients of several hundred bits. Giac and Groebner.jl do not make it by default. `verify="modular"` (Rust: `GroebnerBasis::compute_with_verification`, `try_compute_lex_with_verification` with `GroebnerVerification::Modular`) skips it, and says so: the result is `"probabilistic_modular"`.
 
 ```python
-gb = GroebnerBasis.compute(eqs, xs, order="grevlex", verify="modular")
+gb = GroebnerBasis.compute([x**2 + y**2 - pool.integer(1), x*y - pool.integer(1)], [x, y], order="grevlex", verify="modular")
 gb.proof_status                                  # 'probabilistic_modular'
 ```
 
