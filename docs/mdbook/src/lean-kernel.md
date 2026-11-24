@@ -78,11 +78,17 @@ re-verifies the identity before emitting. When it cannot encode an answer
 sign), `integrate`'s certificate falls back to the `HasDerivAt` tactic emitter.
 
 ```python
-r = alkahest.integrate(f, x)
-r.certificate                      # kernel certificate, else tactic, else None
-r.certificate_status["path"]       # "kernel" | "kernel_native" | "tactic" | None
-r.certificate_status["kernel_detail"]  # why the kernel path withheld, if it did
-alkahest.set_lean_certificate_mode("tactic")   # tactic emitter only
+import alkahest
+
+x = alkahest.symbol("x")
+r = alkahest.integrate(alkahest.parse("x*exp(x)"), x)
+src = r.certificate                       # kernel certificate, else tactic, else None
+assert r.certificate_status["path"] == "kernel"   # "kernel" | "kernel_native" | "tactic" | None
+r.certificate_status["kernel_detail"]     # why the kernel path withheld, if it did
+
+alkahest.set_lean_certificate_mode("tactic")      # tactic emitter only
+assert r.certificate_status["path"] == "tactic"
+alkahest.set_lean_certificate_mode("auto")        # back to the default
 ```
 
 Certificates are built lazily, only when `.certificate` or

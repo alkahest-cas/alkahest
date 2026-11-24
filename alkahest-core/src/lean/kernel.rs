@@ -1472,8 +1472,7 @@ fn power_split(lp: &Poly, rp: &Poly) -> Result<(u32, Poly), IntegrationCertWithh
         }
     }
     let s = cand.ok_or(WITHHELD_IDENTITY)?;
-    let mut sq: Mono = Vec::new();
-    sq.push((s, 2));
+    let sq: Mono = vec![(s, 2)];
     let mut rest = lp.clone();
     rest.0.remove(&sq);
     if lp.0.get(&sq) != Some(&Rational::from(1)) {
@@ -1692,11 +1691,16 @@ fn frame(names: &[String], hyps: &[Cond], mode: KernelCheckMode) -> Frame {
         h.data(&mut hdata);
     }
     hdata.push(']');
-    let mut hproof = String::from("⟨");
-    for i in 0..hyps.len() {
-        let _ = write!(hproof, "h{}, ", i + 1);
-    }
-    hproof.push_str("trivial⟩");
+    let hproof = if hyps.is_empty() {
+        "trivial".to_string()
+    } else {
+        let mut s = String::from("⟨");
+        for i in 0..hyps.len() {
+            let _ = write!(s, "h{}, ", i + 1);
+        }
+        s.push_str("trivial⟩");
+        s
+    };
     let (decide, trust) = match mode {
         KernelCheckMode::Kernel => (
             "by decide +kernel",
