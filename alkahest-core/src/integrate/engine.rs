@@ -3335,7 +3335,8 @@ pub fn integrate(
         // it must also pass the complex-branch check the original just passed;
         // otherwise the original stands.
         if let Some(real) = super::real_log::realify_answer(result.value, expr, var, pool) {
-            if super::branch_check::complex_branch_mismatch(real, expr, var, pool).is_none() {
+            if super::branch_check::complex_branch_mismatch_strict(real, expr, var, pool).is_none()
+            {
                 let mut log = DerivationLog::new();
                 log.push(RewriteStep::simple(
                     super::real_log::REAL_LOG_RULE,

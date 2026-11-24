@@ -117,7 +117,13 @@ pub(crate) fn try_sine_substitution(
     )
     .value;
     crate::budget::check().ok()?;
-    let big_g = integrate(inner, s, pool).ok()?;
+    // The reduced integrand can carry a pair of radicals the integrator does
+    // not rationalise on its own (`√(1/s + 1)`, `√(1/s − 1)` from `sec x`).
+    let big_g = match integrate(inner, s, pool) {
+        Ok(r) => r,
+        Err(e) if e.is_budget() => return None,
+        Err(_) => super::radical_pair::try_radical_pair(inner, s, pool)?,
+    };
     let back = crate::kernel::subs(big_g.value, &HashMap::from([(s, g)]), pool);
     let other = pool.func(if is_sin { "cos" } else { "sin" }, vec![theta]);
     let signed = simplify(pool.mul(vec![pool.func("sign", vec![other]), back]), pool).value;

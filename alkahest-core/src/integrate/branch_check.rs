@@ -50,6 +50,38 @@ const SAMPLES: [f64; 16] = [
 /// tight one.
 const TOL: f64 = 1e-6;
 
+thread_local! {
+    /// While set, `abs` and `sign` are evaluated (`|z|`, `z/|z|`) instead of
+    /// making a sample no information; see [`complex_branch_mismatch_strict`].
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct StrictGuard;
+
+impl Drop for StrictGuard {
+    fn drop(&mut self) {
+        STRICT.with(|s| s.set(false));
+    }
+}
+
+/// [`complex_branch_mismatch`] with `abs` and `sign` evaluated on ℂ.
+///
+/// For the real-log rewrite: `log|a|` has derivative `a′/a` only where `a` is
+/// real, so on the integrand's complex branch it is generally *not* an
+/// antiderivative where the `log(a)` it replaced was.  The default check
+/// treats `abs` as no information (a lenient choice older routes rely on);
+/// this one sees the difference.
+pub(crate) fn complex_branch_mismatch_strict(
+    candidate: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<f64> {
+    STRICT.with(|s| s.set(true));
+    let _g = StrictGuard;
+    complex_branch_mismatch(candidate, integrand, var, pool)
+}
+
 /// `Some(x)` when `d/dx candidate` and `integrand` disagree at the real point
 /// `x`, at which the integrand is a finite non-real number; `None` when every
 /// such point agrees or none could be evaluated.
@@ -442,6 +474,15 @@ fn walk_uncached(
             match name.as_str() {
                 "exp" => Some(z.exp()),
                 "log" => z.ln(),
+                "abs" if STRICT.with(|s| s.get()) => Some(C::real(z.abs())),
+                "sign" if STRICT.with(|s| s.get()) => {
+                    let m = z.abs();
+                    Some(if m == 0.0 {
+                        C::real(0.0)
+                    } else {
+                        z.mul(C::real(1.0 / m))
+                    })
+                }
                 "sqrt" => z.sqrt(),
                 "sin" => Some(z.sin()),
                 "cos" => Some(z.cos()),

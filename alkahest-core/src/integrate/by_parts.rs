@@ -192,7 +192,12 @@ pub const MAX_IBP_STEPS: u32 = 3;
 /// nesting is useful (a residual that is itself a by-parts problem); deeper
 /// nesting has not paid for itself on any measured corpus and is where the
 /// combinatorial blow-up lives.
-const MAX_REENTRY_DEPTH: u32 = 2;
+///
+/// One exception, [`GROWN_CLOSE`]: the single closing attempt on a grown
+/// first-step residual of the *caller's own* integrand may use one more level
+/// (`∫x·log(x²+1)·atan²x` closes through `∫atan x·log(x²+1)`, itself a by-parts
+/// problem).
+const MAX_REENTRY_DEPTH: u32 = 1;
 
 /// How much larger `∫v·du` may be than `∫u·dv` before the split is judged
 /// wrong.  A by-parts step is supposed to *simplify*; `1.6` leaves room for the
@@ -203,6 +208,26 @@ const GROWTH_LIMIT: f64 = 1.6;
 thread_local! {
     /// Re-entry depth of [`integrate_by_parts`] on the current thread.
     static IBP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Set while the outermost by-parts call tries to close a grown residual
+    /// (see the growth check in `run_chain`): one extra nesting level is
+    /// allowed inside it.
+    static GROWN_CLOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard for [`GROWN_CLOSE`].
+struct GrownCloseGuard;
+
+impl GrownCloseGuard {
+    fn enter() -> Self {
+        GROWN_CLOSE.with(|g| g.set(true));
+        GrownCloseGuard
+    }
+}
+
+impl Drop for GrownCloseGuard {
+    fn drop(&mut self) {
+        GROWN_CLOSE.with(|g| g.set(false));
+    }
 }
 
 /// RAII guard restoring [`IBP_DEPTH`] on every exit path.
@@ -1876,10 +1901,16 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         let grew =
             structural_size(next_w, pool) as f64 > GROWTH_LIMIT * structural_size(w, pool) as f64;
         if grew && !(step == 0 && split.trivial_dv) {
-            // A larger residual is still worth one attempt to *close* on the
-            // first step, without recursing on it: `∫x·cot²x` has
-            // `v = −x − cot x`, bigger than `cot²x`, and `∫v dx` is immediate.
-            if step == 0 {
+            // A larger residual is still worth one attempt to *close*, without
+            // recursing on it — on the first step of a by-parts call on the
+            // caller's own integrand only, which bounds the cost to one engine
+            // call per split: `∫x·cot²x` has `v = −x − cot x`, bigger than
+            // `cot²x`, and `∫v dx` is immediate.
+            let top = IBP_DEPTH.with(|d| d.get()) == 1
+                && super::engine::in_outermost_integrate()
+                && !GROWN_CLOSE.with(|g| g.get());
+            if step == 0 && top {
+                let _g = GrownCloseGuard::enter();
                 if let Some(res) = close_integral(raw_w, var, pool) {
                     return Some(
                         simplify(
@@ -2015,7 +2046,8 @@ pub fn try_by_parts(
     // Re-entry guard.  The sub-integrals go through the full engine, which can
     // route back here once the hook is in place.
     let depth = IBP_DEPTH.with(|d| d.get());
-    if depth >= MAX_REENTRY_DEPTH {
+    let limit = MAX_REENTRY_DEPTH + u32::from(GROWN_CLOSE.with(|g| g.get()));
+    if depth >= limit {
         return None;
     }
     IBP_DEPTH.with(|d| d.set(depth + 1));
