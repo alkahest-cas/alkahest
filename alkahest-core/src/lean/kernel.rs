@@ -1993,7 +1993,7 @@ mod tests {
     #[test]
     fn log_states_its_domain() {
         let src = emit(|p, x| (p.func("log", vec![x]), p.pow(x, p.integer(-1)))).expect("cert");
-        assert!(src.contains("(h1 : x ≠ 0)"), "{src}");
+        assert!(src.contains("(h1 : (x : ℝ) ≠ 0)"), "{src}");
         assert!(src.contains("(H := [(.ne (.var (nat_lit 0)))])"), "{src}");
     }
 
