@@ -64,8 +64,14 @@ pub struct ParametricReport {
 }
 
 /// Solve a first-order equation of Lagrange (d'Alembert) type
-/// `y = x·f(y') + g(y')` in parametric form; see the
-/// [module docs](self).
+/// `y = x·f(y') + g(y')` in parametric form.
+///
+/// With `p = y'`, differentiating gives the *linear* equation
+/// `dx/dp = (f'(p)·x + g'(p))/(p − f(p))`, solved by the first-order cascade;
+/// then `y(p) = x(p)·f(p) + g(p)`.  The curve is verified by
+/// `F(x(p), y(p), p) = 0` and `y'(p) = p·x'(p)`, identically in `p`.  Each
+/// rational root `p₀` of `p − f(p)` gives a singular line
+/// `y = x·f(p₀) + g(p₀)`, verified by substitution.
 ///
 /// # Errors
 ///
