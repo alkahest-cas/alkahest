@@ -245,7 +245,11 @@ impl Poly {
 }
 
 /// `p(v) - p(e) = (v - e)·Δ`; returns `(p(e), Δ)`.
-pub(super) fn substitute(p: &Poly, v: u32, e: &Poly) -> Result<(Poly, Poly), IntegrationCertWithheld> {
+pub(super) fn substitute(
+    p: &Poly,
+    v: u32,
+    e: &Poly,
+) -> Result<(Poly, Poly), IntegrationCertWithheld> {
     let cs = p.split(v);
     let vv = Poly::var(v);
     let mut epows = vec![Poly::one()];
@@ -2430,7 +2434,11 @@ pub(super) fn respell_rational_powers(
 }
 
 /// `log(abs(a))` → `log(a)` throughout (other `abs` nodes are kept).
-pub(super) fn strip_log_abs(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>) -> ExprId {
+pub(super) fn strip_log_abs(
+    e: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
     if let Some(&r) = memo.get(&e) {
         return r;
     }

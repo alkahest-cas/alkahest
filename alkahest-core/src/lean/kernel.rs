@@ -32,10 +32,9 @@ use std::rc::Rc;
 use rug::{Integer, Rational};
 
 use super::hasderiv::{
-    exp_of, reduce_power, respell_rational_powers, single_var, special_function_reason,
-    substitute, IntegrationCertWithheld, Mono, Poly, MAX_ROUNDS, WITHHELD_CONSTANT_SIGN,
-    WITHHELD_EMPTY_DOMAIN, WITHHELD_IDENTITY, WITHHELD_ROOTSUM, WITHHELD_TOO_LARGE,
-    WITHHELD_UNSUPPORTED_NODE,
+    exp_of, reduce_power, respell_rational_powers, single_var, special_function_reason, substitute,
+    IntegrationCertWithheld, Mono, Poly, MAX_ROUNDS, WITHHELD_CONSTANT_SIGN, WITHHELD_EMPTY_DOMAIN,
+    WITHHELD_IDENTITY, WITHHELD_ROOTSUM, WITHHELD_TOO_LARGE, WITHHELD_UNSUPPORTED_NODE,
 };
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
@@ -385,10 +384,7 @@ fn dfn(f: KFn, a: &R) -> AE {
             rc(AE::App(KFn::Sqrt, a.clone())),
         ))),
         KFn::Atan => AE::Inv(rc(AE::Add(one(), sq(a.clone())))),
-        KFn::Asin => AE::Inv(rc(AE::App(
-            KFn::Sqrt,
-            rc(AE::Sub(one(), sq(a.clone()))),
-        ))),
+        KFn::Asin => AE::Inv(rc(AE::App(KFn::Sqrt, rc(AE::Sub(one(), sq(a.clone())))))),
         KFn::Acos => AE::Neg(rc(AE::Inv(rc(AE::App(
             KFn::Sqrt,
             rc(AE::Sub(one(), sq(a.clone()))),
@@ -396,10 +392,7 @@ fn dfn(f: KFn, a: &R) -> AE {
         KFn::Sinh => AE::App(KFn::Cosh, a.clone()),
         KFn::Cosh => AE::App(KFn::Sinh, a.clone()),
         KFn::Tanh => AE::Inv(sq(rc(AE::App(KFn::Cosh, a.clone())))),
-        KFn::Arsinh => AE::Inv(rc(AE::App(
-            KFn::Sqrt,
-            rc(AE::Add(one(), sq(a.clone()))),
-        ))),
+        KFn::Arsinh => AE::Inv(rc(AE::App(KFn::Sqrt, rc(AE::Add(one(), sq(a.clone())))))),
     }
 }
 
@@ -512,10 +505,7 @@ fn fconds(f: KFn, a: &R) -> Vec<Cond> {
         KFn::Log | KFn::Logabs => vec![Cond::Ne(a.clone())],
         KFn::Tan => vec![Cond::Ne(rc(AE::App(KFn::Cos, a.clone())))],
         KFn::Sqrt => vec![Cond::Pos(a.clone())],
-        KFn::Asin | KFn::Acos => vec![
-            Cond::Lt(m1(), a.clone()),
-            Cond::Lt(a.clone(), rc(AE::One)),
-        ],
+        KFn::Asin | KFn::Acos => vec![Cond::Lt(m1(), a.clone()), Cond::Lt(a.clone(), rc(AE::One))],
         _ => vec![],
     }
 }
@@ -632,9 +622,7 @@ fn implied(h: &[Cond], c: &Cond) -> bool {
         Cond::Ne(e) => sign_of(h, e).ne,
         Cond::Pos(e) => sign_of(h, e).pos,
         Cond::Nonneg(e) => sign_of(h, e).nonneg,
-        Cond::Lt(a, b) => {
-            h.contains(c) || sign_of(h, &rc(AE::Sub(b.clone(), a.clone()))).pos
-        }
+        Cond::Lt(a, b) => h.contains(c) || sign_of(h, &rc(AE::Sub(b.clone(), a.clone()))).pos,
     }
 }
 
@@ -710,10 +698,7 @@ impl Rel {
                 AE::App(KFn::Exp, rc(AE::Neg(a.clone()))),
                 AE::Inv(app(KFn::Exp, a)),
             ),
-            Rel::LogExp(a) => (
-                AE::App(KFn::Log, app(KFn::Exp, a)),
-                (**a).clone(),
-            ),
+            Rel::LogExp(a) => (AE::App(KFn::Log, app(KFn::Exp, a)), (**a).clone()),
         }
     }
     fn conds(&self) -> Vec<Cond> {
@@ -845,10 +830,7 @@ impl Table {
             let coeff = if *mag.denom() == 1 {
                 rc(of_nat(mag.numer()))
             } else {
-                rc(AE::Div(
-                    rc(of_nat(mag.numer())),
-                    rc(of_nat(mag.denom())),
-                ))
+                rc(AE::Div(rc(of_nat(mag.numer())), rc(of_nat(mag.denom()))))
             };
             let term = match t {
                 None => coeff,
@@ -879,7 +861,11 @@ impl Table {
             return Ok(Poly::zero());
         }
         if p.len() == 1 {
-            let (m, c) = p.0.iter().next().map(|(m, c)| (m.clone(), c.clone())).unwrap();
+            let (m, c) =
+                p.0.iter()
+                    .next()
+                    .map(|(m, c)| (m.clone(), c.clone()))
+                    .unwrap();
             let mut r = Poly::one();
             // `invMono` multiplies from the last factor inwards; the product is
             // the same polynomial in any order.
@@ -967,10 +953,7 @@ fn rat_ae(q: &Rational) -> R {
     let m = if *mag.denom() == 1 {
         rc(of_nat(mag.numer()))
     } else {
-        rc(AE::Div(
-            rc(of_nat(mag.numer())),
-            rc(of_nat(mag.denom())),
-        ))
+        rc(AE::Div(rc(of_nat(mag.numer())), rc(of_nat(mag.denom()))))
     };
     if *q < 0 {
         rc(AE::Neg(m))
@@ -2034,14 +2017,29 @@ mod tests {
             pool.mul(vec![c2, pool.func("cos", vec![x])]),
         ]);
         let eq = pool.add(vec![ypp, y]);
-        let src =
-            emit_ode_solution_kernel_cert(eq, x, y, &[yp, ypp], sol, &pool, KernelCheckMode::Kernel)
-                .expect("cert");
+        let src = emit_ode_solution_kernel_cert(
+            eq,
+            x,
+            y,
+            &[yp, ypp],
+            sol,
+            &pool,
+            KernelCheckMode::Kernel,
+        )
+        .expect("cert");
         assert!(src.contains("ode_sound"), "{src}");
         assert!(src.contains("(C1 : ℝ) (C2 : ℝ)"), "{src}");
         // a non-solution is withheld
         let bad = pool.mul(vec![c1, pool.func("exp", vec![x])]);
-        let r = emit_ode_solution_kernel_cert(eq, x, y, &[yp, ypp], bad, &pool, KernelCheckMode::Kernel);
+        let r = emit_ode_solution_kernel_cert(
+            eq,
+            x,
+            y,
+            &[yp, ypp],
+            bad,
+            &pool,
+            KernelCheckMode::Kernel,
+        );
         assert_eq!(r, Err(WITHHELD_IDENTITY));
     }
 
@@ -2050,7 +2048,10 @@ mod tests {
         // D (x^3) = 3 * x^2 * 1, as the Lean `D` builds it.
         let e = rc(AE::Pow(rc(AE::Var(0)), 3));
         let d = deriv(&e, 0);
-        assert_eq!(d.data_string(), "(.mul (.mul (.lit 3) (.pow (.var 0) 2)) .one)");
+        assert_eq!(
+            d.data_string(),
+            "(.mul (.mul (.lit 3) (.pow (.var 0) 2)) .one)"
+        );
         let mut t = Table::default();
         let p = t.norm(&d).unwrap();
         let mut want = Poly::zero();
