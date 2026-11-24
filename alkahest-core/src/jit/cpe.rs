@@ -90,7 +90,6 @@ pub(crate) struct Cpe {
     pub(crate) hoisted: usize,
     /// Binary operations saved, by the pass's own count (one per occurrence
     /// of a hoisted pair, less one for the temporary unless it existed).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) saved: u64,
 }
 

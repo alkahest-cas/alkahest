@@ -132,7 +132,13 @@ pub(crate) fn lower(
             let none = IdSet::default();
             let before = op_cost_with(&outputs, &none, &fma_adds, true, pool);
             let after = op_cost_with(&r.outputs, &none, &fused, true, pool);
-            if after < before {
+            // As for the Horner gate: rewriting a small expression to save
+            // an operation or two is not worth giving up its bit-exact
+            // agreement with the interpreter (a reassociated product can
+            // overflow where the original did not, or the reverse). The
+            // gate counts the shared operations themselves, not the `+0.0`
+            // seeds a rewritten sum also drops.
+            if r.saved >= MIN_SAVING_OPS && after < before {
                 outputs = r.outputs;
                 fma_adds = fused;
             }
@@ -670,16 +676,38 @@ mod tests {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
-        let s = pool.func("sin", vec![x]);
-        let e = pool.add(vec![
-            pool.mul(vec![x, y, s]),
-            pool.mul(vec![x, y, pool.func("cos", vec![x])]),
-        ]);
-        // CPE without the Horner pass still shares x·y.
+        let fs = [
+            pool.func("sin", vec![x]),
+            pool.func("cos", vec![x]),
+            pool.func("exp", vec![y]),
+            pool.func("tan", vec![y]),
+            pool.func("sin", vec![y]),
+        ];
+        let e = pool.add(
+            fs.iter()
+                .map(|&f| pool.mul(vec![pool.integer(3), x, y, f]))
+                .collect(),
+        );
+        // CPE without the Horner pass still shares 3·x·y.
         let l = lower(&[e], &[x, y], &pool, false, true);
         assert_ne!(l.outputs[0], e);
-        // Horner alone has nothing to do on a two-term sum.
+        // Horner alone has nothing to do on a five-term sum.
         assert_eq!(lower(&[e], &[x, y], &pool, true, false).outputs[0], e);
+    }
+
+    /// Hoisting one pair saves one operation: not worth reassociating a
+    /// small expression (and giving up its bit-exact agreement with the
+    /// interpreter) for.
+    #[test]
+    fn a_saving_below_the_gate_is_not_taken() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = pool.add(vec![
+            pool.mul(vec![x, y, pool.func("sin", vec![x])]),
+            pool.mul(vec![x, y, pool.func("cos", vec![x])]),
+        ]);
+        assert_eq!(lower(&[e], &[x, y], &pool, true, true).outputs[0], e);
     }
 
     proptest::proptest! {

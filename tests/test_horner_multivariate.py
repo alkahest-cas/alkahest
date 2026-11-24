@@ -173,7 +173,9 @@ def test_cpe_environment_flag():
     code = (
         "import alkahest as a\n"
         "p = a.ExprPool(); x, y = p.symbol('x'), p.symbol('y')\n"
-        "e = x * y * a.sin(x) + x * y * a.cos(x) + x * y * a.exp(y)\n"
+        "fs = [a.sin(x), a.cos(x), a.exp(y), a.tan(y), a.sin(y)]\n"
+        "e = 3 * x * y * fs[0]\n"
+        "for f in fs[1:]: e = e + 3 * x * y * f\n"
         "f = a.compile_expr(e, [x, y], expected_evals=1 << 20)\n"
         "pts = [(0.1 + 0.0137 * k, 0.9 - 0.011 * k) for k in range(60)]\n"
         "print(all(f([u, v]) == a.eval_expr(e, {x: u, y: v}) for u, v in pts))\n"
