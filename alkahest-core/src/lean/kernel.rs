@@ -25,7 +25,7 @@
 //! Anything it cannot encode is a withheld reason; the caller then falls back
 //! to the tactic emitter. Nothing here runs unless a certificate is requested.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
