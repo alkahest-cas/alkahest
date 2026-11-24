@@ -21,6 +21,13 @@ backward compatibility):
 - :func:`to_lean`, :func:`to_stablehlo`
 
 Remaining experimental surface:
+- :mod:`numeric_pde` (PDE milestone M7a) — exact Fornberg weights and
+  stencils with truncation errors (:func:`fd_weights`, :func:`stencil`,
+  :func:`laplacian_stencil`, :func:`truncation_error`), spectral matrices
+  (:func:`cheb_diff_matrix`, :func:`fourier_diff_matrix`), and scheme
+  analysis (:class:`Scheme`, :func:`von_neumann` with *proved* stability
+  conditions, :func:`modified_equation`, :func:`consistency`); errors are
+  :class:`NumericPdeError` ``E-PDE-350…358``
 - :func:`to_jax` — JAX primitive integration (requires JAX)
 - :func:`compile_cuda` / :class:`CudaCompiledFn` — NVPTX codegen (requires
   ``cuda`` + ``jit``)
@@ -722,7 +729,10 @@ from alkahest.alkahest import (
 # domains and boundary / initial conditions, `classify_pde`, and
 # `verify_pde_solution` (statuses mirror `integrate`'s verification; numeric
 # evidence may only refute).
-from alkahest.experimental import novelty
+# PDE milestone M7a (numeric_pde) — symbolic discretisation and scheme analysis
+# (pure Python, exact): Fornberg weights, stencils with truncation errors,
+# spectral matrices, proved von Neumann stability conditions, modified equations.
+from alkahest.experimental import novelty, numeric_pde
 from alkahest.experimental._pde import (
     PDE,
     ArbitraryFunctions,
@@ -764,6 +774,19 @@ from alkahest.experimental.novelty import (
     QRecurrenceClaim,
     RecurrenceClaim,
     check_novelty,
+)
+from alkahest.experimental.numeric_pde import (
+    NumericPdeError,
+    Scheme,
+    cheb_diff_matrix,
+    consistency,
+    fd_weights,
+    fourier_diff_matrix,
+    laplacian_stencil,
+    modified_equation,
+    stencil,
+    truncation_error,
+    von_neumann,
 )
 
 with contextlib.suppress(ImportError):
@@ -971,6 +994,7 @@ __all__ = [
     "NumberField",
     "NumberFieldElement",
     "NumberFieldError",
+    "NumericPdeError",
     "OdeTrajectory",
     # M11 — novelty filtering
     "OeisCache",
@@ -1010,6 +1034,7 @@ __all__ = [
     "RecurrenceClaim",
     "RiemannRochSpace",
     "RootOfFamily",
+    "Scheme",
     "SiegelMatrix",
     "SiegelReduction",
     # Sifting an element through a stabilizer chain
@@ -1044,6 +1069,7 @@ __all__ = [
     "bernoulli_number",
     "bessel_j0",
     "bessel_j1",
+    "cheb_diff_matrix",
     # M11 — novelty filtering
     "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
@@ -1052,6 +1078,7 @@ __all__ = [
     "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
+    "consistency",
     # Joint laws: Cov[e1, e2] under independent blocks
     "covariance",
     # Vector calculus
@@ -1081,6 +1108,8 @@ __all__ = [
     "expand_sum",
     "expectation",
     "expectation_affine",
+    "fd_weights",
+    "fourier_diff_matrix",
     "fourier_transform",
     # Vector calculus
     "functions_to_jets",
@@ -1112,9 +1141,11 @@ __all__ = [
     "laplacian",
     # The classical orders in closed form, as an oracle for MatGroup.order()
     "laplacian_indexed",
+    "laplacian_stencil",
     "matgroup_gl_order",
     "matgroup_sl_order",
     "matgroup_sp_order",
+    "modified_equation",
     "modular_discriminant",
     "modular_lambda",
     "moebius_mu",
@@ -1125,6 +1156,7 @@ __all__ = [
     # M11 — novelty filtering (the module itself, for `novelty.RecordedRecurrence`
     # and the status tables)
     "novelty",
+    "numeric_pde",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     "order_statistic",
@@ -1152,6 +1184,7 @@ __all__ = [
     "simplify_sums",
     "singleton_bound",
     "solve",
+    "stencil",
     "stirling_first",
     "stirling_first_unsigned",
     "stirling_second",
@@ -1173,10 +1206,12 @@ __all__ = [
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
     "truncate",
+    "truncation_error",
     "variance_affine_independent",
     # Vector calculus
     "vector_laplacian",
     "verify_pde_solution",
+    "von_neumann",
     "weierstrass_invariants",
     "weierstrass_p",
     "weierstrass_p_prime",

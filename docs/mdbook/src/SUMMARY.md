@@ -44,6 +44,7 @@
   - [Supercongruences: sequences modulo p^k](./supercongruences.md)
   - [Novelty filtering against OEIS](./novelty.md)
   - [Ansatz families and conjecture generation](./ansatz.md)
+  - [Numerical PDE analysis: stencils, spectral matrices, von Neumann](./numeric-pde.md)
   - [Cross-CAS differential testing](./crosscheck.md)
   - [SMT/SAT bridge](./smt.md)
   - [PARI/GP interop (optional)](./pari.md)
