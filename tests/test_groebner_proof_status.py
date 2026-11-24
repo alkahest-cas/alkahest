@@ -208,3 +208,82 @@ def test_certify_keeps_a_proved_basis_and_rejects_params(ctx):
         alk.GroebnerBasis.compute(
             [a * x - y, x + y - pool.integer(1)], [x, y], params=[a], certify=True
         )
+
+
+def _katsura(pool, n):
+    xs = [pool.symbol(f"u{i}") for i in range(n + 1)]
+
+    def u(i):
+        i = abs(i)
+        return xs[i] if i <= n else pool.integer(0)
+
+    eqs = [reduce(lambda a, b: a + b, [u(i) for i in range(-n, n + 1)]) - pool.integer(1)]
+    for m in range(n):
+        s = reduce(lambda a, b: a + b, [u(i) * u(m - i) for i in range(-n, n + 1)])
+        eqs.append(s - u(m))
+    return eqs, xs
+
+
+@pytest.mark.parametrize("order", ["grevlex", "lex"])
+def test_modular_verification_is_opt_in_and_labelled(order):
+    pool = alk.ExprPool()
+    eqs, xs = _katsura(pool, 4)
+    exact = alk.GroebnerBasis.compute(eqs, xs, order=order)
+    assert exact.proof_status == "probabilistic"
+    explicit = alk.GroebnerBasis.compute(eqs, xs, order=order, verify="exact")
+    assert explicit.proof_status == "probabilistic"
+    modular = alk.GroebnerBasis.compute(eqs, xs, order=order, verify="modular")
+    assert modular.proof_status == "probabilistic_modular"
+    # Same basis; only the strength of the check differs.
+    assert sorted(str(g) for g in modular) == sorted(str(g) for g in exact)
+    assert sorted(str(g) for g in explicit) == sorted(str(g) for g in exact)
+
+
+def test_modular_verification_never_claims_proved_for_homogeneous_input(ctx):
+    _, x, y = ctx
+    polys = [x**2 - y**2, x * y + y**2]
+    gb = alk.GroebnerBasis.compute(polys, [x, y], order="grevlex", verify="modular")
+    assert gb.proof_status == "probabilistic_modular"
+    assert gb.proof_status != "proved"
+    exact = alk.GroebnerBasis.compute(polys, [x, y], order="grevlex")
+    assert exact.proof_status == "proved"
+    assert [str(g) for g in gb] == [str(g) for g in exact]
+
+
+def test_modular_verification_still_proves_the_unit_ideal(ctx):
+    pool, x, y = ctx
+    one = pool.integer(1)
+    # x·y = 1 turns x² + x·y² − y into x², and x² = 0 contradicts x·y = 1:
+    # the basis is {1}, which passes any check vacuously, so it is proved by
+    # the homogenised run as always.
+    gb = alk.GroebnerBasis.compute(
+        [x * y - one, x**2 + x * y**2 - y], [x, y], order="grevlex", verify="modular"
+    )
+    exact = alk.GroebnerBasis.compute([x * y - one, x**2 + x * y**2 - y], [x, y], order="grevlex")
+    assert [str(g) for g in gb] == [str(g) for g in exact]
+    assert len(exact) == 1
+    assert gb.proof_status == exact.proof_status == "proved"
+
+
+def test_modular_verification_rejects_bad_combinations(ctx):
+    pool, x, y = ctx
+    one = pool.integer(1)
+    polys = [x**2 + y**2 - one, x * y - one]
+    with pytest.raises(ValueError, match="verify"):
+        alk.GroebnerBasis.compute(polys, [x, y], order="grevlex", verify="fast")
+    with pytest.raises(ValueError, match="certify"):
+        alk.GroebnerBasis.compute(polys, [x, y], order="grevlex", verify="modular", certify=True)
+    a = pool.symbol("a")
+    with pytest.raises(ValueError, match="modular"):
+        alk.GroebnerBasis.compute([a * x - y, x + y - one], [x, y], params=[a], verify="modular")
+
+
+def test_modular_status_survives_pickling():
+    import pickle
+
+    pool = alk.ExprPool()
+    eqs, xs = _katsura(pool, 3)
+    gb = alk.GroebnerBasis.compute(eqs, xs, order="grevlex", verify="modular")
+    back = pickle.loads(pickle.dumps(gb))
+    assert back.proof_status == "probabilistic_modular"
+    assert [str(g) for g in back] == [str(g) for g in gb]

@@ -66,6 +66,17 @@ pub fn grevlex_staircase(basis: &[GbPoly], n_vars: usize) -> Option<Vec<Vec<u32>
 /// algorithm. Returns `None` if the ideal is not 0-dimensional (staircase
 /// exceeds the cap) or if an internal iteration limit is exceeded.
 pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
+    fglm_checked(grevlex_basis, n_vars, false)
+}
+
+/// [`fglm`], with the modular conversion's lift checked at further primes
+/// instead of exactly when `modular` (see
+/// [`super::GroebnerVerification::Modular`]).
+pub(crate) fn fglm_checked(
+    grevlex_basis: &[GbPoly],
+    n_vars: usize,
+    modular: bool,
+) -> Option<Vec<GbPoly>> {
     if n_vars <= 1 {
         // Univariate: GRevLex == Lex, no conversion needed.
         return Some(grevlex_basis.to_vec());
@@ -83,7 +94,7 @@ pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
 
     // Modular FGLM, lifted and verified exactly; the exact rational
     // algorithm is the fallback.
-    match super::multimodular::fglm_lex(grevlex_basis, n_vars, &staircase) {
+    match super::multimodular::fglm_lex(grevlex_basis, n_vars, &staircase, modular) {
         Ok(lex) => Some(lex),
         Err(super::multimodular::Unavailable::Interrupted) => None,
         Err(super::multimodular::Unavailable::Fallback) => {

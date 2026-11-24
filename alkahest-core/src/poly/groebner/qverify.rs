@@ -204,6 +204,7 @@ fn rows_reduce_to_zero(mat: &ZMatrix, cand: &[ZPoly], rows: &[usize]) -> Option<
     let mut h = Integer::new();
     let mut scale = Integer::new();
     let mut mult = Integer::new();
+    let mut rem = (Integer::new(), Integer::new());
     let mut ticks = 0u32;
     for &ri in rows {
         for (c, x) in &mat.rows[ri] {
@@ -233,9 +234,27 @@ fn rows_reduce_to_zero(mat: &ZMatrix, cand: &[ZPoly], rows: &[usize]) -> Option<
             let b = &cand[*k as usize];
             let x = std::mem::take(&mut dense[c]);
             let beta = &b.coefs[0];
-            h.assign(x.gcd_ref(beta));
-            scale.assign(beta.div_exact_ref(&h));
-            mult.assign(x.div_exact_ref(&h));
+            // `h = gcd(x, β)`; most of the time `β | x` (or `β = 1`), which
+            // one division settles without the gcd.
+            let divisible = if *beta == 1 {
+                mult.assign(&x);
+                true
+            } else {
+                (&mut rem.0, &mut rem.1).assign(x.div_rem_ref(beta));
+                if rem.1 == 0 {
+                    std::mem::swap(&mut mult, &mut rem.0);
+                    true
+                } else {
+                    false
+                }
+            };
+            if divisible {
+                scale.assign(1);
+            } else {
+                h.assign(x.gcd_ref(beta));
+                scale.assign(beta.div_exact_ref(&h));
+                mult.assign(x.div_exact_ref(&h));
+            }
             if scale != 1 {
                 for Reverse(c2) in heap.iter() {
                     dense[*c2 as usize] *= &scale;

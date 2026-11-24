@@ -243,7 +243,7 @@ pub use simplify::redex::{simplify_redex, simplify_redex_with_config};
 #[cfg(feature = "groebner")]
 pub use poly::groebner::{
     compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly, GroebnerBasis,
-    GroebnerProofStatus, MonomialOrder,
+    GroebnerProofStatus, GroebnerVerification, MonomialOrder,
 };
 // M9 — coefficient fields for elimination
 #[cfg(feature = "groebner")]
@@ -701,7 +701,7 @@ pub mod experimental {
     #[cfg(feature = "groebner")]
     pub use crate::poly::groebner::{
         compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
-        GroebnerBasis, GroebnerProofStatus, MonomialOrder,
+        GroebnerBasis, GroebnerProofStatus, GroebnerVerification, MonomialOrder,
     };
     #[cfg(feature = "groebner-cuda")]
     pub use crate::poly::groebner::{GpuBackendReport, GpuGroebnerError};
