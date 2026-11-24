@@ -153,44 +153,34 @@ def test_one_bound_raises():
 # with a value the evaluator itself rejects (a `log` of a negative number, or
 # an `asin` outside [−1, 1]); the jump scan could not see it, because forming
 # its ratio needs F at both ends of a cell and a hole makes every cell
-# undecidable.
+# undecidable.  They were then refused; with real-valued logarithms they are
+# answered, with the right value.
 # ---------------------------------------------------------------------------
 
 
-def _refusal_code(exc):
-    return getattr(exc, "code", "") or str(exc)
-
-
 @pytest.mark.parametrize(
-    ("build", "lo", "hi", "what"),
+    ("build", "lo", "hi", "expected", "what"),
     [
-        # F = x·atanh x + ½·log(x²−1): the log is of a negative number for
-        # every |x| < 1, i.e. exactly where atanh is defined.  True value 0.
-        (lambda x: alkahest.atanh(x), -0.5, 0.5, "atanh over a symmetric interval"),
-        # F = −¼log(x+1) + ¼log(x−1) − ½atan(x): both logs are negative below
-        # −1, where 1/(x⁴−1) is finite.  True value 0.03042.
-        (lambda x: 1 / (x**4 - 1), -3, -2, "1/(x^4-1) below its poles"),
-        # F = ⅓log(x+1) − ⅙log(x²−x+1) + …: the first log is negative below
-        # −1, where 1/(1+x³) is finite.  True value −0.10034.
-        (lambda x: 1 / (1 + x**3), -4, -2, "1/(1+x^3) below its pole"),
+        # F = x·atanh x + ½·log(x²−1) had the log of a negative number for
+        # every |x| < 1, i.e. exactly where atanh is defined.
+        (lambda x: alkahest.atanh(x), -0.5, 0.5, 0.0, "atanh over a symmetric interval"),
+        # F = −¼log(x+1) + ¼log(x−1) − ½atan(x): both logs negative below −1.
+        (lambda x: 1 / (x**4 - 1), -3, -2, 0.0304177497249591, "1/(x^4-1) below its poles"),
+        # F = ⅓log(x+1) − ⅙log(x²−x+1) + …: the first log negative below −1.
+        (lambda x: 1 / (1 + x**3), -4, -2, -0.10034029061616, "1/(1+x^3) below its pole"),
     ],
 )
-def test_definite_refuses_an_antiderivative_undefined_on_the_interval(build, lo, hi, what):
+def test_definite_through_a_hole_of_the_principal_antiderivative(build, lo, hi, expected, what):
+    # Each of these is refused for a domain hole with the principal-log
+    # antiderivative, then answered with the real-log one (`log|a|`), which has
+    # no hole there.  The values are quadrature's.  (The hole rule itself is
+    # pinned in Rust: `definite_domain_hole_across_the_whole_interval_is_refused`.)
     pool = ExprPool()
     x = pool.symbol("x")
-    with pytest.raises(Exception) as exc:
-        integrate(build(x), x, lo, hi)
-    assert "E-INT-001" in _refusal_code(exc.value), f"{what}: {exc.value}"
-
-
-def test_definite_hole_refusal_names_the_reason():
-    # The diagnostic has to say which of the guards fired, or a caller cannot
-    # tell "your integrand has a pole" from "our answer has the wrong branch".
-    pool = ExprPool()
-    x = pool.symbol("x")
-    with pytest.raises(Exception) as exc:
-        integrate(alkahest.atanh(x), x, -0.5, 0.5)
-    assert "undefined across" in str(exc.value), str(exc.value)
+    r = integrate(build(x), x, lo, hi)
+    v = complex(alkahest.eval_expr(r.value, {}))
+    assert abs(v.imag) < 1e-12, f"{what}: {r.value}"
+    assert abs(v.real - expected) < 1e-12, f"{what}: {v} != {expected}; {r.value}"
 
 
 @pytest.mark.parametrize(

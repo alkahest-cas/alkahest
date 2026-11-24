@@ -31,6 +31,9 @@ _UNARY = {
     "exp": math.exp,
     "log": math.log,
     "cbrt": lambda v: math.copysign(abs(v) ** (1.0 / 3.0), v),
+    # `log|cos x|` and its derivative `sign(cos x)·…/|cos x|`.
+    "abs": abs,
+    "sign": lambda v: math.copysign(1.0, v) if v else 0.0,
 }
 
 
