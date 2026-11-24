@@ -43,12 +43,34 @@ type Hasher = foldhash::fast::RandomState;
 pub(crate) struct Prime {
     pub(crate) p: u64,
     p2: u64,
+    /// `⌊(2⁶⁴ − 1)/p⌋`, for [`Self::reduce`].
+    bar: u64,
 }
 
 impl Prime {
     pub(crate) fn new(p: u64) -> Self {
         debug_assert!(p > 2 && p < (1 << 31) && is_prime_u32(p));
-        Prime { p, p2: p * p }
+        Prime {
+            p,
+            p2: p * p,
+            bar: u64::MAX / p,
+        }
+    }
+
+    /// `v mod p` for `v < 2⁶²` (so any value kept below `p²`), by Barrett
+    /// reduction: the quotient estimate `⌊v·bar/2⁶⁴⌋` is at most one short
+    /// (`v·bar/2⁶⁴ > v/p − v/2⁶⁴ − 1`, and `v/2⁶⁴ < ¼`), so one correction
+    /// suffices.  A multiplication instead of a 64-bit division.
+    #[inline(always)]
+    pub(crate) fn reduce(self, v: u64) -> u64 {
+        debug_assert!(v < 1 << 62);
+        let q = ((v as u128 * self.bar as u128) >> 64) as u64;
+        let r = v - q * self.p;
+        if r >= self.p {
+            r - self.p
+        } else {
+            r
+        }
     }
 
     #[inline]
@@ -791,7 +813,7 @@ fn reduce_matrix(mat: &Matrix, basis: &Basis, pr: Prime, echelon: bool) -> Resul
                 continue;
             }
             dense[c] = 0;
-            let v = v % pr.p;
+            let v = pr.reduce(v);
             if v == 0 {
                 continue;
             }
@@ -957,7 +979,11 @@ pub(crate) enum ApplyFail {
 
 /// `dense += f · row` in each of `N` lanes (one prime per lane), keeping every
 /// entry below that lane's `p²` as [`axpy`] does.
-#[inline]
+///
+/// Every factor is below `p < 2³¹`; the casts through `u32` say so, which lets
+/// the compiler multiply all lanes with one 32×32→64-bit vector instruction
+/// where the target has one (see [`apply_matrix`]).
+#[inline(always)]
 fn axpy_n<const N: usize>(
     dense: &mut [[u64; N]],
     cols: &[u32],
@@ -968,10 +994,8 @@ fn axpy_n<const N: usize>(
     for (&c, x) in cols.iter().zip(coefs) {
         let d = &mut dense[c as usize];
         for l in 0..N {
-            d[l] += f[l] * x[l];
-            if d[l] >= p2[l] {
-                d[l] -= p2[l];
-            }
+            let s = d[l] + u64::from(f[l] as u32) * u64::from(x[l] as u32);
+            d[l] = if s >= p2[l] { s - p2[l] } else { s };
         }
     }
 }
@@ -983,6 +1007,40 @@ fn axpy_n<const N: usize>(
 /// whose computation diverges from the learned one is marked in `failed` and
 /// carries zeros from then on; the other lanes are unaffected.
 fn apply_matrix<const N: usize>(
+    tm: &TMatrix,
+    coefs: &[Vec<[u64; N]>],
+    prs: &[Prime; N],
+    echelon: bool,
+    dense: &mut Vec<[u64; N]>,
+    failed: &mut [bool; N],
+) -> Result<Vec<Vec<[u64; N]>>, ApplyFail> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: the CPU supports AVX2 (checked just above).
+            return unsafe { apply_matrix_avx2(tm, coefs, prs, echelon, dense, failed) };
+        }
+    }
+    apply_matrix_body(tm, coefs, prs, echelon, dense, failed)
+}
+
+/// [`apply_matrix_body`] compiled for AVX2, where a lane group of four
+/// accumulators is one vector register.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_matrix_avx2<const N: usize>(
+    tm: &TMatrix,
+    coefs: &[Vec<[u64; N]>],
+    prs: &[Prime; N],
+    echelon: bool,
+    dense: &mut Vec<[u64; N]>,
+    failed: &mut [bool; N],
+) -> Result<Vec<Vec<[u64; N]>>, ApplyFail> {
+    apply_matrix_body(tm, coefs, prs, echelon, dense, failed)
+}
+
+#[inline(always)]
+fn apply_matrix_body<const N: usize>(
     tm: &TMatrix,
     coefs: &[Vec<[u64; N]>],
     prs: &[Prime; N],
@@ -1019,7 +1077,7 @@ fn apply_matrix<const N: usize>(
             let mut r = [0u64; N];
             let mut any = false;
             for l in 0..N {
-                r[l] = if failed[l] { 0 } else { v[l] % prs[l].p };
+                r[l] = if failed[l] { 0 } else { prs[l].reduce(v[l]) };
                 any |= r[l] != 0;
             }
             if !any {
@@ -1111,6 +1169,15 @@ impl Trace {
         prs: [Prime; 2],
     ) -> [Result<Vec<ModPoly>, ApplyFail>; 2] {
         self.apply_n::<2>(inputs, prs)
+    }
+
+    /// [`Self::apply`] modulo four primes in one pass over the trace.
+    pub(crate) fn apply4(
+        &self,
+        inputs: [&[Vec<u64>]; 4],
+        prs: [Prime; 4],
+    ) -> [Result<Vec<ModPoly>, ApplyFail>; 4] {
+        self.apply_n::<4>(inputs, prs)
     }
 
     fn apply_n<const N: usize>(
@@ -1410,6 +1477,25 @@ mod tests {
         let pr = Prime::new(2147483647);
         for a in [1u64, 2, 3, 12345, 2147483646] {
             assert_eq!(pr.mul(a, pr.inv(a)), 1);
+        }
+    }
+
+    #[test]
+    fn barrett_reduction_matches_the_remainder() {
+        for p in [3u64, 65537, 1_073_741_827, 2_147_483_629, 2_147_483_647] {
+            let pr = Prime::new(p);
+            let p2 = p * p;
+            let mut x = 0x9e37_79b9_7f4a_7c15u64;
+            let mut samples = vec![0, 1, p - 1, p, p + 1, p2 - 1, p2 - p, 2 * p - 1];
+            for _ in 0..10_000 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                samples.push(x % p2);
+            }
+            for v in samples {
+                assert_eq!(pr.reduce(v), v % p, "p = {p}, v = {v}");
+            }
         }
     }
 }

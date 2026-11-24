@@ -37,6 +37,7 @@ pub mod parametric;
 pub mod paramfield;
 mod qverify;
 pub mod reduce;
+mod shape;
 
 // Keep f4 as a thin re-export so any external crate that depended on the old
 // module path still compiles (semver-minor compat shim).
@@ -82,16 +83,59 @@ pub enum GroebnerProofStatus {
     /// ideal **containing** `⟨input⟩`; that the two ideals are equal rests on
     /// random primes having been lucky.
     Probabilistic,
+    /// Weaker than [`Self::Probabilistic`], and only ever the result of an
+    /// explicit request ([`GroebnerVerification::Modular`]): nothing was
+    /// checked over ℚ.  The generators agree with the reduced Gröbner basis of
+    /// the input modulo several random primes that played no part in
+    /// reconstructing them; neither that they form a Gröbner basis nor that
+    /// they lie in the ideal is proved.  See
+    /// [`GroebnerVerification::Modular`] for the failure model.
+    ProbabilisticModular,
 }
 
 impl GroebnerProofStatus {
-    /// `"proved"` or `"probabilistic"`.
+    /// `"proved"`, `"probabilistic"` or `"probabilistic_modular"`.
     pub fn as_str(self) -> &'static str {
         match self {
             GroebnerProofStatus::Proved => "proved",
             GroebnerProofStatus::Probabilistic => "probabilistic",
+            GroebnerProofStatus::ProbabilisticModular => "probabilistic_modular",
         }
     }
+}
+
+/// How a multimodular basis is checked before it is returned.
+///
+/// [`Self::Exact`] is the default of every entry point that does not take this
+/// type, and the only mode whose results can be
+/// [`GroebnerProofStatus::Proved`] or [`GroebnerProofStatus::Probabilistic`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum GroebnerVerification {
+    /// The lifted basis `B` is checked over ℚ, exactly: every input reduces
+    /// to zero modulo `B` and every critical pair of `B` that Buchberger's
+    /// criteria leave reduces to zero (and a lex basis from FGLM has zero
+    /// normal forms and the right number of standard monomials).  See
+    /// [`GroebnerBasis::proof_status`].
+    #[default]
+    Exact,
+    /// **Weaker, opt-in.**  No check over ℚ.  The lifted basis must instead
+    /// agree, coefficient by coefficient, with the modular basis at three
+    /// further random primes from `[2³⁰, 2³¹)` that were not used to
+    /// reconstruct it (the one agreement the default also asks for before it
+    /// verifies, and two more), and the result is
+    /// [`GroebnerProofStatus::ProbabilisticModular`].
+    ///
+    /// Failure model: if the reduced basis `G` is computed correctly modulo a
+    /// check prime `q` (all but finitely many `q` are lucky), agreement means
+    /// every coefficient of `B − G` is divisible by `q`.  A wrong `B` passes
+    /// only if all three primes divide one fixed non-zero rational's
+    /// numerator, of `h` bits say: at most `h/30` of the ≈5·10⁷ candidates do,
+    /// so the chance is below `(h / 1.5·10⁹)³`, plus the chance that a check
+    /// prime is unlucky in just the way the candidate is wrong.  This is the
+    /// check Giac and Groebner.jl make by default.  It skips the exact
+    /// verification, which on katsura-8 is most of the running time.
+    Modular,
 }
 
 /// A computed Gröbner basis.
@@ -236,17 +280,77 @@ impl GroebnerBasis {
     /// [`GroebnerProofStatus::Probabilistic`]; check [`Self::proof_status`], or
     /// use [`Self::compute_exact`] when the answer has to be a proof.
     pub fn compute(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
+        Self::compute_inner(gens, order, GroebnerVerification::Exact)
+    }
+
+    /// [`Self::compute`] with the check of a multimodular basis chosen by
+    /// `verification`.  With [`GroebnerVerification::Exact`] this is
+    /// [`Self::compute`].  With [`GroebnerVerification::Modular`] a multimodular
+    /// result skips the exact check over ℚ and is
+    /// [`GroebnerProofStatus::ProbabilisticModular`], even for homogeneous
+    /// input; a basis `{1}` is still proved as [`Self::compute`] proves it, and
+    /// the exact routes (other orders, the Buchberger fallback) are still
+    /// [`GroebnerProofStatus::Proved`].
+    pub fn compute_with_verification(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+        verification: GroebnerVerification,
+    ) -> Self {
+        Self::compute_inner(gens, order, verification)
+    }
+
+    /// [`Self::compute_with_verification`], honouring the active budget as
+    /// [`Self::try_compute`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_with_verification(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+        verification: GroebnerVerification,
+    ) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_inner(gens, order, verification))
+    }
+
+    /// [`Self::try_compute_lex`] with the checks of the grevlex basis and of
+    /// its FGLM conversion chosen by `verification` (see
+    /// [`Self::compute_with_verification`]).
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_lex_with_verification(
+        gens: Vec<GbPoly>,
+        verification: GroebnerVerification,
+    ) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_lex_inner(gens, false, verification))
+    }
+
+    fn compute_inner(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+        verification: GroebnerVerification,
+    ) -> Self {
+        let modular = verification == GroebnerVerification::Modular;
         if order == MonomialOrder::GRevLex && !trivially_exact(&gens) {
-            match multimodular::groebner_basis(&gens, order) {
+            match multimodular::groebner_basis_checked(&gens, order, modular) {
                 Ok(generators) => {
-                    let proof_status = if all_homogeneous(&gens) {
+                    // Homogeneous input: the exact check and the Hilbert
+                    // function prove equality (see `proof_status`).  A
+                    // `{1}` passes either check vacuously, so it is proved
+                    // separately.
+                    let proof_status = if !modular && all_homogeneous(&gens) {
                         GroebnerProofStatus::Proved
                     } else if is_unit_basis(&generators) {
                         match prove_unit_ideal(&gens) {
                             Some(true) => GroebnerProofStatus::Proved,
                             Some(false) => return Self::compute_exact(gens, order),
+                            None if modular => GroebnerProofStatus::ProbabilisticModular,
                             None => GroebnerProofStatus::Probabilistic,
                         }
+                    } else if modular {
+                        GroebnerProofStatus::ProbabilisticModular
                     } else {
                         GroebnerProofStatus::Probabilistic
                     };
@@ -323,7 +427,7 @@ impl GroebnerBasis {
     ///
     /// The [`crate::budget::BudgetTrip`] that stopped the computation.
     pub fn try_compute_lex_certified(gens: Vec<GbPoly>) -> Result<Self, crate::budget::BudgetTrip> {
-        armed(|| Self::compute_lex_with(gens, true))
+        armed(|| Self::compute_lex_inner(gens, true, GroebnerVerification::Exact))
     }
 
     /// Compute the basis by Buchberger's algorithm over ℚ, whatever the order.
@@ -389,10 +493,15 @@ impl GroebnerBasis {
     /// than direct lex Buchberger. Falls back to direct lex Buchberger when
     /// the ideal is positive-dimensional or FGLM fails.
     pub fn compute_lex(gens: Vec<GbPoly>) -> Self {
-        Self::compute_lex_with(gens, false)
+        Self::compute_lex_inner(gens, false, GroebnerVerification::Exact)
     }
 
-    fn compute_lex_with(gens: Vec<GbPoly>, certify: bool) -> Self {
+    fn compute_lex_inner(
+        gens: Vec<GbPoly>,
+        certify: bool,
+        verification: GroebnerVerification,
+    ) -> Self {
+        let modular = verification == GroebnerVerification::Modular;
         let n_vars = gens.first().map(|g| g.n_vars).unwrap_or(0);
 
         if n_vars <= 1 {
@@ -403,11 +512,11 @@ impl GroebnerBasis {
         let mut grevlex = if certify {
             Self::compute_certified(gens.clone(), MonomialOrder::GRevLex)
         } else {
-            Self::compute(gens.clone(), MonomialOrder::GRevLex)
+            Self::compute_inner(gens.clone(), MonomialOrder::GRevLex, verification)
         };
         // A `{1}` that could not be proved (see `prove_unit_ideal`): "this system
         // has no solutions" is the worst thing to get wrong, so settle it exactly.
-        if grevlex.proof_status == GroebnerProofStatus::Probabilistic
+        if grevlex.proof_status != GroebnerProofStatus::Proved
             && is_unit_basis(&grevlex.generators)
             && !crate::budget::interrupt_pending()
         {
@@ -427,7 +536,13 @@ impl GroebnerBasis {
         // Step 2: Try FGLM.  What it adds is verified exactly against the
         // grevlex basis, so the result is exactly as sure as that basis is.
         if is_zero_dimensional(&grevlex.generators, n_vars) {
-            if let Some(generators) = fglm(&grevlex.generators, n_vars) {
+            // In the modular mode only a basis that came out of the modular
+            // check is converted with the modular check; a proved one keeps
+            // the exact conversion, so the status below stays true.
+            let modular_fglm =
+                modular && grevlex.proof_status == GroebnerProofStatus::ProbabilisticModular;
+            if let Some(generators) = fglm::fglm_checked(&grevlex.generators, n_vars, modular_fglm)
+            {
                 return GroebnerBasis {
                     generators,
                     order: MonomialOrder::Lex,
@@ -606,7 +721,7 @@ mod tests {
 
     mod proof_status {
         use super::*;
-        use GroebnerProofStatus::{Probabilistic, Proved};
+        use GroebnerProofStatus::{Probabilistic, ProbabilisticModular, Proved};
 
         fn poly(terms: &[(&[u32], i64)]) -> GbPoly {
             GbPoly {
@@ -731,6 +846,72 @@ mod tests {
 
         /// The certificate decides both ways: a verified-looking basis of a
         /// larger ideal (what unlucky primes would give) is rejected.
+        #[test]
+        fn modular_verification_is_opt_in_and_labelled() {
+            use GroebnerVerification::{Exact, Modular};
+            let terms = |g: &GroebnerBasis| {
+                let mut t: Vec<_> = g.generators().iter().map(|p| p.terms.clone()).collect();
+                t.sort();
+                t
+            };
+            assert_eq!(GroebnerVerification::default(), Exact);
+            assert_eq!(ProbabilisticModular.as_str(), "probabilistic_modular");
+            let katsura = super::super::multimodular::tests::katsura_system(4);
+            for gens in [inhomogeneous(), katsura] {
+                let plain = GroebnerBasis::compute(gens.clone(), MonomialOrder::GRevLex);
+                let exact = GroebnerBasis::compute_with_verification(
+                    gens.clone(),
+                    MonomialOrder::GRevLex,
+                    Exact,
+                );
+                assert_eq!(exact.proof_status(), Probabilistic);
+                assert_eq!(terms(&exact), terms(&plain));
+                let modular = GroebnerBasis::try_compute_with_verification(
+                    gens.clone(),
+                    MonomialOrder::GRevLex,
+                    Modular,
+                )
+                .unwrap();
+                assert_eq!(modular.proof_status(), ProbabilisticModular);
+                assert_eq!(terms(&modular), terms(&plain));
+                let lex = GroebnerBasis::try_compute_lex_with_verification(gens.clone(), Modular)
+                    .unwrap();
+                assert_eq!(lex.order(), MonomialOrder::Lex);
+                assert_eq!(lex.proof_status(), ProbabilisticModular);
+                assert_eq!(terms(&lex), terms(&GroebnerBasis::compute_lex(gens)));
+            }
+            // Homogeneous input: the exact mode proves it, the modular one
+            // must not claim that.
+            let hom = vec![
+                poly(&[(&[2, 0], 1), (&[0, 2], -1)]),
+                poly(&[(&[1, 1], 1), (&[0, 2], 1)]),
+            ];
+            let gb = GroebnerBasis::compute_with_verification(
+                hom.clone(),
+                MonomialOrder::GRevLex,
+                Modular,
+            );
+            assert_eq!(gb.proof_status(), ProbabilisticModular);
+            assert_eq!(
+                GroebnerBasis::compute(hom, MonomialOrder::GRevLex).proof_status(),
+                Proved
+            );
+            // `{1}` is proved in either mode; other orders stay exact.
+            let gb = GroebnerBasis::compute_with_verification(
+                inconsistent(),
+                MonomialOrder::GRevLex,
+                Modular,
+            );
+            assert!(is_unit_basis(gb.generators()));
+            assert_eq!(gb.proof_status(), Proved);
+            let gb = GroebnerBasis::compute_with_verification(
+                inhomogeneous(),
+                MonomialOrder::GrLex,
+                Modular,
+            );
+            assert_eq!(gb.proof_status(), Proved);
+        }
+
         #[test]
         fn certify_grevlex_rejects_a_basis_of_a_larger_ideal() {
             let gb = GroebnerBasis::compute(inhomogeneous(), MonomialOrder::GRevLex);

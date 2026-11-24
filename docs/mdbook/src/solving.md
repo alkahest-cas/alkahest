@@ -453,7 +453,7 @@ With the `parallel` feature (in the default wheels) the multimodular engines com
 
 ### How sure is this answer?
 
-`GroebnerBasis.proof_status` is `"proved"` or `"probabilistic"`, set from the path the computation actually took.
+`GroebnerBasis.proof_status` is `"proved"` or `"probabilistic"`, set from the path the computation actually took. A third value, `"probabilistic_modular"`, appears only when you ask for the weaker check with `verify="modular"` (see [Skipping the exact check](#skipping-the-exact-check)).
 
 ```python
 gb = GroebnerBasis.compute([x**2 - y**2, x*y], [x, y], order="grevlex")  # homogeneous
@@ -467,6 +467,7 @@ gb.proof_status                                  # 'probabilistic'
 |---|---|---|
 | `"proved"` | Buchberger (`"grlex"`, positive-dimensional `"lex"`, any fallback), `compute_f5`, the multimodular engine on homogeneous input, and the basis `{1}` once its separate proof succeeds | The generators are the reduced Gröbner basis of exactly the input ideal *I*. |
 | `"probabilistic"` | The multimodular engine on inhomogeneous input, and a `"lex"` basis converted from it by FGLM | Proved over ℚ: the generators *B* are a reduced Gröbner basis and *I* ⊆ ⟨*B*⟩. Not proved: ⟨*B*⟩ ⊆ *I*. |
+| `"probabilistic_modular"` | Only with `verify="modular"`: the multimodular engine on any input (homogeneous included), and FGLM from such a basis | Nothing is proved over ℚ. *B* agrees with the reduced basis modulo three random primes that played no part in reconstructing it. |
 
 **The failure model.** Since *I* ⊆ ⟨*B*⟩, equal leading terms would give equal ideals, so a wrong answer needs the two primes whose full F4 runs fixed the shape of *B*, each drawn independently from the roughly 5·10⁷ primes in [2³⁰, 2³¹), to give the same leading terms, ones that *I* does not have. (The other primes replay the computation one of those runs recorded, and a replay that diverges from it is discarded.) Such primes divide a fixed non-zero integer that depends only on the input, so if *k* primes in that range are unlucky for your input, the chance is of order (*k* / 5·10⁷)². The primes are drawn after the input is fixed, so no input can arrange it in advance, though enormous coefficients do raise *k*.
 
@@ -492,6 +493,17 @@ gb.proof_status                                  # 'proved'
 ```
 
 `compute_f5` and `order="grlex"` are proved too, at their own cost. From Rust, `GroebnerBasis::compute_exact` runs Buchberger under any order. Primary decomposition, `triangularize` and `rosenfeld_groebner` compute their bases exactly and are not affected by any of this.
+
+#### Skipping the exact check
+
+The exact check is the expensive part of some systems: on katsura-8 it is most of the running time, because every critical pair is reduced to zero over ℤ with coefficients of several hundred bits. Giac and Groebner.jl do not make it by default. `verify="modular"` (Rust: `GroebnerBasis::compute_with_verification`, `try_compute_lex_with_verification` with `GroebnerVerification::Modular`) skips it, and says so: the result is `"probabilistic_modular"`.
+
+```python
+gb = GroebnerBasis.compute([x**2 + y**2 - pool.integer(1), x*y - pool.integer(1)], [x, y], order="grevlex", verify="modular")
+gb.proof_status                                  # 'probabilistic_modular'
+```
+
+Instead of the exact check, a lifted basis *B* must agree coefficient by coefficient with the modular basis at three further random primes from [2³⁰, 2³¹) that were not used to reconstruct it. The default asks for one such agreement before it verifies, so this adds two. If the reduced basis *G* is computed correctly modulo a check prime *q* (true for all but finitely many *q*), agreement means *q* divides every coefficient of *B* − *G*. A wrong *B* therefore passes only if all three primes divide one fixed non-zero numerator of *h* bits. At most *h*/30 of the roughly 5·10⁷ candidates do, so the chance is below (*h* / 1.5·10⁹)³, plus the chance that a check prime is unlucky in exactly the way *B* is wrong. Neither that *B* is a Gröbner basis nor that *I* ⊆ ⟨*B*⟩ is checked, and this holds for homogeneous input too: the Hilbert-function argument that proves the homogeneous case needs the exact check. Two things do not change. The basis `{1}` is still proved separately, and the exact routes (other orders, any fallback) are still `"proved"`. `verify="modular"` cannot be combined with `certify=True`, whose proof starts from the exact check, or with `params`.
 
 ### GPU-accelerated Macaulay matrix (groebner-cuda) — Rust only, not wired into the solver
 
@@ -634,24 +646,24 @@ This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / 
 
 ## Performance
 
-Wall time in seconds for the standard Gröbner benchmarks, one process per run, on an AMD Ryzen Threadripper PRO 3955WX (shared machine, 8-core CPU quota). "default" is `GroebnerBasis.compute` with the `parallel` feature; "1 thread" is the same with `RAYON_NUM_THREADS=1`; both measured 2026-11-22, best of 2. `compute_f5` was measured 2026-11-04 with a 120 s cap. SymPy is 1.14 `groebner(..., method="buchberger")` / `method="f5b"` with its cache cleared before each run, measured 2026-10-25 on the same machine. Basis sizes agree with SymPy's wherever SymPy finishes.
+Wall time in seconds for the standard Gröbner benchmarks, one process per run, on an AMD Ryzen Threadripper PRO 3955WX (shared machine). "default" is `GroebnerBasis.compute` with the `parallel` feature and `RAYON_NUM_THREADS=8`; "1 thread" is the same with `RAYON_NUM_THREADS=1`; both measured 2026-11-23, best of 2 (katsura-5 rows: 2026-11-22, 8-core CPU quota). "1 thread, modular" is `verify="modular"` (see [Skipping the exact check](#skipping-the-exact-check)), whose results are `"probabilistic_modular"`. `compute_f5` was measured 2026-11-04 with a 120 s cap. SymPy is 1.14 `groebner(..., method="buchberger")` / `method="f5b"` with its cache cleared before each run, measured 2026-10-25 on the same machine. Basis sizes agree with SymPy's wherever SymPy finishes.
 
-| system | order | default | 1 thread | `compute_f5` | SymPy buchberger | SymPy f5b |
-|---|---|---|---|---|---|---|
-| cyclic-5 | grevlex | 0.002 | 0.002 | 0.003 | 0.42 | 1.77 |
-| cyclic-5 | lex | 0.009 | 0.007 | 0.013 | 15.4 | 2.53 |
-| cyclic-6 | grevlex | 0.017 | 0.016 | 0.071 | 47.9 | > 120 |
-| cyclic-6 | lex | 0.065 | 0.068 | 0.137 | > 120 | > 120 |
-| cyclic-7 | grevlex | 0.94 | 2.3 | 51.9 | > 120 | > 120 |
-| katsura-5 | grevlex | 0.004 | 0.004 | 0.012 | 0.96 | 1.19 |
-| katsura-5 | lex | 0.036 | 0.062 | 0.058 | > 120 | > 120 |
-| katsura-6 | grevlex | 0.027 | 0.030 | 0.087 | 14.2 | 41.0 |
-| katsura-6 | lex | 0.44 | 1.20 | 0.49 | > 120 | > 120 |
-| katsura-7 | grevlex | 0.097 | 0.21 | 0.79 | > 120 | > 120 |
-| katsura-7 | lex | 9.6 | 31.0 | 14.3 | > 120 | > 120 |
-| katsura-8 | grevlex | 0.68 | 2.0 | 8.0 | > 120 | > 120 |
+| system | order | default | 1 thread | 1 thread, modular | `compute_f5` | SymPy buchberger | SymPy f5b |
+|---|---|---|---|---|---|---|---|
+| cyclic-5 | grevlex | 0.002 | 0.005 | 0.001 | 0.003 | 0.42 | 1.77 |
+| cyclic-5 | lex | 0.008 | 0.008 | 0.006 | 0.013 | 15.4 | 2.53 |
+| cyclic-6 | grevlex | 0.016 | 0.014 | 0.010 | 0.071 | 47.9 | > 120 |
+| cyclic-6 | lex | 0.068 | 0.068 | 0.065 | 0.137 | > 120 | > 120 |
+| cyclic-7 | grevlex | 0.95 | 1.6 | 1.0 | 51.9 | > 120 | > 120 |
+| katsura-5 | grevlex | 0.004 | 0.004 | | 0.012 | 0.96 | 1.19 |
+| katsura-5 | lex | 0.036 | 0.062 | | 0.058 | > 120 | > 120 |
+| katsura-6 | grevlex | 0.024 | 0.028 | 0.011 | 0.087 | 14.2 | 41.0 |
+| katsura-6 | lex | 0.14 | 0.21 | 0.19 | 0.49 | > 120 | > 120 |
+| katsura-7 | grevlex | 0.11 | 0.20 | 0.051 | 0.79 | > 120 | > 120 |
+| katsura-7 | lex | 1.7 | 3.8 | 3.1 | 14.3 | > 120 | > 120 |
+| katsura-8 | grevlex | 0.66 | 1.8 | 0.36 | 8.0 | > 120 | > 120 |
 
-The "default" and "1 thread" columns on these systems are `"probabilistic"` and `compute_f5` is `"proved"`; see [How sure is this answer?](#how-sure-is-this-answer). Lex bases of these systems are large: the katsura-6 lex basis has coefficients of about 6 500 bits over 6 500-bit denominators, so lifting it takes several hundred primes, and that, not the modular arithmetic, is what the lex rows measure.
+The "default" and "1 thread" columns on these systems are `"probabilistic"` and `compute_f5` is `"proved"`; see [How sure is this answer?](#how-sure-is-this-answer). Lex bases of these systems are large: the katsura-6 lex basis has coefficients of about 6 500 bits over 6 500-bit denominators. The katsura ideals are in shape position, so their lex bases are lifted through the much smaller Kronecker representation and rebuilt from it; what the katsura lex rows measure is mostly that rebuilding and the exact check of the result.
 
 ## Generalized Pell equations: every solution class
 

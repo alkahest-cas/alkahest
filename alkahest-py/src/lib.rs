@@ -18085,6 +18085,17 @@ impl PyGroebnerBasis {
     ///     system, and :attr:`proof_status` is ``"proved"`` (see there). A
     ///     basis that fails the proof is recomputed exactly. Default false.
     ///     Not supported together with ``params``.
+    /// verify : str, optional
+    ///     How a multimodular basis is checked before it is returned.
+    ///     ``"exact"`` (the default) checks it over ℚ: see
+    ///     :attr:`proof_status`. ``"modular"`` is **weaker** and opt-in: no
+    ///     check over ℚ at all; the lifted basis must instead agree with the
+    ///     modular basis at three further random primes that were not used to
+    ///     reconstruct it (the check Giac and Groebner.jl make by default), and
+    ///     :attr:`proof_status` is ``"probabilistic_modular"``. It skips the
+    ///     exact verification, which dominates on systems such as katsura-8.
+    ///     Not supported together with ``certify=True`` (whose proof needs the
+    ///     exact check) or ``params``.
     ///
     /// Example::
     ///
@@ -18093,7 +18104,7 @@ impl PyGroebnerBasis {
     ///     # parameters in the coefficient field
     ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
     #[staticmethod]
-    #[pyo3(signature = (polys, vars, order=None, params=None, certify=false))]
+    #[pyo3(signature = (polys, vars, order=None, params=None, certify=false, verify=None))]
     fn compute(
         py: Python<'_>,
         polys: Vec<PyRef<PyExpr>>,
@@ -18101,13 +18112,35 @@ impl PyGroebnerBasis {
         order: Option<&str>,
         params: Option<Vec<PyRef<PyExpr>>>,
         certify: bool,
+        verify: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         same_pool!("GroebnerBasis.compute"; polys, vars, params);
+        let verification = match verify {
+            None | Some("exact") => alkahest_core::GroebnerVerification::Exact,
+            Some("modular") => alkahest_core::GroebnerVerification::Modular,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "GroebnerBasis.compute: verify must be \"exact\" or \"modular\", not {other:?}"
+                )))
+            }
+        };
+        let modular = verification == alkahest_core::GroebnerVerification::Modular;
+        if modular && certify {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GroebnerBasis.compute: certify=True needs the exact check; \
+                 it is not supported with verify=\"modular\"",
+            ));
+        }
         if let Some(params) = params {
             if !params.is_empty() {
                 if certify {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         "GroebnerBasis.compute: certify is not supported with params",
+                    ));
+                }
+                if modular {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "GroebnerBasis.compute: verify=\"modular\" is not supported with params",
                     ));
                 }
                 let basis = PyParamGroebnerBasis::build(py, polys, vars, params, order)?;
@@ -18138,6 +18171,12 @@ impl PyGroebnerBasis {
         // trip raises `BudgetExceededError` instead of returning it.
         let inner = py
             .detach(move || match (parsed_order, certify) {
+                (MonomialOrder::Lex, false) if modular => {
+                    GroebnerBasis::try_compute_lex_with_verification(gb_polys, verification)
+                }
+                (other, false) if modular => {
+                    GroebnerBasis::try_compute_with_verification(gb_polys, other, verification)
+                }
                 (MonomialOrder::Lex, false) => GroebnerBasis::try_compute_lex(gb_polys),
                 (MonomialOrder::Lex, true) => GroebnerBasis::try_compute_lex_certified(gb_polys),
                 (other, false) => GroebnerBasis::try_compute(gb_polys, other),
@@ -18263,7 +18302,8 @@ impl PyGroebnerBasis {
     }
 
     /// How sure this basis is of being the basis of the ideal you asked about:
-    /// ``"proved"`` or ``"probabilistic"``. Read-only.
+    /// ``"proved"``, ``"probabilistic"`` or, only when asked for with
+    /// ``verify="modular"``, ``"probabilistic_modular"``. Read-only.
     ///
     /// ``"proved"``
     ///     The generators are the reduced Gröbner basis of exactly the input
@@ -18303,6 +18343,18 @@ impl PyGroebnerBasis {
     /// when each of its leading monomials is divisible by one of them, because
     /// *I* ⊆ ⟨B⟩ is already proved. If that homogenised run is inconclusive the
     /// basis stays ``"probabilistic"``.
+    ///
+    /// ``"probabilistic_modular"``
+    ///     Only from ``compute(..., verify="modular")``, and weaker than
+    ///     ``"probabilistic"``: **nothing** is checked over ℚ. The generators
+    ///     agree, coefficient by coefficient, with the reduced Gröbner basis of
+    ///     the input modulo three random primes from [2³⁰, 2³¹) that played no
+    ///     part in reconstructing them. A wrong basis passes only if all three
+    ///     divide one fixed non-zero numerator of *h* bits, a chance below
+    ///     (h / 1.5·10⁹)³, or if a check prime is unlucky in just the way the
+    ///     basis is wrong. Neither that the generators form a Gröbner basis nor
+    ///     that they lie in the ideal is proved; this applies even to
+    ///     homogeneous input. A basis ``{1}`` is still proved separately.
     ///
     /// :meth:`compute_f5` and ``order="grlex"`` are proved at the cost of speed.
     /// See also :func:`alkahest.solve_proof_status`.
@@ -18363,6 +18415,7 @@ impl PyGroebnerBasis {
         let status = match proof_status {
             "proved" => alkahest_core::GroebnerProofStatus::Proved,
             "probabilistic" => alkahest_core::GroebnerProofStatus::Probabilistic,
+            "probabilistic_modular" => alkahest_core::GroebnerProofStatus::ProbabilisticModular,
             other => {
                 return Err(PyValueError::new_err(format!(
                     "pickled GroebnerBasis has an unknown proof status {other:?}"

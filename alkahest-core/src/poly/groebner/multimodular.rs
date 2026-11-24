@@ -238,7 +238,7 @@ fn rational_reconstruction(r: &Integer, m: &Integer, bound: &Integer) -> Option<
 }
 
 /// `x mod p` for a rational with denominator prime to `p`.
-fn rational_mod_p(x: &Rational, pr: Prime) -> Option<u64> {
+pub(crate) fn rational_mod_p(x: &Rational, pr: Prime) -> Option<u64> {
     let d = u64::from(x.denom().mod_u(pr.p as u32));
     if d == 0 {
         return None;
@@ -502,7 +502,7 @@ impl Lifter {
 /// `|c·den|` by 64 bits, about half the precision balanced rational
 /// reconstruction needs; otherwise rational reconstruction of `r·den`, whose
 /// denominator then joins `den`.
-fn lift_coefficient(r: &Integer, m: &Integer, den: &mut Integer) -> Option<Rational> {
+pub(crate) fn lift_coefficient(r: &Integer, m: &Integer, den: &mut Integer) -> Option<Rational> {
     let half = Integer::from(m >> 1u32);
     let mut t = Integer::from(r * &*den);
     t %= m;
@@ -620,6 +620,16 @@ pub(crate) fn groebner_basis(
     gens: &[GbPoly],
     order: MonomialOrder,
 ) -> Result<Vec<GbPoly>, Unavailable> {
+    groebner_basis_checked(gens, order, false)
+}
+
+/// [`groebner_basis`], with the lift checked at further primes instead of
+/// over ℚ when `modular` (see [`super::GroebnerVerification::Modular`]).
+pub(crate) fn groebner_basis_checked(
+    gens: &[GbPoly],
+    order: MonomialOrder,
+    modular: bool,
+) -> Result<Vec<GbPoly>, Unavailable> {
     let gens: Vec<GbPoly> = gens.iter().filter(|g| !g.is_zero()).cloned().collect();
     let Some(n) = gens.first().map(|g| g.n_vars) else {
         return Err(Unavailable::Fallback);
@@ -633,7 +643,10 @@ pub(crate) fn groebner_basis(
         ints.push(int_poly(&mut table, g).ok_or(Unavailable::Fallback)?);
     }
 
-    traced_lift_loop(&mut table, &ints, |cand| verify_over_q(&gens, cand, order)).map(|mut b| {
+    traced_lift_loop(&mut table, &ints, modular, |cand| {
+        verify_over_q(&gens, cand, order)
+    })
+    .map(|mut b| {
         b.reverse();
         b
     })
@@ -709,19 +722,72 @@ pub(crate) fn batch_width() -> usize {
     }
 }
 
+/// Further primes a lift must agree with in the modular mode, after the one
+/// every lift needs before it is proposed.
+const MODULAR_CHECKS: usize = 2;
+
+/// A proposed lift under the modular check
+/// ([`super::GroebnerVerification::Modular`]): it is accepted once
+/// [`MODULAR_CHECKS`] images at primes not used to reconstruct it agree with
+/// it, and rejected at the first that does not.
+struct ModularCheck {
+    shape: Shape,
+    lift: Vec<Rational>,
+    agreed: usize,
+}
+
+impl ModularCheck {
+    fn new(shape: Shape, lift: Vec<Rational>) -> Self {
+        ModularCheck {
+            shape,
+            lift,
+            agreed: 0,
+        }
+    }
+
+    /// `Some(true)` once enough images agree, `Some(false)` at one that does
+    /// not (another shape, or a coefficient that differs), `None` while
+    /// undecided.  An image modulo a prime dividing a denominator of the lift
+    /// says nothing and is skipped.
+    fn feed(&mut self, img: &Image, pr: Prime) -> Option<bool> {
+        if img.shape != self.shape {
+            return Some(false);
+        }
+        let mut informative = true;
+        for (x, &c) in self.lift.iter().zip(&img.coefs) {
+            match rational_mod_p(x, pr) {
+                Some(r) if r == c => {}
+                Some(_) => return Some(false),
+                None => informative = false,
+            }
+        }
+        if informative {
+            self.agreed += 1;
+        }
+        (self.agreed >= MODULAR_CHECKS).then_some(true)
+    }
+}
+
 /// What one prime gave: a basis image (monomials in the table it was computed
 /// with), nothing usable (a bad prime), or a reason to stop.
-type PrimeResult = Result<Option<Vec<ModPoly>>, Unavailable>;
+pub(crate) type PrimeResult = Result<Option<Vec<ModPoly>>, Unavailable>;
 
 /// The multimodular loop shared by the grevlex and FGLM paths: compute images
 /// modulo successive random primes with `compute` (the first alone, then in
 /// parallel batches on clones of `table`), lift the majority shape, and hand
 /// each lift to `verify` until one passes.
-fn lift_loop(
+///
+/// With `modular`, a lift is accepted on [`ModularCheck`] instead and
+/// `verify` is only called on the accepted one, to finish it: its answer is
+/// then whether the candidate could be built at all (`Some(false)` rejects
+/// it like a disagreeing prime).
+pub(crate) fn lift_loop(
     table: &mut MonoTable,
+    modular: bool,
     compute: impl Fn(&mut MonoTable, Prime) -> PrimeResult + Sync,
     mut verify: impl FnMut(&[GbPoly]) -> Option<bool>,
 ) -> Result<Vec<GbPoly>, Unavailable> {
+    let mut checking: Option<ModularCheck> = None;
     let mut lifter = Lifter::new();
     let mut failed = 0usize;
     let mut primes = RandomPrimes::new();
@@ -777,10 +843,35 @@ fn lift_loop(
             let Some(gb) = r? else {
                 continue;
             };
-            let lifted = lifter.add(Image::from_polys(gb), p);
+            let img = Image::from_polys(gb);
+            if let Some(chk) = &mut checking {
+                let verdict = chk.feed(&img, p);
+                if verdict.is_none() {
+                    continue;
+                }
+                let chk = checking.take().expect("checking");
+                if verdict == Some(true) {
+                    let cand = polys_from_lift(table, &chk.shape, chk.lift);
+                    match verify(&cand) {
+                        None => return Err(Unavailable::Interrupted),
+                        Some(true) => return Ok(cand),
+                        Some(false) => {}
+                    }
+                }
+                failed += 1;
+                if failed >= MAX_FAILED_VERIFICATIONS {
+                    return Err(Unavailable::Fallback);
+                }
+                lifter.reject_candidate();
+            }
+            let lifted = lifter.add(img, p);
             let Some((shape, lift)) = lifted else {
                 continue;
             };
+            if modular {
+                checking = Some(ModularCheck::new(shape, lift));
+                continue;
+            }
             let cand = polys_from_lift(table, &shape, lift);
             let vr = verify(&cand);
             match vr {
@@ -803,6 +894,9 @@ type PrimeImage = (Prime, Vec<Vec<u64>>);
 
 /// What replaying a trace modulo one prime gave.
 type Replay = Result<Vec<ModPoly>, ApplyFail>;
+
+/// Primes replayed side by side in one pass over a trace.
+const LANES: usize = 4;
 
 /// Full F4 runs kept while looking for two whose shapes agree.
 const MAX_LEARN_RUNS: usize = 4;
@@ -831,11 +925,16 @@ const MAX_RELEARNS: usize = 3;
 /// modulo `q` is the image modulo `q` of one fixed sequence of row operations
 /// over ℚ (it only divides by pivots that are non-zero modulo `q`, hence over
 /// ℚ), so each replayed element is the image of an element of the ideal.
+///
+/// With `modular`, a lift is accepted on [`ModularCheck`] instead of being
+/// verified over ℚ.
 fn traced_lift_loop(
     table: &mut MonoTable,
     ints: &[IntPoly],
+    modular: bool,
     mut verify: impl FnMut(&[GbPoly]) -> Option<bool>,
 ) -> Result<Vec<GbPoly>, Unavailable> {
+    let mut checking: Option<ModularCheck> = None;
     let mut lifter = Lifter::new();
     let mut failed = 0usize;
     let mut primes = RandomPrimes::new();
@@ -844,6 +943,7 @@ fn traced_lift_loop(
     let mut trace: Option<Trace> = None;
     let mut mismatches = 0usize;
     let mut relearns = 0usize;
+    let mut replayed = 0usize;
     loop {
         if used >= MAX_PRIMES {
             return Err(Unavailable::Fallback);
@@ -882,21 +982,41 @@ fn traced_lift_loop(
                 results.push((p, gb));
             }
             Some(tr) => {
-                let batch: Vec<Prime> = primes.by_ref().take(2 * batch_width()).collect();
+                // The first pass over a trace takes two primes: a small input
+                // may need no more, and four would be wasted on it.
+                let lanes = if replayed == 0 { 2 } else { LANES };
+                let batch: Vec<Prime> = primes.by_ref().take(lanes * batch_width()).collect();
+                replayed += batch.len();
                 if batch.is_empty() {
                     return Err(Unavailable::Fallback);
                 }
                 used += batch.len();
-                // Two primes per pass over the trace (see `Trace::apply2`).
+                // Several primes per pass over the trace (see `Trace::apply4`).
                 let good: Vec<PrimeImage> = batch
                     .into_iter()
                     .filter_map(|p| coefs_mod_p(ints, p).map(|c| (p, c)))
                     .collect();
-                let jobs: Vec<&[PrimeImage]> = good.chunks(2).collect();
+                let jobs: Vec<&[PrimeImage]> = good.chunks(LANES).collect();
                 let out: Vec<Option<(Prime, Replay)>> = run_jobs(jobs, |job| match job {
-                    [(p, a), (q, b)] => {
+                    [(p, a), (q, b), (r, c), (s, e)] => {
+                        let [ra, rb, rc, re] = tr.apply4(
+                            [a.as_slice(), b.as_slice(), c.as_slice(), e.as_slice()],
+                            [*p, *q, *r, *s],
+                        );
+                        vec![
+                            Some((*p, ra)),
+                            Some((*q, rb)),
+                            Some((*r, rc)),
+                            Some((*s, re)),
+                        ]
+                    }
+                    [(p, a), (q, b), rest @ ..] => {
                         let [ra, rb] = tr.apply2([a.as_slice(), b.as_slice()], [*p, *q]);
-                        vec![Some((*p, ra)), Some((*q, rb))]
+                        let mut v = vec![Some((*p, ra)), Some((*q, rb))];
+                        for (r, c) in rest {
+                            v.push(Some((*r, tr.apply(c, *r))));
+                        }
+                        v
                     }
                     [(p, a)] => vec![Some((*p, tr.apply(a, *p)))],
                     _ => Vec::new(),
@@ -922,10 +1042,36 @@ fn traced_lift_loop(
             }
         }
         for (p, gb) in results {
-            let lifted = lifter.add(Image::from_polys(gb), p);
+            let img = Image::from_polys(gb);
+            if let Some(chk) = &mut checking {
+                match chk.feed(&img, p) {
+                    None => continue,
+                    Some(true) => {
+                        let chk = checking.take().expect("checking");
+                        return Ok(polys_from_lift(table, &chk.shape, chk.lift));
+                    }
+                    Some(false) => {
+                        checking = None;
+                        failed += 1;
+                        if failed >= MAX_FAILED_VERIFICATIONS {
+                            return Err(Unavailable::Fallback);
+                        }
+                        lifter.reject_candidate();
+                        if trace.take().is_some() {
+                            relearns += 1;
+                        }
+                        learned.clear();
+                    }
+                }
+            }
+            let lifted = lifter.add(img, p);
             let Some((shape, lift)) = lifted else {
                 continue;
             };
+            if modular {
+                checking = Some(ModularCheck::new(shape, lift));
+                continue;
+            }
             let fast = crate::poly::groebner::qverify::verify_lift(table, ints, &shape, &lift);
             let cand = polys_from_lift(table, &shape, lift);
             let vr = match fast {
@@ -961,34 +1107,42 @@ fn traced_lift_loop(
 
 /// Where `x_i · s` lands, for a staircase monomial `s`: another staircase
 /// monomial, or (on the border) the normal form, a sparse rational vector.
-enum MulCol {
+pub(crate) enum MulCol {
     Std(usize),
     Nf(Vec<(usize, Rational)>),
 }
 
 /// A multiplication matrix modulo `p`, column by column (see [`MulCol`]).
-type ModMulMatrix = Vec<Result<usize, Vec<(usize, u64)>>>;
+pub(crate) type ModMulMatrix = Vec<Result<usize, Vec<(usize, u64)>>>;
 
 /// The multiplication matrices of `ℚ[x]/I` on the grevlex staircase basis:
 /// `mul[i][j]` is the normal form of `x_i · staircase[j]`.
-struct MulMatrices {
-    mul: Vec<Vec<MulCol>>,
-    d: usize,
+///
+/// With `partial`, only the matrix of the last variable is complete; the
+/// others hold their first column alone (the coordinates of `x_i · 1`), which
+/// is all the shape-position path ([`super::shape`]) and its verification
+/// read.
+pub(crate) struct MulMatrices {
+    pub(crate) mul: Vec<Vec<MulCol>>,
+    pub(crate) d: usize,
+    pub(crate) partial: bool,
 }
 
 impl MulMatrices {
-    fn new(
+    pub(crate) fn new(
         g: &[GbPoly],
         n: usize,
         staircase: &[Vec<u32>],
         idx: &HashMap<Vec<u32>, usize>,
+        partial: bool,
     ) -> Option<Self> {
         let divs = Divisors::new(g, MonomialOrder::GRevLex);
         let d = staircase.len();
         let mut mul = Vec::with_capacity(n);
         for i in 0..n {
-            let mut cols = Vec::with_capacity(d);
-            for s in staircase {
+            let cols_wanted = if partial && i + 1 < n { 1 } else { d };
+            let mut cols = Vec::with_capacity(cols_wanted);
+            for s in &staircase[..cols_wanted] {
                 if crate::budget::interrupted() {
                     return None;
                 }
@@ -1008,11 +1162,11 @@ impl MulMatrices {
             }
             mul.push(cols);
         }
-        Some(MulMatrices { mul, d })
+        Some(MulMatrices { mul, d, partial })
     }
 
     /// The matrices modulo `p`; `None` if `p` divides a denominator.
-    fn mod_p(&self, pr: Prime) -> Option<Vec<ModMulMatrix>> {
+    pub(crate) fn mod_p(&self, pr: Prime) -> Option<Vec<ModMulMatrix>> {
         let mut out = Vec::with_capacity(self.mul.len());
         for cols in &self.mul {
             let mut oc = Vec::with_capacity(cols.len());
@@ -1356,12 +1510,24 @@ impl ExactVectors {
     }
 }
 
+/// Quotient dimension from which [`verify_lex`] checks one element per job.
+const PARALLEL_VERIFY_MIN_DIM: usize = 32;
+
 /// `Some(true)` when every polynomial of `cand` lies in `I` (its normal form,
 /// assembled from exact coordinate vectors, vanishes) and the lex staircase of
 /// `cand` has exactly `dim ℚ[x]/I` monomials.  Together these make `cand` a
 /// lex Gröbner basis of `I`: `⟨lt(cand)⟩ ⊆ lt(I)`, and both have the same
 /// finite codimension.  `None` when an armed budget fired.
-fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Option<bool> {
+pub(crate) fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Option<bool> {
+    if mats.partial {
+        // Only `x_last^k` and the single variables have coordinates here.
+        let readable = |e: &Vec<u32>| {
+            e[..n - 1].iter().all(|&x| x == 0) || (e[n - 1] == 0 && e.iter().sum::<u32>() == 1)
+        };
+        if !cand.iter().all(|g| g.terms.keys().all(readable)) {
+            return Some(false);
+        }
+    }
     let mut leads = Vec::with_capacity(cand.len());
     for g in cand {
         let Some(l) = g.leading_exp(MonomialOrder::Lex) else {
@@ -1373,49 +1539,66 @@ fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Option<bool> {
         return Some(false);
     }
     let mut ev = ExactVectors::new(mats);
+    // The coordinate vectors first (each builds on earlier ones), then one
+    // element per job.
     for g in cand {
-        if crate::budget::interrupted() {
-            return None;
-        }
-        // Σ_m c_m·vec(m) with vec(m) = w_m/den_m: scale every c_m/den_m to
-        // the common denominator and accumulate over ℤ (no gcds).
-        let mut factors = Vec::with_capacity(g.terms.len());
-        let mut common = Integer::from(1);
-        for (m, c) in &g.terms {
+        for m in g.terms.keys() {
             if !ev.ensure(m) {
                 return None;
             }
-            let f = Rational::from(c / &ev.memo[m].1);
-            common.lcm_mut(f.denom());
-            factors.push((m, f));
+        }
+    }
+    let ev = &ev;
+    let check = |g: &GbPoly| {
+        // Σ_m c_m·vec(m) with c_m = a_m/b_m and vec(m) = w_m/e_m: multiply
+        // through by B·E, B and E the lcms of the b_m and of the e_m, and
+        // accumulate (B/b_m)·a_m·(E/e_m)·w_m over ℤ.  The b_m of one basis
+        // element are mostly equal, so the lcms are taken only when a
+        // divisibility test fails (no gcd per term).
+        let mut big_b = Integer::from(1);
+        let mut big_e = Integer::from(1);
+        for (m, c) in &g.terms {
+            if !big_b.is_divisible(c.denom()) {
+                big_b.lcm_mut(c.denom());
+            }
+            let e = &ev.memo[m].1;
+            if !big_e.is_divisible(e) {
+                big_e.lcm_mut(e);
+            }
         }
         let mut acc = vec![Integer::new(); mats.d];
-        let mut t = Integer::new();
-        for (m, f) in factors {
-            let mut s = Integer::from(common.div_exact_ref(f.denom()));
-            s *= f.numer();
+        for (m, c) in &g.terms {
+            let mut s = Integer::from(big_b.div_exact_ref(c.denom()));
+            s *= c.numer();
+            s *= Integer::from(big_e.div_exact_ref(&ev.memo[m].1));
             for (a, x) in acc.iter_mut().zip(&ev.memo[m].0) {
                 if *x != 0 {
-                    t.assign(&s * x);
-                    *a += &t;
+                    *a += &s * x;
                 }
             }
         }
-        if acc.iter().any(|x| *x != 0) {
-            return Some(false);
-        }
+        acc.iter().all(|x| *x == 0)
+    };
+    // Small bases are checked in place: a parallel job costs more than they do.
+    if mats.d < PARALLEL_VERIFY_MIN_DIM {
+        return Some(cand.iter().all(check));
     }
-    Some(true)
+    let in_ideal = run_jobs(cand.iter().collect(), check).ok()?;
+    Some(in_ideal.into_iter().all(|z| z))
 }
 
 /// The reduced lex basis of the zero-dimensional ideal whose reduced grevlex
 /// basis is `g` (with `staircase`, sorted increasingly, as its standard
 /// monomials): FGLM modulo primes, lifted, and verified exactly against `g`.
 /// Sorted by increasing leading monomial.
+///
+/// With `modular`, the lift is checked at further primes instead
+/// ([`super::GroebnerVerification::Modular`]).
 pub(crate) fn fglm_lex(
     g: &[GbPoly],
     n: usize,
     staircase: &[Vec<u32>],
+    modular: bool,
 ) -> Result<Vec<GbPoly>, Unavailable> {
     let d = staircase.len();
     if d == 0 || staircase[0].iter().any(|&e| e != 0) {
@@ -1426,7 +1609,27 @@ pub(crate) fn fglm_lex(
         .enumerate()
         .map(|(i, e)| (e.clone(), i))
         .collect();
-    let Some(mats) = MulMatrices::new(g, n, staircase, &idx) else {
+    match super::shape::shape_lex(g, n, staircase, &idx, modular) {
+        Ok(Some(lex)) => return Ok(lex),
+        Ok(None) => {}
+        Err(Unavailable::Interrupted) => return Err(Unavailable::Interrupted),
+        // Not conclusive in shape position: the general conversion below.
+        Err(Unavailable::Fallback) => {}
+    }
+    fglm_lex_general(g, n, staircase, &idx, modular)
+}
+
+/// [`fglm_lex`] without the shape-position path: the general FGLM traversal
+/// modulo each prime.
+pub(crate) fn fglm_lex_general(
+    g: &[GbPoly],
+    n: usize,
+    staircase: &[Vec<u32>],
+    idx: &HashMap<Vec<u32>, usize>,
+    modular: bool,
+) -> Result<Vec<GbPoly>, Unavailable> {
+    let d = staircase.len();
+    let Some(mats) = MulMatrices::new(g, n, staircase, idx, false) else {
         return Err(if crate::budget::interrupt_pending() {
             Unavailable::Interrupted
         } else {
@@ -1436,6 +1639,7 @@ pub(crate) fn fglm_lex(
     let mut table = MonoTable::new(n, MonomialOrder::Lex);
     lift_loop(
         &mut table,
+        modular,
         |t, pr| {
             let Some(mul) = mats.mod_p(pr) else {
                 return Ok(None);
@@ -1448,7 +1652,13 @@ pub(crate) fn fglm_lex(
                 Err(Stop::Overflow) => Ok(None),
             }
         },
-        |cand| verify_lex(cand, &mats, n),
+        |cand| {
+            if modular {
+                Some(true)
+            } else {
+                verify_lex(cand, &mats, n)
+            }
+        },
     )
 }
 
@@ -1721,7 +1931,7 @@ pub(crate) mod tests {
         let n = gens[0].n_vars;
         let g = groebner_basis(gens, MonomialOrder::GRevLex)?;
         let st = crate::poly::groebner::fglm::grevlex_staircase(&g, n).expect("zero-dimensional");
-        fglm_lex(&g, n, &st)
+        fglm_lex(&g, n, &st, false)
     }
 
     #[test]
@@ -1754,8 +1964,8 @@ pub(crate) mod tests {
         let st = crate::poly::groebner::fglm::grevlex_staircase(&g, 4).unwrap();
         let idx: HashMap<Vec<u32>, usize> =
             st.iter().enumerate().map(|(i, e)| (e.clone(), i)).collect();
-        let mats = MulMatrices::new(&g, 4, &st, &idx).unwrap();
-        let mut lex = fglm_lex(&g, 4, &st).unwrap();
+        let mats = MulMatrices::new(&g, 4, &st, &idx, false).unwrap();
+        let mut lex = fglm_lex(&g, 4, &st, false).unwrap();
         assert_eq!(verify_lex(&lex, &mats, 4), Some(true));
         // Perturb one coefficient: no longer in the ideal.
         let last = lex.last_mut().unwrap();
@@ -1763,7 +1973,7 @@ pub(crate) mod tests {
         *last.terms.get_mut(&k).unwrap() += 1;
         assert_eq!(verify_lex(&lex, &mats, 4), Some(false));
         // Drop an element: the staircase is too big.
-        let mut lex = fglm_lex(&g, 4, &st).unwrap();
+        let mut lex = fglm_lex(&g, 4, &st, false).unwrap();
         lex.pop();
         assert_eq!(verify_lex(&lex, &mats, 4), Some(false));
     }
