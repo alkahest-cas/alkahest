@@ -30,12 +30,20 @@ dominates the cost of a search. This module makes it fast and exact:
 * :func:`search` — a small reference controller (risk-seeking policy
   gradient over per-slot categorical distributions, as in the paper) so a
   search runs end to end.
+* :func:`finalize` — turns a fitted candidate into an exact closed form
+  (filtering, tied weights, snapping to rationals and constants such as
+  ``π/4``, refitting under a loss gate), lifts it to symbolic dimension ``d``
+  with ``Sum`` / ``Indexed`` and verifies it exactly — for every ``d`` — with
+  the statuses of :func:`alkahest.experimental.verify_pde_solution`, plus a
+  Lean certificate at the fitted ``d`` when cheap;
+  :func:`recovery_metric` is the skeleton-equivalence recovery criterion.
 
 Candidates whose value overflows, divides by zero or takes ``log`` of a
 non-positive number get loss ``+inf`` — never NaN. Malformed input raises
-:class:`FexError` (``E-FEX-001`` … ``E-FEX-008``).
+:class:`FexError` (``E-FEX-001`` … ``E-FEX-011``).
 
-The dimension ``d`` is concrete. Arrays are NumPy ``float64`` (opcodes
+Search and fitting run at a concrete dimension ``d``; :func:`finalize`
+lifts the result to symbolic ``d``. Arrays are NumPy ``float64`` (opcodes
 ``int64``); anything exposing ``__dlpack__`` is accepted as input.
 
 Example
@@ -79,11 +87,15 @@ __all__ = [
     "SearchResult",
     "Template",
     "canonical_key",
+    "family_symbols",
+    "finalize",
     "fit",
+    "recovery_metric",
     "sample_box",
     "sample_box_boundary",
     "sample_initial_slice",
     "search",
+    "snap_candidates",
 ]
 
 #: The FEX paper's unary table, in the reference implementation's order.
@@ -324,6 +336,9 @@ class Problem:
         self._native = native
         self.jet = jet
         self.exact = exact
+        # What the problem was built from, in exact form where it was given
+        # as expressions: read by :func:`finalize` to verify a solution.
+        self.spec: dict[str, Any] = {}
 
     dim = property(lambda self: self._native.dim)
     time = property(lambda self: self._native.time)
@@ -338,16 +353,19 @@ class Problem:
 
     @classmethod
     def _make(cls, dim, kind, jet, rhs, bc, potential, exact, **kw) -> Problem:
+        rhs, bc, potential = _source(rhs, jet), _source(bc, jet), _source(potential, jet)
         native = _FexProblem(
             dim,
             kind,
-            rhs=_source(rhs, jet),
-            bc=_source(bc, jet),
-            potential=_source(potential, jet),
+            rhs=rhs,
+            bc=bc,
+            potential=potential,
             coords=jet.x,
             **kw,
         )
-        return cls(native, jet, exact)
+        out = cls(native, jet, exact)
+        out.spec = {"kind": kind, "rhs": rhs, "bc": bc, "potential": potential, **kw}
+        return out
 
     @classmethod
     def poisson(
@@ -701,6 +719,12 @@ def fit(
 # ---------------------------------------------------------------------------
 
 
+def _local_method(ev: Evaluator) -> str:
+    """Levenberg–Marquardt for a residual loss, BFGS otherwise (a Rayleigh
+    quotient or a normalised loss has no residual vector)."""
+    return "lm" if ev.problem.loss == "least_squares" else "bfgs"
+
+
 def _prune(
     ev: Evaluator,
     best: FitResult,
@@ -725,7 +749,7 @@ def _prune(
             es = np.tile(np.asarray(e, dtype=np.int64), (restarts, 1))
             th0 = tpl.init_params(restarts, rng)
             th0[0] = best.theta
-            r = min(ev.fit(es, th0, method="lm", max_iter=iters), key=lambda x: x.loss)
+            r = min(ev.fit(es, th0, method=_local_method(ev), max_iter=iters), key=lambda x: x.loss)
             if r.loss <= cutoff:
                 best = r
                 changed = True
@@ -746,6 +770,9 @@ class SearchResult:
     unique_skeletons: int
     seconds: float
     history: list[float] = field(default_factory=list)
+    template: Template | None = None
+    points: np.ndarray | None = None
+    boundary: np.ndarray | None = None
 
 
 def search(
@@ -760,7 +787,7 @@ def search(
     greedy: float = 0.1,
     percentile: float = 0.5,
     lr: float = 0.05,
-    score_method: str = "lm",
+    score_method: str | None = None,
     score_iters: int = 20,
     score_restarts: int = 2,
     pool_size: int = 10,
@@ -797,6 +824,8 @@ def search(
     rng = rng if rng is not None else np.random.default_rng()
     t0 = time.perf_counter()
     ev = Evaluator(template, problem, points, boundary)
+    if score_method is None:
+        score_method = _local_method(ev)
     arities = template.slot_arities
     logits = [np.zeros(k) for k in arities]
     m1 = [np.zeros(k) for k in arities]
@@ -871,7 +900,7 @@ def search(
         es = np.tile(np.asarray(r.e, dtype=np.int64), (finetune_restarts, 1))
         th0 = template.init_params(finetune_restarts, rng)
         th0[0] = r.theta
-        res = ev.fit(es, th0, method="lm", max_iter=finetune_iters)
+        res = ev.fit(es, th0, method=_local_method(ev), max_iter=finetune_iters)
         finals.append((key, min(res, key=lambda x: x.loss)))
 
     # Among families that solve the problem to within `tie_loss`, prefer the
@@ -898,4 +927,62 @@ def search(
         unique_skeletons=len(cache),
         seconds=time.perf_counter() - t0,
         history=history,
+        template=template,
+        points=ev.points,
+        boundary=ev.boundary,
     )
+
+
+# ---------------------------------------------------------------------------
+# Finalising a solution (F3)
+# ---------------------------------------------------------------------------
+
+
+def finalize(result: Any, problem: Problem, **kw: Any) -> dict:
+    """Turn a fitted candidate into an exact, verified closed form — for the
+    fitted dimension and, when it lifts, for symbolic ``d``.
+
+    Coefficients are pinned, filtered (``|θ| < tau`` → 0), grouped (equal leaf
+    weights tied) and snapped to exact constants (continued fractions, π, √2,
+    √3, e, log 2 and products / quotients of two, PSLQ and LLL relations),
+    refitting after every step and keeping it only while the loss stays
+    within the gate. Tied leaves ``Σᵢ α φ(xᵢ)`` lift to
+    ``α·Sum(φ(Indexed(x, i)), i, 1, d)``, the operator is written for
+    symbolic ``d``, and the residuals — PDE, and the boundary condition on
+    every face of the box (or the initial condition) — go through the exact
+    zero test with the statuses of
+    :func:`alkahest.experimental.verify_pde_solution`.
+
+    Returns a dict with ``expr``, ``expr_symbolic_d``, ``snapped_params``,
+    ``verification`` (``concrete``, ``symbolic_d``, ``interval``) and
+    ``certificate``; see :func:`alkahest._fex_finalize.finalize` for every
+    option. Raises :class:`FexError` ``E-FEX-009`` / ``E-FEX-010``.
+    """
+    from ._fex_finalize import finalize as _finalize
+
+    return _finalize(result, problem, **kw)
+
+
+def recovery_metric(found: Any, truth: Any) -> dict:
+    """Skeleton equivalence after simplification (the recovery criterion of
+    SSDE and SymPlex), plus whether ``found − truth`` is proved zero. Raises
+    :class:`FexError` ``E-FEX-011`` unless both are expressions."""
+    from ._fex_finalize import recovery_metric as _rm
+
+    return _rm(found, truth)
+
+
+def family_symbols(problem: Problem) -> Any:
+    """``d``, ``i``, ``x``, ``t`` and ``sum(...)`` for writing the
+    ``family=`` of :func:`finalize` in symbolic dimension."""
+    from ._fex_finalize import family_symbols as _fs
+
+    return _fs(problem)
+
+
+def snap_candidates(value: float, *, max_den: int = 1000, rel_tol: float = 1e-7) -> list:
+    """Exact constants near ``value``, simplest first, as ``(constant, how)``
+    with ``how`` in ``rational`` / ``constant`` / ``pslq`` / ``lll``."""
+    from ._fex_finalize import snap_candidates as _sc
+
+    return _sc(value, max_den=max_den, rel_tol=rel_tol)

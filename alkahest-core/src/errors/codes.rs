@@ -740,6 +740,9 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-FEX-006", class: "FexError", cause: Cause::Unsupported, remediation: Some("build the operator from the Jet symbols (u, lap, grad[i], ut) and the coordinates only; source terms may use the coordinates only") },
     ErrorSpec { code: "E-FEX-007", class: "FexError", cause: Cause::UserInput,   remediation: Some("build the template and the problem with the same dim, and give the time coordinate as an index below dim") },
     ErrorSpec { code: "E-FEX-008", class: "FexError", cause: Cause::UserInput,   remediation: Some("use loss_and_grad (and the adam or bfgs fitters) for Rayleigh-quotient and normalised losses; residual_and_jacobian and Levenberg-Marquardt need a least-squares problem") },
+    ErrorSpec { code: "E-FEX-009", class: "FexError", cause: Cause::UserInput,   remediation: Some("pass the SearchResult returned by fex.search, or a FitResult together with template=; the problem must be the fex.Problem the candidate was fitted to") },
+    ErrorSpec { code: "E-FEX-010", class: "FexError", cause: Cause::UserInput,   remediation: Some("build the family from fex.family_symbols(problem): rhs / bc / potential as expressions in d, Indexed(x, i) and t that reduce to the problem's own source terms at the problem's dimension") },
+    ErrorSpec { code: "E-FEX-011", class: "FexError", cause: Cause::UserInput,   remediation: Some("pass two Expr from the same ExprPool (or a SearchResult / finalize result for 'found')") },
     // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
     // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
     //

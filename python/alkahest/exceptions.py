@@ -54,8 +54,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-LP-001 … E-LP-006        LinprogError (exact LP / MILP; 005 = branch and bound
                                  hit max_nodes, carrying the unproven incumbent;
                                  006 = a certificate failed its check, withheld)
-    E-FEX-001 … E-FEX-008      FexError (alkahest.fex, experimental; malformed
-                                 templates, opcodes, parameters, points, operators)
+    E-FEX-001 … E-FEX-011      FexError (alkahest.fex, experimental; malformed
+                                 templates, opcodes, parameters, points, operators;
+                                 009-011 finalize / family / recovery_metric input,
+                                 raised from Python)
     E-LOGIC-001 … E-LOGIC-006  LogicError (002-006 = the propositional layer:
                                  not propositional, size ceiling, exact
                                  minimum unavailable, bad argument, failed
