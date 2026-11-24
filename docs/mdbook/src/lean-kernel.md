@@ -68,6 +68,30 @@ trusted base. The certificate says so in its header, and
 `certificate_status["path"]` reports `"kernel_native"`. CI rejects any default
 certificate that uses it.
 
+### Measured cost
+
+Per-certificate check time, from Lean's profiler: every category except
+`import`, so loading Mathlib is excluded. Shared corpus: the calculus suites'
+163 integrals that both paths certify.
+
+| | kernel | tactic |
+|---|---|---|
+| median | 0.32 s | 0.58 s |
+| 90th percentile | 3.3 s | 29.5 s |
+| max | 13.1 s | 107.9 s |
+| import (median) | 5.5 s | 7.2 s |
+
+The kernel is faster on every certificate, with a worst-case ratio of 0.82.
+What made the difference:
+
+* Witness numbers are raw literals (`nat_lit`, `Int.ofNat`, `Int.negSucc`), so
+  the elaborator runs no `OfNat` instance search per number.
+* Comparisons are `Nat.blt` matched as `Bool`, not `Decidable` instances.
+* The atom lookup uses a structural Boolean equality: the derived `DecidableEq`
+  on lists of `ℚ` was the slowest step.
+* Products put the shorter operand outermost, and cofactor terms arrive in
+  the kernel's own order.
+
 ## Fallback and reporting
 
 The Rust emitter (`alkahest-core/src/lean/kernel.rs`) mirrors the Lean checker
