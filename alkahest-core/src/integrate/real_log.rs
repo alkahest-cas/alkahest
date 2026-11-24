@@ -76,6 +76,27 @@ fn real_where_integrand_is(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
     checked >= 2
 }
 
+/// Derivation-log rule name of the final real-log pass in `integrate`.
+pub(crate) const REAL_LOG_RULE: &str = "int_real_valued_logs";
+
+/// The final pass of the outermost `integrate`: [`realify_logs`] on any
+/// answer that carries a `log` of the variable, `None` when nothing changed.
+/// Answers without one (most of them) cost a single tree walk.
+pub(crate) fn realify_answer(
+    f: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let mut logs = Vec::new();
+    collect_logs(f, var, pool, &mut logs);
+    if logs.is_empty() {
+        return None;
+    }
+    let g = realify_logs(f, integrand, var, pool);
+    (g != f).then_some(g)
+}
+
 /// See the module docs.  Returns `f` unchanged when nothing needs rewriting
 /// or the rewrite cannot be confirmed.
 pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {

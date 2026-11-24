@@ -1876,6 +1876,23 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         let grew =
             structural_size(next_w, pool) as f64 > GROWTH_LIMIT * structural_size(w, pool) as f64;
         if grew && !(step == 0 && split.trivial_dv) {
+            // A larger residual is still worth one attempt to *close* on the
+            // first step, without recursing on it: `∫x·cot²x` has
+            // `v = −x − cot x`, bigger than `cot²x`, and `∫v dx` is immediate.
+            if step == 0 {
+                if let Some(res) = close_integral(raw_w, var, pool) {
+                    return Some(
+                        simplify(
+                            pool.add(vec![
+                                pool.mul(vec![mult.to_expr(pool), uv]),
+                                pool.mul(vec![mult.neg().to_expr(pool), res]),
+                            ]),
+                            pool,
+                        )
+                        .value,
+                    );
+                }
+            }
             return None;
         }
 

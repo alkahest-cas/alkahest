@@ -27,8 +27,8 @@
 //! here by differentiation where the evaluator allows it, and in any case the
 //! caller's ODE gate verifies the solution it is assembled into.
 //!
-//! `erfi` is written `−i·erf(i·z)`, which is what the parser has always made of
-//! `erfi(z)`; the dsolve gate and the derivative rules see through it.
+//! `erfi` is the real primitive `erfi(z) = −i·erf(i·z)` (real on ℝ, with
+//! `erfi′(z) = 2/√π·e^{z²}`), so the answers carry no imaginary unit.
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{Integer, Rational};
@@ -513,7 +513,7 @@ pub(crate) fn exp_rational_integral(f: ExprId, x: ExprId, pool: &ExprPool) -> Op
             pool.pow(sqrt_a, pool.integer(-1_i32)),
         ]);
         let special = if alpha > 0 {
-            erfi(z, pool)
+            pool.func("erfi", vec![z])
         } else {
             pool.func("erf", vec![z])
         };
@@ -523,16 +523,6 @@ pub(crate) fn exp_rational_integral(f: ExprId, x: ExprId, pool: &ExprPool) -> Op
         return None;
     }
     Some(super::simp(pool.add(terms), pool))
-}
-
-/// `erfi(z) = −i·erf(i·z)`, the parser's spelling of `erfi`.
-fn erfi(z: ExprId, pool: &ExprPool) -> ExprId {
-    let i = pool.imaginary_unit();
-    pool.mul(vec![
-        pool.integer(-1_i32),
-        i,
-        pool.func("erf", vec![pool.mul(vec![i, z])]),
-    ])
 }
 
 #[cfg(test)]
@@ -580,7 +570,7 @@ mod tests {
             pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]),
             pool.pow(h2, pool.integer(-2_i32)),
         ]);
-        check(f, x, &pool, "erf");
+        check(f, x, &pool, "erfi(");
     }
 
     #[test]

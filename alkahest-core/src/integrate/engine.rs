@@ -3328,6 +3328,23 @@ pub fn integrate(
                 pool.display(var),
             )));
         }
+        // Real-valued logarithms, whichever route produced the answer: a
+        // `log(a)` with `a < 0` somewhere on the integrand's real domain is an
+        // antiderivative there only up to an imaginary constant, so it becomes
+        // `log(−a)` or `log|a|` (see `real_log`).  The rewrite is re-gated, and
+        // it must also pass the complex-branch check the original just passed;
+        // otherwise the original stands.
+        if let Some(real) = super::real_log::realify_answer(result.value, expr, var, pool) {
+            if super::branch_check::complex_branch_mismatch(real, expr, var, pool).is_none() {
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::simple(
+                    super::real_log::REAL_LOG_RULE,
+                    result.value,
+                    real,
+                ));
+                result = DerivedExpr::with_log(real, result.log.merge(log));
+            }
+        }
         // A substitution antiderivative (`t = tan(x/2)`, `t = tan x`, …) can
         // jump by a constant where the substituted tangent has a pole although
         // the integrand is regular there. Cancel those jumps exactly, so the

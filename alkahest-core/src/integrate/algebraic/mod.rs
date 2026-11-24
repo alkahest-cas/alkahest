@@ -37,6 +37,8 @@ pub mod integral_basis;
 pub(crate) mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
+// Pseudo-elliptic third-kind integrals by a linear norm equation.
+mod pseudo_elliptic;
 // Power pullback `u = x^k` — the last-resort genus reduction for
 // `x^{k−1}·g(x^k)` integrands.
 mod pullback;
