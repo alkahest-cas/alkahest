@@ -67,6 +67,7 @@ def antiderivative_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured
 #: "no elementary antiderivative" claim survives being *answered* instead of
 #: refused.  Mirrors ``SPECIAL_BASIS`` in ``integrate/special.rs``.
 _NONELEMENTARY_BASIS = (
+    "erfi",
     "Ei",
     "li",
     "Si",
@@ -161,15 +162,27 @@ CASES: list[Case] = [
     # false "provably non-elementary" verdict are equally poisonous: the second
     # tells a search loop that a branch is permanently closed when it is not.
     # -----------------------------------------------------------------------
+    # `∫ e^{x²}` is answered with `erfi` since erfi joined the basis; the
+    # claim "no elementary antiderivative" is pinned by the answer having to
+    # name a non-elementary function, as for the cases below.
     Case(
         id="nonelementary_exp_x_squared",
         subsystem="integration_nonelementary",
-        statement="∫ e^{x²} dx has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(ak.exp(X**2), X).value),
-        contract=Raises("E-INT-004"),
+        statement="∫ e^{x²} dx has no elementary antiderivative; it is (√π/2)·erfi(x)",
+        op=nonelementary_closed_form_slope(ak.exp(X**2), 0.5),
+        contract=Returns(1.2840254166877414),
         verified_by="Liouville/Risch: the antiderivative is (√π/2)·erfi(x); erfi is not "
-        "elementary. Standard textbook example.",
+        "elementary. Standard textbook example. d/dx at 0.5 is e^{0.25} = 1.2840254166877414.",
         benchmark_tasks=("nonelementary_expx2",),
+    ),
+    Case(
+        id="nonelementary_exp_x_cubed",
+        subsystem="integration_nonelementary",
+        statement="∫ e^{x³} dx has no elementary antiderivative (and none over the basis)",
+        op=lambda: _num(ak.integrate(ak.exp(X**3), X).value),
+        contract=Raises("E-INT-004"),
+        verified_by="Liouville/Risch: the Risch DE v′ + 3x²v = 1 has no rational solution; "
+        "the antiderivative is an incomplete gamma function.",
     ),
     # The four below are *answered* rather than refused since 3.10.0: each has a
     # closed form over the registered special-function basis.  The trap is
@@ -223,10 +236,10 @@ CASES: list[Case] = [
     Case(
         id="nonelementary_double_exponential",
         subsystem="integration_nonelementary",
-        statement="∫ e^{e^x} dx has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(ak.exp(ak.exp(X)), X).value),
-        contract=Raises("E-INT-004"),
-        verified_by="Reduces to Ei(e^x) under u = e^x.",
+        statement="∫ e^{e^x} dx has no elementary antiderivative; it is Ei(e^x)",
+        op=nonelementary_closed_form_slope(ak.exp(ak.exp(X)), 0.5),
+        contract=Returns(5.2003257647899614),
+        verified_by="Reduces to Ei(e^x) under u = e^x. d/dx at 0.5 is e^{e^{0.5}}.",
     ),
     Case(
         id="elementary_sum_of_two_nonelementary_parts",

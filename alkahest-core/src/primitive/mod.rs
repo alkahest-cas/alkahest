@@ -52,6 +52,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub mod elliptic_fn;
+pub mod erfi;
 pub mod expint;
 pub mod fresnel;
 pub mod polylog;
@@ -436,6 +437,8 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(builtins::AtanhPrimitive));
         reg.register_unprobed(Box::new(builtins::ErfPrimitive));
         reg.register_unprobed(Box::new(builtins::ErfcPrimitive));
+        // The imaginary error function, the closed form of `∫e^{x²} dx`.
+        reg.register_unprobed(Box::new(erfi::ErfiPrimitive));
         // Elliptic special functions (parameter convention m = k²).
         reg.register_unprobed(Box::new(builtins::EllipticKPrimitive));
         reg.register_unprobed(Box::new(builtins::EllipticEPrimitive));

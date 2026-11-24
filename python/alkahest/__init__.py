@@ -261,6 +261,7 @@ from .alkahest import (  # noqa: F401
     equivalent,
     erf,
     erfc,
+    erfi,
     # G11c — named constants, polygamma, hypergeometric pFq
     euler_gamma,
     # Undefined functions f(t): Euler–Lagrange and friends
@@ -3681,6 +3682,7 @@ __all__ = [
     "equivalent",
     "erf",
     "erfc",
+    "erfi",
     # G11c — named constants
     "euler_gamma",
     # Undefined functions f(t) under diff

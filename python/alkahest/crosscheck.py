@@ -207,6 +207,7 @@ FUNCTION_MAP: dict[str, str] = {
     "Si": "Si",
     "Ci": "Ci",
     "Shi": "Shi",
+    "erfi": "erfi",
     "Chi": "Chi",
     # Fresnel integrals. Both systems use the DLMF §7.2 normalisation
     # `S(z) = ∫₀^z sin(πt²/2) dt` — checked, not assumed: SymPy 1.14's
@@ -1120,6 +1121,7 @@ _SYMPY_TO_ALKAHEST: dict[str, str] = {
     "Si": "sin_integral",
     "Ci": "cos_integral",
     "Shi": "sinh_integral",
+    "erfi": "erfi",
     "Chi": "cosh_integral",
     "fresnels": "fresnels",
     "fresnelc": "fresnelc",

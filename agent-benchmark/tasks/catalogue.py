@@ -270,7 +270,8 @@ TRAPS: list[AgentTask] = [
         hint="nonelementary",
         rationale=(
             "Classic Risch case. SymPy returns sqrt(pi)*erfi(x)/2, which an agent "
-            "may misread as an elementary answer; alkahest raises E-INT-004."
+            "may misread as an elementary answer; alkahest answers with the same "
+            "erfi and classifies it as a non-elementary closed form."
         ),
     ),
 ]

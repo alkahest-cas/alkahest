@@ -598,7 +598,7 @@ def test_alkahest_refusal_is_not_a_divergence(pool, x):
     """An honest refusal must never be scored against Alkahest."""
     _sympy()
     with ak.context(pool=pool):
-        out = check("integrate", ak.exp(x ** pool.integer(2)), x)
+        out = check("integrate", ak.exp(x ** pool.integer(3)), x)
     assert out.outcome == "incomparable"
     assert out.reason == "alkahest_refused"
     assert out.divergence is None
@@ -632,7 +632,7 @@ def test_incomparable_never_reports_agreement(pool, x):
     routes = [
         check("diff", ak.sin(x), x, assumptions=unmappable),
         check("diff", pool.func("heaviside", [x]), x),
-        check("integrate", ak.exp(x ** pool.integer(2)), x),
+        check("integrate", ak.exp(x ** pool.integer(3)), x),
     ]
     for out in routes:
         assert out.outcome == "incomparable", out

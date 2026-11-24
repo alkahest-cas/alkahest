@@ -4792,6 +4792,13 @@ fn erfc(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "erfc", expr)
 }
 
+/// ``erfi(x) = -i·erf(i·x)``, the imaginary error function (DLMF 7.2.3).
+/// ``d/dx erfi(x) = (2/√π)·exp(x²)``; the closed form of ``∫exp(x²) dx``.
+#[pyfunction]
+fn erfi(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    make_func(py, "erfi", expr)
+}
+
 // ── Exponential-integral family ─────────────────────────────────────────────
 //
 // Conventions follow DLMF §6.2 and are documented on
@@ -24075,6 +24082,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(atanh, m)?)?;
     m.add_function(wrap_pyfunction!(erf, m)?)?;
     m.add_function(wrap_pyfunction!(erfc, m)?)?;
+    m.add_function(wrap_pyfunction!(erfi, m)?)?;
     // Exponential-integral family
     m.add_function(wrap_pyfunction!(exp_integral_ei, m)?)?;
     m.add_function(wrap_pyfunction!(log_integral, m)?)?;

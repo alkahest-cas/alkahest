@@ -168,8 +168,9 @@ def test_rational_in_generator_is_never_certified(src):
 #:
 #: With ``k ≠ 0`` no new logarithm can arise either (Bronstein §5.3), so "no
 #: solution to the Risch DE" really is non-elementarity for these.
+# `exp(exp(x))` was here; it is answered as `Ei(exp(x))` (a non-elementary
+# closed form, found by substituting `u = exp(x)` after the verdict).
 _GENUINELY_NONELEMENTARY = [
-    "exp(exp(x))",
     "x*exp(exp(x))",
     "x^2*exp(exp(x))",
     "x*exp(x)*exp(exp(x))",
@@ -231,7 +232,8 @@ def test_log_derivative_family_is_not_certified_li(src):
         # but the `li` reduction needs the plain reciprocal, so these have no
         # closed form here and keep their certificate.
         "(x+1)^(-1)*log(x)^(-1)",
-        "x^(-2)*log(x)^(-1)",
+        # `x^(-2)*log(x)^(-1)` is answered as `Ei(−log x)` now, by the
+        # `li`-part pass (residue `x⁻²` at `log x = 0`).
     ],
 )
 def test_real_li_family_stays_certified(src):

@@ -253,9 +253,14 @@ def test_int_exp_x_over_x_is_ei(x):
 
 
 def test_int_exp_x_squared_correctly_non_elementary(x):
-    """`exp(x²)` is `erfi`, which is not a registered primitive. Should raise."""
+    """`exp(x²)` is `(√π/2)·erfi(x)`: answered, and still non-elementary."""
+    _assert_non_elementary_closed_form(ak.exp(x**2), x, "erfi")
+
+
+def test_int_exp_x_cubed_correctly_refused(x):
+    """`exp(x³)` is an incomplete gamma function, outside the basis. Should raise."""
     with pytest.raises(ak.IntegrationError):
-        ak.integrate(ak.exp(x**2), x)
+        ak.integrate(ak.exp(x**3), x)
 
 
 # --- B2 regression: mixed exp·log elementary ------------------------------

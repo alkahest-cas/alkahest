@@ -8,8 +8,8 @@
       "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 334,
-    "shape_classes": 212
+    "observations": 337,
+    "shape_classes": 214
   },
   "rows": [
     {
@@ -1021,6 +1021,34 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=erfi,sqrt/fn_arg=other/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "erfi,sqrt",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "collect_mul_factors",
+        "diff_primitive_registry",
+        "diff_sqrt",
+        "mul_zero",
+        "product_rule"
+      ],
+      "examples": [
+        "(1/2 * erfi(x) * sqrt(pi))"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=exp,log/fn_arg=other/mul=general/pow=none/pow_base=none",
       "features": {
         "form": "product",
@@ -1947,6 +1975,29 @@
       "blocking_rules": [],
       "examples": [
         "exp((-1 * x^2))"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=apply/funcs=exp/fn_arg=pow/mul=none/pow=nat/pow_base=var/definite=no",
+      "features": {
+        "form": "apply",
+        "funcs": "exp",
+        "fn_arg": "pow",
+        "mul": "none",
+        "pow": "nat",
+        "pow_base": "var",
+        "definite": "no"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "exp(x^2)"
       ]
     },
     {

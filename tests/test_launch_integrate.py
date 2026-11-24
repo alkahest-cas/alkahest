@@ -151,16 +151,18 @@ def test_certificate_names_the_users_integrand(pool, x):
 
 
 def test_risch_de_message_is_readable(pool, x):
+    # `exp(x³)`: `exp(x²)` is answered with `erfi` now.
     with pytest.raises(Exception) as info:
-        ak.integrate(ak.exp(x**2), x)
+        ak.integrate(ak.exp(x**3), x)
     msg = str(info.value)
     assert "(x * 2)(x)" not in msg, msg
     assert "= 1(x)" not in msg, msg
 
 
 def test_exp_x2_certificate_wording(pool, x):
+    # The certificate wording, on `exp(x³)` (`exp(x²)` is `erfi` now).
     with pytest.raises(Exception) as info:
-        ak.integrate(ak.exp(x**2), x)
+        ak.integrate(ak.exp(x**3), x)
     assert _code(info.value) == "E-INT-004"
     assert "v′" in str(info.value)
 

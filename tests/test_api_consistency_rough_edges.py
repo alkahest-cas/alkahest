@@ -40,11 +40,12 @@ def test_multipoly_from_symbolic_infers_vars(pool_x):
 
 
 def test_error_message_includes_stable_code(pool_x):
-    # `exp(-x^2)` used to be the witness here; it is now answered as
-    # `(sqrt(pi)/2)*erf(x)`.  `exp(x^2)` is the one that stays refused — its
-    # antiderivative is `erfi`, which is not a registered primitive.
+    # `exp(-x^2)` and then `exp(x^2)` used to be the witness here; they are
+    # now answered as `(sqrt(pi)/2)*erf(x)` and `(sqrt(pi)/2)*erfi(x)`.
+    # `exp(x^3)` stays refused — its antiderivative is an incomplete gamma
+    # function, which is not in the special-function basis.
     _pool, x = pool_x
     with pytest.raises(ak.IntegrationError) as ei:
-        ak.integrate(ak.exp(x**2), x)
+        ak.integrate(ak.exp(x**3), x)
     assert ei.value.code == "E-INT-004"
     assert "[E-INT-004]" in str(ei.value)

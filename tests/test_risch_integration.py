@@ -50,16 +50,12 @@ def check_antiderivative(pool, x, f, F, label="", points=_TEST_POINTS):
 
 
 def test_exp_x2_nonelementary():
-    """∫ exp(x²) dx — the Gaussian integral, certified non-elementary."""
+    """∫ exp(x²) dx — non-elementary; the answer names ``erfi``."""
     pool = ExprPool()
     x = pool.symbol("x")
     f = pool.func("exp", [x**2])
-    with pytest.raises(Exception) as exc_info:
-        integrate(f, x)
-    msg = str(exc_info.value).lower()
-    assert "elementary" in msg or "e-int-004" in str(exc_info.value), (
-        f"Expected NonElementary error; got: {exc_info.value}"
-    )
+    cap = str(integrate(f, x).value)
+    assert "erfi" in cap, f"expected erfi, got {cap}"
 
 
 def test_exp_neg_x2_is_erf():
@@ -78,14 +74,14 @@ def test_exp_neg_x2_is_erf():
     assert "erf" in cap, f"expected erf, got {cap}"
 
 
-def test_exp_pos_x2_stays_nonelementary():
-    """∫ exp(+x²) dx is ``erfi``, which is not a registered primitive."""
+def test_exp_pos_x2_is_erfi():
+    """∫ exp(+x²) dx = (√π/2)·erfi(x): still not elementary, now carried by the
+    ``erfi`` in the answer."""
     pool = ExprPool()
     x = pool.symbol("x")
     f = pool.func("exp", [x**2])
-    with pytest.raises(Exception) as exc_info:
-        integrate(f, x)
-    assert "e-int-004" in str(exc_info.value).lower(), str(exc_info.value)
+    cap = str(integrate(f, x).value)
+    assert "erfi" in cap, f"expected erfi, got {cap}"
 
 
 def test_exp_x3_nonelementary():
@@ -99,13 +95,12 @@ def test_exp_x3_nonelementary():
 
 
 def test_exp_x2_plus_x_nonelementary():
-    """∫ exp(x² + x) dx — non-elementary (completing the square doesn't help)."""
+    """∫ exp(x² + x) dx — non-elementary; completing the square gives ``erfi``."""
     pool = ExprPool()
     x = pool.symbol("x")
     f = pool.func("exp", [x**2 + x])
-    with pytest.raises(Exception) as exc_info:
-        integrate(f, x)
-    assert "elementary" in str(exc_info.value).lower() or "e-int-004" in str(exc_info.value)
+    cap = str(integrate(f, x).value)
+    assert "erfi" in cap, f"expected erfi, got {cap}"
 
 
 # ---------------------------------------------------------------------------
