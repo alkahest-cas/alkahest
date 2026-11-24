@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::engine::{is_free_of, verify_antiderivative_status_parametric};
+use super::engine::is_free_of;
+#[cfg(test)]
+use super::engine::verify_antiderivative_status_parametric;
 
 /// Real sample points: dense enough to cross a period of the trigonometric
 /// integrands these routes produce, and irrational-looking to dodge poles.
@@ -185,12 +187,44 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
     }
     let g = simplify(crate::kernel::subs(f, &map, pool), pool).value;
     if real_where_integrand_is(g, integrand, var, pool)
-        && verify_antiderivative_status_parametric(g, integrand, var, pool).is_some()
+        && is_real_part_of(g, f, integrand, var, pool)
     {
         g
     } else {
         f
     }
+}
+
+/// `true` when `g = Re f` at every sample where the integrand is real and
+/// both evaluate (at least two of them).
+///
+/// That is the whole content of the rewrite: `log(−a)`, `log|a|` and
+/// `½·log(a²)` are `Re log(a)` for real `a ≠ 0`, and `Re f` is an
+/// antiderivative wherever `f` is and the integrand is real (`(Re f)′ =
+/// Re f′`).  Checked numerically, on the principal branch, rather than by a
+/// second symbolic gate, whose `d/dx`-and-simplify of `|a|` inside a large
+/// answer (an `EllipticPi` form) can cost more than the integration did.
+fn is_real_part_of(g: ExprId, f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let mut compared = 0;
+    for at in samples() {
+        if eval_at(integrand, var, at, pool).is_none() {
+            continue;
+        }
+        let (Some(gv), Some((fr, _))) = (
+            eval_at(g, var, at, pool),
+            super::branch_check::eval_principal(f, var, at, pool),
+        ) else {
+            continue;
+        };
+        if !fr.is_finite() {
+            continue;
+        }
+        if (gv - fr).abs() > 1e-8 * (1.0 + fr.abs()) {
+            return false;
+        }
+        compared += 1;
+    }
+    compared >= 2
 }
 
 #[cfg(test)]

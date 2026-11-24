@@ -50,20 +50,6 @@ const SAMPLES: [f64; 16] = [
 /// tight one.
 const TOL: f64 = 1e-6;
 
-thread_local! {
-    /// While set, `abs` and `sign` are evaluated (`|z|`, `z/|z|`) instead of
-    /// making a sample no information; see [`complex_branch_mismatch_strict`].
-    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-struct StrictGuard;
-
-impl Drop for StrictGuard {
-    fn drop(&mut self) {
-        STRICT.with(|s| s.set(false));
-    }
-}
-
 /// `true` when `integrand` takes a finite non-real value at some real sample
 /// (it has a complex branch on the real line that this module checks).
 pub(crate) fn has_complex_branch(integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
@@ -73,22 +59,15 @@ pub(crate) fn has_complex_branch(integrand: ExprId, var: ExprId, pool: &ExprPool
             .any(|&x| eval(integrand, var, x, pool).is_some_and(|f| f.im != 0.0 && f.is_finite()))
 }
 
-/// [`complex_branch_mismatch`] with `abs` and `sign` evaluated on ℂ.
-///
-/// For the real-log rewrite: `log|a|` has derivative `a′/a` only where `a` is
-/// real, so on the integrand's complex branch it is generally *not* an
-/// antiderivative where the `log(a)` it replaced was.  The default check
-/// treats `abs` as no information (a lenient choice older routes rely on);
-/// this one sees the difference.
-pub(crate) fn complex_branch_mismatch_strict(
-    candidate: ExprId,
-    integrand: ExprId,
+/// `expr` at the real point `x` on the principal complex branch, as
+/// `(re, im)`; `None` where the evaluator has no value (an unsupported head).
+pub(crate) fn eval_principal(
+    expr: ExprId,
     var: ExprId,
+    x: f64,
     pool: &ExprPool,
-) -> Option<f64> {
-    STRICT.with(|s| s.set(true));
-    let _g = StrictGuard;
-    complex_branch_mismatch(candidate, integrand, var, pool)
+) -> Option<(f64, f64)> {
+    eval(expr, var, x, pool).map(|c| (c.re, c.im))
 }
 
 /// `Some(x)` when `d/dx candidate` and `integrand` disagree at the real point
@@ -483,15 +462,6 @@ fn walk_uncached(
             match name.as_str() {
                 "exp" => Some(z.exp()),
                 "log" => z.ln(),
-                "abs" if STRICT.with(|s| s.get()) => Some(C::real(z.abs())),
-                "sign" if STRICT.with(|s| s.get()) => {
-                    let m = z.abs();
-                    Some(if m == 0.0 {
-                        C::real(0.0)
-                    } else {
-                        z.mul(C::real(1.0 / m))
-                    })
-                }
                 "sqrt" => z.sqrt(),
                 "sin" => Some(z.sin()),
                 "cos" => Some(z.cos()),

@@ -471,6 +471,8 @@ fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
                 "log" => Some(a.ln()),
                 "sqrt" => Some(a.sqrt()),
                 "cbrt" => Some(a.cbrt()),
+                "abs" => Some(a.abs()),
+                "sign" => Some(a.signum()),
                 _ => None,
             }
         }

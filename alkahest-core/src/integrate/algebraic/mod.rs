@@ -607,6 +607,8 @@ mod tests {
                     "log" => Some(v.ln()),
                     "exp" => Some(v.exp()),
                     "cbrt" => Some(v.cbrt()),
+                    "abs" => Some(v.abs()),
+                    "sign" => Some(v.signum()),
                     _ => None,
                 }
             }
@@ -1088,6 +1090,8 @@ mod tests {
                     "log" => Some(v.ln()),
                     "exp" => Some(v.exp()),
                     "cbrt" => Some(v.cbrt()),
+                    "abs" => Some(v.abs()),
+                    "sign" => Some(v.signum()),
                     _ => None,
                 }
             }

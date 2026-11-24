@@ -5362,11 +5362,13 @@ mod tests {
     fn integration_cert_inv_x_via_log() {
         // ∫ x⁻¹ dx = log x, certified as `deriv (fun x => log x) x = x⁻¹`.
         // Intern-equality holds; pointwise log is in the FTC fragment.
+        // (`integrate` itself answers `log|x|`; this pins the `log` route.)
         use crate::integrate::integrate;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let _principal = crate::integrate::real_log::PrincipalLogs::enter();
         let derived = integrate(inv_x, x, &pool).expect("integrate");
         let lean = emit_integration_cert(derived.value, inv_x, x, &pool);
         assert!(
