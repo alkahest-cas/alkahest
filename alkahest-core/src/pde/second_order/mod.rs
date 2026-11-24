@@ -441,7 +441,14 @@ fn finish(
     let tidied = util::tidy(cand.solution, pool);
     let mut forms = vec![tidied];
     let vars = super::jet::decode_unknown(u, pool)?.args;
-    if let Some(c) = util::collect_arbitrary(tidied, &vars, pool) {
+    // Not through an `Integral`: its bound variable would leak into the atom
+    // collection.
+    let collected = if crate::pde::integral::has_integral(tidied, pool) {
+        None
+    } else {
+        util::collect_arbitrary(tidied, &vars, pool)
+    };
+    if let Some(c) = collected {
         forms.push(c);
     }
     forms.sort_by_key(|&f| util::size(f, pool));

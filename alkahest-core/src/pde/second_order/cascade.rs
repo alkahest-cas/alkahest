@@ -26,7 +26,8 @@ use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
 use super::util::{
-    d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, size, split_xy, sub, tidy,
+    d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, size, split_xy, sub, subs1,
+    tidy,
 };
 
 /// One level of the chain: coefficients, source and invariants.
@@ -356,11 +357,12 @@ fn arbitrary_quadrature(
         poly_degree_in(r, y, 6, pool)
     };
     let Some(deg) = deg else {
-        return Err(PdeError::QuadratureOfArbitraryFunction(format!(
-            "∫ {} · G(y) dy with G arbitrary has no integral-free form \
-             (the weight does not split as p(x)·q(y)·polynomial in y)",
-            pool.display(w)
-        )));
+        // No integral-free form: keep ∫_0^y W(x, t) G(t) dt unevaluated. It is
+        // verified through Leibniz's rule like any other answer.
+        let t = pool.symbol("__alkahest_pde2_t", crate::kernel::Domain::Real);
+        let g = fresh(t);
+        let body = simp(pool.mul(vec![subs1(w, y, t, pool), g]), pool);
+        return crate::pde::integral::integral(body, t, pool.integer(0), y, pool);
     };
     let h = fresh(y);
     let mut terms = Vec::new();

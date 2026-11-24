@@ -157,13 +157,19 @@ pub(crate) fn solve(
         sub(data.g, subs1(d(up, y, pool)?, y, data.y0, pool), pool),
         pool,
     );
-    let gamma = integ(gdat, x, pool).ok_or_else(|| {
-        PdeError::CauchyDataUnsupported(format!(
-            "∫ {} d{} does not close, so d'Alembert's formula has no closed form",
-            pool.display(gdat),
-            pool.display(x)
-        ))
-    })?;
+    // Γ = ∫ g dx in closed form, else the unevaluated `Integral(g, x)`,
+    // checked through the fundamental theorem of calculus like any answer.
+    let gamma = match integ(gdat, x, pool) {
+        Some(g) => g,
+        None => {
+            steps.push(format!(
+                "∫ {} d{} has no closed form; kept as an unevaluated Integral",
+                pool.display(gdat),
+                pool.display(x)
+            ));
+            crate::pde::integral::indefinite_integral(gdat, x, pool)?
+        }
+    };
     let dl = sub(l1, l2, pool);
     let big_f = div(sub(gamma, pool.mul(vec![l2, fdat]), pool), dl, pool);
     let big_g = div(sub(pool.mul(vec![l1, fdat]), gamma, pool), dl, pool);
