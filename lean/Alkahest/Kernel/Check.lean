@@ -135,4 +135,45 @@ theorem deriv_sound {H : List Cond} {F G : AExpr} {w : Witness}
     deriv (fun y => F.eval (y :: ps)) x = G.eval (x :: ps) :=
   (integral_sound h ps x hH).deriv
 
+/-- Each expression is the derivative (in `var 0`, at `x`) of the one before it. -/
+@[reducible] def Chain (ps : List ℝ) (x : ℝ) : List AExpr → Prop
+  | [a, b] => HasDerivAt (fun y => a.eval (y :: ps)) (b.eval (x :: ps)) x
+  | a :: b :: c :: rest =>
+    HasDerivAt (fun y => a.eval (y :: ps)) (b.eval (x :: ps)) x ∧ Chain ps x (b :: c :: rest)
+  | _ => True
+
+/-- Every link of a derivative chain checks, each with its own witness. -/
+def chainOk (H : List Cond) : List AExpr → List Witness → Bool
+  | [a, b], w :: _ => checkIntegral H a b w
+  | a :: b :: c :: rest, w :: ws => checkIntegral H a b w && chainOk H (b :: c :: rest) ws
+  | [_], _ => true
+  | [], _ => true
+  | _ :: _ :: _, [] => false
+
+theorem chainOk_sound {H : List Cond} (ps : List ℝ) (x : ℝ) (hH : HoldsAll (x :: ps) H) :
+    ∀ {Ss : List AExpr} {ws : List Witness}, chainOk H Ss ws = true → Chain ps x Ss
+  | [], _, _ => trivial
+  | [_], _, _ => trivial
+  | [_, _], [], h => by simp [chainOk] at h
+  | [_, _], w :: _, h => integral_sound (by simpa [chainOk] using h) ps x hH
+  | _ :: _ :: _ :: _, [], h => by simp [chainOk] at h
+  | a :: b :: c :: rest, w :: ws, h => by
+    simp only [chainOk, Bool.and_eq_true] at h
+    exact ⟨integral_sound h.1 ps x hH, chainOk_sound ps x hH h.2⟩
+
+/-- An ODE solution: `Ss = [S, S', …, S⁽ⁿ⁾]` is a derivative chain and the
+equation with `Sₖ` substituted for `y⁽ᵏ⁾`, `E`, vanishes. -/
+def checkOde (H : List Cond) (Ss : List AExpr) (ws : List Witness) (E : AExpr) (w : Witness) :
+    Bool :=
+  chainOk H Ss ws && checkEq H E .zero w
+
+/-- **ODE solution certificates.** On the domain `H`, each `Sₖ₊₁` is the
+derivative of `Sₖ`, and the substituted equation `E` is identically zero. -/
+theorem ode_sound {H : List Cond} {Ss : List AExpr} {ws : List Witness} {E : AExpr}
+    {w : Witness} (h : checkOde H Ss ws E w = true) (ps : List ℝ) (x : ℝ)
+    (hH : HoldsAll (x :: ps) H) : Chain ps x Ss ∧ E.eval (x :: ps) = 0 := by
+  unfold checkOde at h
+  simp only [Bool.and_eq_true] at h
+  exact ⟨chainOk_sound ps x hH h.1, checkEq_sound h.2 (x :: ps) hH⟩
+
 end Alkahest.Kernel

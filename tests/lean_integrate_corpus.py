@@ -10,6 +10,12 @@ CI job compiles each file with ``-DwarningAsError=true -DautoImplicit=false``.
 Usage::
 
     python tests/lean_integrate_corpus.py --output /tmp/lean_integrate/
+    python tests/lean_integrate_corpus.py --mode tactic --output /tmp/lean_integrate_tactic/
+
+``--mode`` is passed to :func:`alkahest.set_lean_certificate_mode`: ``auto``
+(the default) emits reflective ``Alkahest.Kernel`` certificates and falls back
+to the tactic emitter; ``tactic`` exercises the tactic emitter alone, so CI
+keeps checking both paths.
 
 The integrator is allowed to change its answers; the corpus then certifies
 the new ones. It fails only when *too few* integrands are certified (a broken
@@ -103,10 +109,13 @@ def certificates():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", required=True)
+    ap.add_argument("--mode", default="auto", choices=["auto", "kernel_native", "tactic"])
     args = ap.parse_args()
     os.makedirs(args.output, exist_ok=True)
+    alkahest.set_lean_certificate_mode(args.mode)
     n = 0
     withheld = []
+    paths = {}
     for i, (src, r) in enumerate(certificates()):
         cert = r.certificate
         if cert is None:
@@ -118,8 +127,10 @@ def main():
                 raise SystemExit(f"{src}: certificate contains {token!r}")
         with open(os.path.join(args.output, f"int_{i:03d}.lean"), "w", encoding="utf-8") as fh:
             fh.write(cert)
+        path = r.certificate_status["path"]
+        paths[path] = paths.get(path, 0) + 1
         n += 1
-    print(f"wrote {n} integration certificates to {args.output}")
+    print(f"wrote {n} integration certificates to {args.output} (by path: {paths})")
     for src, why in withheld:
         print(f"  withheld: {src}  ({why})")
     if n < MIN_CERTIFIED:

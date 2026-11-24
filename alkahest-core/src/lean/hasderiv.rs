@@ -74,26 +74,26 @@ pub const WITHHELD_EMPTY_DOMAIN: IntegrationCertWithheld = "withheld_empty_domai
 /// The certificate (or an intermediate polynomial) exceeds the size budget.
 pub const WITHHELD_TOO_LARGE: IntegrationCertWithheld = "withheld_certificate_too_large";
 
-const MAX_TERMS: usize = 6_000;
+pub(super) const MAX_TERMS: usize = 6_000;
 /// Size budget for one certificate. Under Mathlib v4.9.0 a `linear_combination`
 /// above 36 KB took `ring1` minutes; under v4.36.0 the largest certificates the
 /// calculus suites produce (~740 KB of combination) check in under 2.5 min on
 /// one core including the Mathlib import, most in under a minute.
 const MAX_SRC_BYTES: usize = 1_000_000;
 const MAX_COMBINATION_BYTES: usize = 800_000;
-const MAX_ROUNDS: usize = 400;
+pub(super) const MAX_ROUNDS: usize = 400;
 
 // ===========================================================================
 // Sparse polynomials over ℚ
 // ===========================================================================
 
 /// A monomial: `(variable, exponent)` pairs, sorted by variable, exponents > 0.
-type Mono = Vec<(u32, u32)>;
+pub(super) type Mono = Vec<(u32, u32)>;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Poly(BTreeMap<Mono, Rational>);
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) struct Poly(pub(super) BTreeMap<Mono, Rational>);
 
-fn mono_mul(a: &Mono, b: &Mono) -> Mono {
+pub(super) fn mono_mul(a: &Mono, b: &Mono) -> Mono {
     let mut out = Vec::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
@@ -114,39 +114,39 @@ fn mono_mul(a: &Mono, b: &Mono) -> Mono {
     out
 }
 
-fn exp_of(m: &Mono, v: u32) -> u32 {
+pub(super) fn exp_of(m: &Mono, v: u32) -> u32 {
     m.iter().find(|&&(w, _)| w == v).map_or(0, |&(_, e)| e)
 }
 
 impl Poly {
-    fn zero() -> Self {
+    pub(super) fn zero() -> Self {
         Poly(BTreeMap::new())
     }
-    fn konst(c: Rational) -> Self {
+    pub(super) fn konst(c: Rational) -> Self {
         let mut m = BTreeMap::new();
         if c != 0 {
             m.insert(Vec::new(), c);
         }
         Poly(m)
     }
-    fn int(c: i64) -> Self {
+    pub(super) fn int(c: i64) -> Self {
         Self::konst(Rational::from(c))
     }
-    fn one() -> Self {
+    pub(super) fn one() -> Self {
         Self::int(1)
     }
-    fn var(v: u32) -> Self {
+    pub(super) fn var(v: u32) -> Self {
         let mut m = BTreeMap::new();
         m.insert(vec![(v, 1)], Rational::from(1));
         Poly(m)
     }
-    fn is_zero(&self) -> bool {
+    pub(super) fn is_zero(&self) -> bool {
         self.0.is_empty()
     }
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.0.len()
     }
-    fn add_term(&mut self, m: Mono, c: Rational) {
+    pub(super) fn add_term(&mut self, m: Mono, c: Rational) {
         use std::collections::btree_map::Entry;
         match self.0.entry(m) {
             Entry::Vacant(e) => {
@@ -162,24 +162,24 @@ impl Poly {
             }
         }
     }
-    fn add(&self, o: &Poly) -> Poly {
+    pub(super) fn add(&self, o: &Poly) -> Poly {
         let mut r = self.clone();
         for (m, c) in &o.0 {
             r.add_term(m.clone(), c.clone());
         }
         r
     }
-    fn sub(&self, o: &Poly) -> Poly {
+    pub(super) fn sub(&self, o: &Poly) -> Poly {
         let mut r = self.clone();
         for (m, c) in &o.0 {
             r.add_term(m.clone(), Rational::from(-c));
         }
         r
     }
-    fn neg(&self) -> Poly {
+    pub(super) fn neg(&self) -> Poly {
         Poly::zero().sub(self)
     }
-    fn scale(&self, k: &Rational) -> Poly {
+    pub(super) fn scale(&self, k: &Rational) -> Poly {
         if *k == 0 {
             return Poly::zero();
         }
@@ -190,7 +190,7 @@ impl Poly {
                 .collect(),
         )
     }
-    fn mul(&self, o: &Poly) -> Result<Poly, IntegrationCertWithheld> {
+    pub(super) fn mul(&self, o: &Poly) -> Result<Poly, IntegrationCertWithheld> {
         if self.len().saturating_mul(o.len()) > MAX_TERMS * 40 {
             return Err(WITHHELD_TOO_LARGE);
         }
@@ -205,21 +205,21 @@ impl Poly {
         }
         Ok(r)
     }
-    fn pow(&self, n: u32) -> Result<Poly, IntegrationCertWithheld> {
+    pub(super) fn pow(&self, n: u32) -> Result<Poly, IntegrationCertWithheld> {
         let mut r = Poly::one();
         for _ in 0..n {
             r = r.mul(self)?;
         }
         Ok(r)
     }
-    fn deg_in(&self, v: u32) -> u32 {
+    pub(super) fn deg_in(&self, v: u32) -> u32 {
         self.0.keys().map(|m| exp_of(m, v)).max().unwrap_or(0)
     }
-    fn has_var(&self, v: u32) -> bool {
+    pub(super) fn has_var(&self, v: u32) -> bool {
         self.0.keys().any(|m| exp_of(m, v) > 0)
     }
     /// `[c₀, c₁, …]` with `self = Σ cₖ vᵏ`.
-    fn split(&self, v: u32) -> Vec<Poly> {
+    pub(super) fn split(&self, v: u32) -> Vec<Poly> {
         let d = self.deg_in(v) as usize;
         let mut out = vec![Poly::zero(); d + 1];
         for (m, c) in &self.0 {
@@ -229,14 +229,14 @@ impl Poly {
         }
         out
     }
-    fn vars(&self) -> BTreeSet<u32> {
+    pub(super) fn vars(&self) -> BTreeSet<u32> {
         self.0
             .keys()
             .flat_map(|m| m.iter().map(|&(v, _)| v))
             .collect()
     }
     /// `Some(q)` when `self = q · other` for a rational `q ≠ 0`.
-    fn ratio_to(&self, other: &Poly) -> Option<Rational> {
+    pub(super) fn ratio_to(&self, other: &Poly) -> Option<Rational> {
         let (m0, c0) = other.0.iter().next()?;
         let c = self.0.get(m0)?;
         let q = Rational::from(c / c0);
@@ -245,7 +245,7 @@ impl Poly {
 }
 
 /// `p(v) - p(e) = (v - e)·Δ`; returns `(p(e), Δ)`.
-fn substitute(p: &Poly, v: u32, e: &Poly) -> Result<(Poly, Poly), IntegrationCertWithheld> {
+pub(super) fn substitute(p: &Poly, v: u32, e: &Poly) -> Result<(Poly, Poly), IntegrationCertWithheld> {
     let cs = p.split(v);
     let vv = Poly::var(v);
     let mut epows = vec![Poly::one()];
@@ -276,7 +276,7 @@ fn substitute(p: &Poly, v: u32, e: &Poly) -> Result<(Poly, Poly), IntegrationCer
 
 /// Reduce `p` by `v^d = tail`: returns `(r, q)` with `p = r + q·(v^d - tail)`
 /// and `deg_v r < d`.
-fn reduce_power(
+pub(super) fn reduce_power(
     p: &Poly,
     v: u32,
     d: u32,
@@ -386,7 +386,7 @@ impl Fn1 {
     }
 }
 
-fn special_function_reason(name: &str) -> IntegrationCertWithheld {
+pub(super) fn special_function_reason(name: &str) -> IntegrationCertWithheld {
     match name {
         "erf" | "erfc" | "erfi" | "Si" | "Ci" | "Shi" | "Chi" | "Ei" | "li" | "Li" | "polylog"
         | "fresnels" | "fresnelc" | "FresnelS" | "FresnelC" | "gamma" | "uppergamma"
@@ -2207,7 +2207,7 @@ impl<'a> Ctx<'a> {
 }
 
 /// `Some(v)` when `p` is exactly the variable `v`.
-fn single_var(p: &Poly) -> Option<u32> {
+pub(super) fn single_var(p: &Poly) -> Option<u32> {
     if p.len() != 1 {
         return None;
     }
@@ -2215,7 +2215,7 @@ fn single_var(p: &Poly) -> Option<u32> {
     (m.len() == 1 && m[0].1 == 1 && *c == 1).then_some(m[0].0)
 }
 
-fn u_as_constant(u: &Poly) -> Option<Rational> {
+pub(super) fn u_as_constant(u: &Poly) -> Option<Rational> {
     if u.is_zero() {
         return Some(Rational::new());
     }
@@ -2355,7 +2355,7 @@ fn collect_symbols(e: ExprId, pool: &ExprPool, out: &mut BTreeSet<ExprId>) {
 /// exponent, `1/q`: `ring` compares atoms up to definitional unfolding, and
 /// two real exponents of one base (`b ^ (7/2)` against `b ^ (1/2)`) send it
 /// into unfolding real-number literals until the heartbeat limit.
-fn respell_rational_powers(
+pub(super) fn respell_rational_powers(
     e: ExprId,
     pool: &ExprPool,
     memo: &mut HashMap<ExprId, ExprId>,
@@ -2430,7 +2430,7 @@ fn respell_rational_powers(
 }
 
 /// `log(abs(a))` → `log(a)` throughout (other `abs` nodes are kept).
-fn strip_log_abs(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>) -> ExprId {
+pub(super) fn strip_log_abs(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>) -> ExprId {
     if let Some(&r) = memo.get(&e) {
         return r;
     }

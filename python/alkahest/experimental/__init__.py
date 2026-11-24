@@ -192,6 +192,8 @@ Calculus / ODE / transform surface:
 - :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
   may be symbolic, in which case the returned dicts carry ``side_conditions``
   and ``notes`` naming the parameter branch that was *not* assumed
+- :func:`dsolve_certificate` — Lean certificate (reflective ``Alkahest.Kernel``) that a
+  :func:`dsolve` solution satisfies its equation
 - :func:`dsolve_system` — linear constant-coefficient systems ``y' = A·y + f(t)``
   over an :class:`alkahest.ODE`, by Putzer's algorithm (defective ``A``
   included); symbolic entries are allowed and an undecided eigenvalue
@@ -661,6 +663,7 @@ from alkahest.alkahest import (
     divisor_sigma,
     dot,
     dsolve,
+    dsolve_certificate,
     dsolve_system,
     eisenstein_series,
     entropy_asymptotic,
@@ -1146,6 +1149,7 @@ __all__ = [
     "divisor_sigma",
     "dot",
     "dsolve",
+    "dsolve_certificate",
     "dsolve_system",
     "eisenstein_series",
     "entropy_asymptotic",
