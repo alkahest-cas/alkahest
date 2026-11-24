@@ -117,6 +117,16 @@ fn subs_memo(
         // free.  `RootOfFamily(F, λ, n, branch)` binds `λ` in `F`; the index
         // `n` and the branch are free.  See `crate::pde::sum` and
         // `crate::pde::root_family`.
+        // The indefinite `Integral(f, x)` is `Integral(f[x := t], t, 0, x)`:
+        // replacing `x` goes through the definite form.
+        ExprData::Func { name, args }
+            if name == "Integral" && args.len() == 2 && mapping.contains_key(&args[1]) =>
+        {
+            match crate::pde::integral::to_definite(expr, pool) {
+                Some(def) => subs_memo(def, mapping, pool, memo),
+                None => expr,
+            }
+        }
         ExprData::Func { name, args } if is_func_binder(&name, &args, pool) => {
             let (nv, [nb]) = subs_binder(args[1], [args[0]], mapping, pool, memo);
             let rest: Vec<ExprId> = args[2..]
@@ -571,7 +581,7 @@ fn is_func_binder(name: &str, args: &[ExprId], pool: &ExprPool) -> bool {
 }
 
 fn is_func_binder_data(name: &str, args: &[ExprId], pool: &ExprPool) -> bool {
-    (name == "Sum" || name == "RootOfFamily")
+    (name == "Sum" || name == "RootOfFamily" || name == "Integral")
         && args.len() == 4
         && pool.with(args[1], |d| matches!(d, ExprData::Symbol { .. }))
 }

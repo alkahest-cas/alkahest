@@ -304,6 +304,19 @@ Exception subclasses
    - ``E-PDE-040`` — a transform cannot act on an unknown because the transform
      variable is not a single bare argument (``u(x, 2t)``, ``u(t²)``); the
      transform raises its own ``TransformError`` carrying this message.
+   - ``E-PDE-050`` — ``pdsolve`` has no method for the problem: a system, an
+     equation of order other than one (milestone M1 covers first order), a
+     single independent variable (use ``dsolve``), or an unknown ``hint``.
+   - ``E-PDE-051`` — every applicable method ran and **no candidate verified**;
+     the message names each discarded candidate and why. Never an unverified
+     answer.
+   - ``E-PDE-052`` — Cauchy data on a **characteristic** curve: the Jacobian of
+     the data curve against the characteristic direction vanishes identically.
+   - ``E-PDE-053`` — side conditions ``pdsolve`` cannot impose on a first-order
+     problem: data on a derivative, several conditions, a data manifold of the
+     wrong dimension, or parameters that could not be eliminated.
+   - ``E-PDE-054`` — a malformed ``Integral(f, t, lo, hi)`` / ``Integral(f, x)``
+     (the integration variable is not a symbol, or a bound mentions it).
 
 .. exception:: ProbabilityError
 

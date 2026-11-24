@@ -24,7 +24,12 @@ use super::sum::{sum_parts, INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM};
 pub(crate) fn is_pde_head(name: &str, args: &[ExprId]) -> bool {
     matches!(
         (name, args.len()),
-        (SUM, 4) | (INDEXED, 2) | (KRONECKER_DELTA, 2) | (ROOT_OF_FAMILY, 4)
+        (SUM, 4)
+            | (INDEXED, 2)
+            | (KRONECKER_DELTA, 2)
+            | (ROOT_OF_FAMILY, 4)
+            | (super::integral::INTEGRAL, 2)
+            | (super::integral::INTEGRAL, 4)
     )
 }
 
@@ -86,6 +91,7 @@ pub(crate) fn eval_head_f64(
             Some(if a == b { 1.0 } else { 0.0 })
         }
         ROOT_OF_FAMILY => super::root_family::root_family_f64(expr, env, pool),
+        super::integral::INTEGRAL => super::integral::integral_f64(expr, env, pool, sub),
         _ => None,
     }
 }

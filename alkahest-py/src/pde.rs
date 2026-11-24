@@ -11,8 +11,9 @@ use std::collections::HashMap;
 
 use alkahest_core::kernel::{Domain, ExprId};
 use alkahest_core::pde::{
-    classify_pde, functions_to_jets, verify_solution, ConditionKind, JetNaming, JetSpace,
-    PdeCondition, PdeDomain, PdeError, PdeProblem,
+    classify_pde, functions_to_jets, pdsolve, pdsolve_all, verify_solution, ConditionKind,
+    JetNaming, JetSpace, PdeCondition, PdeDomain, PdeError, PdeProblem, PdeSolution,
+    PdsolveOptions,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule, PyTuple};
@@ -738,6 +739,15 @@ fn _pde_verify<'py>(
         py.detach(|| verify_solution(&eqs, &us, &sol, &conds, pl))
             .map_err(pde_err)?
     };
+    verification_dict(py, &v, &pool)
+}
+
+fn verification_dict<'py>(
+    py: Python<'py>,
+    v: &alkahest_core::pde::PdeVerification,
+    pool: &Py<PyExprPool>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let pool = pool.clone_ref(py);
     let d = PyDict::new(py);
     d.set_item("status", v.status.as_str())?;
     d.set_item("verified", v.status.is_verified())?;
@@ -803,6 +813,37 @@ fn _pde_sum(
         expr_in(hi, &pool, "Sum")?,
     );
     one_expr(py, &pool, |p| alkahest_core::pde::sum(b, kk, l, h, p))
+}
+
+/// Private: `Integral(body, t, lo, hi)` (definite) or `Integral(body, x)`
+/// (indefinite) when `lo` / `hi` are omitted.
+#[pyfunction]
+#[pyo3(signature = (body, t, lo=None, hi=None))]
+fn _pde_integral(
+    py: Python<'_>,
+    body: &Bound<'_, PyAny>,
+    t: &Bound<'_, PyAny>,
+    lo: Option<&Bound<'_, PyAny>>,
+    hi: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let pool = first_pool(t)?;
+    let b = expr_in(body, &pool, "Integral")?;
+    let tt = expr_in(t, &pool, "Integral")?;
+    match (lo, hi) {
+        (Some(l), Some(h)) => {
+            let (l, h) = (
+                expr_in(l, &pool, "Integral")?,
+                expr_in(h, &pool, "Integral")?,
+            );
+            one_expr(py, &pool, |p| alkahest_core::pde::integral(b, tt, l, h, p))
+        }
+        (None, None) => one_expr(py, &pool, |p| {
+            alkahest_core::pde::indefinite_integral(b, tt, p)
+        }),
+        _ => Err(pyo3::exceptions::PyTypeError::new_err(
+            "Integral takes (f, x) or (f, t, lo, hi)",
+        )),
+    }
 }
 
 /// Private: `Indexed(base, index)`.
@@ -969,6 +1010,127 @@ fn _pde_laplacian_indexed(
     })
 }
 
+// ---------------------------------------------------------------------------
+// pdsolve
+// ---------------------------------------------------------------------------
+
+fn side_condition_tuple(
+    py: Python<'_>,
+    c: &alkahest_core::SideCondition,
+    pool: &Py<PyExprPool>,
+) -> PyResult<Py<PyAny>> {
+    use alkahest_core::SideCondition as S;
+    let rendered = {
+        let p = pool.borrow(py);
+        c.display_with(&p.inner).to_string()
+    };
+    let (kind, e) = match c {
+        S::NonZero(e) => ("nonzero", *e),
+        S::Positive(e) => ("positive", *e),
+        S::InDomain(e, _) => ("in_domain", *e),
+    };
+    PyTuple::new(
+        py,
+        [
+            kind.into_py_any(py)?,
+            wrap(py, e, pool),
+            rendered.into_py_any(py)?,
+        ],
+    )?
+    .into_py_any(py)
+}
+
+fn solution_dict<'py>(
+    py: Python<'py>,
+    s: &PdeSolution,
+    pool: &Py<PyExprPool>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("unknown", wrap(py, s.unknown, pool))?;
+    d.set_item("value", wrap(py, s.value, pool))?;
+    d.set_item("implicit", s.implicit)?;
+    d.set_item("kind", s.kind.as_str())?;
+    d.set_item("method", s.method)?;
+    d.set_item("arbitrary_functions", s.arbitrary_functions.clone())?;
+    d.set_item("constants", wrap_list(py, &s.constants, pool)?)?;
+    let sc = PyList::empty(py);
+    for c in &s.side_conditions {
+        sc.append(side_condition_tuple(py, c, pool)?)?;
+    }
+    d.set_item("side_conditions", sc)?;
+    d.set_item(
+        "verification",
+        verification_dict(py, &s.verification, pool)?,
+    )?;
+    d.set_item("steps", s.steps.clone())?;
+    let alts = PyList::empty(py);
+    for a in &s.alternatives {
+        alts.append(solution_dict(py, a, pool)?)?;
+    }
+    d.set_item("alternatives", alts)?;
+    Ok(d)
+}
+
+/// Private: `pdsolve` / `pdsolve_all` on a validated problem; a list of
+/// solution dicts.
+#[pyfunction]
+#[pyo3(signature = (equations, unknowns, conditions=None, hint=None, prefix="F", all=false))]
+fn _pde_solve<'py>(
+    py: Python<'py>,
+    equations: &Bound<'_, PyAny>,
+    unknowns: &Bound<'_, PyAny>,
+    conditions: Option<&Bound<'_, PyAny>>,
+    hint: Option<String>,
+    prefix: &str,
+    all: bool,
+) -> PyResult<Bound<'py, PyList>> {
+    let pool = first_pool(unknowns)?;
+    let eqs = exprs_in(equations, &pool, "pdsolve")?;
+    let us = exprs_in(unknowns, &pool, "pdsolve")?;
+    let conds = match conditions.filter(|o| !o.is_none()) {
+        Some(c) => conditions_from(py, c, &pool)?,
+        None => Vec::new(),
+    };
+    let mut opts = PdsolveOptions::default().with_function_prefix(prefix);
+    if let Some(h) = hint {
+        opts = opts.with_hint(h);
+    }
+    let sols = {
+        let p = pool.borrow(py);
+        let pl = &p.inner;
+        py.detach(|| -> Result<Vec<PdeSolution>, PdeError> {
+            let mut prob = PdeProblem::new(&eqs, &us, pl)?;
+            for c in conds {
+                prob = match c.kind {
+                    ConditionKind::Initial => prob.ic(c.lhs, c.rhs, pl),
+                    _ => prob.bc(c.lhs, c.rhs, pl),
+                }?;
+            }
+            if all {
+                pdsolve_all(&prob, &opts, pl)
+            } else {
+                pdsolve(&prob, &opts, pl).map(|s| vec![s])
+            }
+        })
+        .map_err(pde_err)?
+    };
+    let out = PyList::empty(py);
+    for s in &sols {
+        out.append(solution_dict(py, s, &pool)?)?;
+    }
+    Ok(out)
+}
+
+/// Private: the valid `pdsolve` hints with their milestones and
+/// descriptions.
+#[pyfunction]
+fn _pde_solve_hints() -> Vec<(&'static str, &'static str, &'static str)> {
+    alkahest_core::pde::TIERS
+        .iter()
+        .map(|t| (t.name, t.milestone, t.description))
+        .collect()
+}
+
 /// Register the PDE surface on the extension module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJetSpace>()?;
@@ -977,7 +1139,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_pde_domain_condition, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_check_problem, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(_pde_solve, m)?)?;
+    m.add_function(wrap_pyfunction!(_pde_solve_hints, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(_pde_integral, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_indexed, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_kronecker, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_root_of_family, m)?)?;

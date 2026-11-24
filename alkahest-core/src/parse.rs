@@ -904,6 +904,7 @@ impl<'a> Parser<'a> {
                 | crate::pde::sum::INDEXED
                 | crate::pde::sum::KRONECKER_DELTA
                 | crate::pde::root_family::ROOT_OF_FAMILY
+                | crate::pde::integral::INTEGRAL
         ) {
             return self.parse_pde_head(name, offset);
         }
@@ -985,6 +986,7 @@ impl Parser<'_> {
         self.expect(&Tok::RParen)?;
         let arity = match name {
             crate::pde::sum::SUM | crate::pde::root_family::ROOT_OF_FAMILY => 4,
+            crate::pde::integral::INTEGRAL if args.len() == 4 => 4,
             _ => 2,
         };
         if args.len() != arity {
@@ -997,6 +999,12 @@ impl Parser<'_> {
         let r = match name {
             crate::pde::sum::SUM => crate::pde::sum::sum(args[0], args[1], args[2], args[3], pool),
             crate::pde::sum::INDEXED => crate::pde::sum::indexed(args[0], args[1], pool),
+            crate::pde::integral::INTEGRAL if args.len() == 4 => {
+                crate::pde::integral::integral(args[0], args[1], args[2], args[3], pool)
+            }
+            crate::pde::integral::INTEGRAL => {
+                crate::pde::integral::indefinite_integral(args[0], args[1], pool)
+            }
             crate::pde::sum::KRONECKER_DELTA => {
                 Ok(crate::pde::sum::kronecker_delta(args[0], args[1], pool))
             }
