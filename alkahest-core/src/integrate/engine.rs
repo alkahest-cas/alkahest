@@ -4129,8 +4129,34 @@ pub fn integrate_definite(
 /// The fundamental-theorem path of [`integrate_definite`]: antiderivative,
 /// endpoint values, difference — with the pole, jump and finiteness guards.
 ///
+/// The antiderivative is taken with principal-branch logarithms first (the
+/// limit engine reasons about `log(a)` at `±∞`, not about `log|a|`).  Only
+/// when that one is refused for a **domain hole** — a `log` of a negative
+/// number across the interval, `½·log(x²−1)` for `∫atanh` — is the real-log
+/// antiderivative tried, which has no hole there.
+///
 /// Bounds arrive already simplified.
 fn definite_via_ftc(
+    expr: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    let first = {
+        let _principal = super::real_log::PrincipalLogs::enter();
+        definite_via_ftc_once(expr, var, lower, upper, pool)
+    };
+    match first {
+        Err(IntegrationError::NotImplemented(msg)) if msg.contains("undefined across") => {
+            definite_via_ftc_once(expr, var, lower, upper, pool)
+                .map_err(|_| IntegrationError::NotImplemented(msg))
+        }
+        other => other,
+    }
+}
+
+fn definite_via_ftc_once(
     expr: ExprId,
     var: ExprId,
     lower: ExprId,

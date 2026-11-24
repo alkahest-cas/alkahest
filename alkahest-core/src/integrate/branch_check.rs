@@ -59,17 +59,6 @@ pub(crate) fn has_complex_branch(integrand: ExprId, var: ExprId, pool: &ExprPool
             .any(|&x| eval(integrand, var, x, pool).is_some_and(|f| f.im != 0.0 && f.is_finite()))
 }
 
-/// `expr` at the real point `x` on the principal complex branch, as
-/// `(re, im)`; `None` where the evaluator has no value (an unsupported head).
-pub(crate) fn eval_principal(
-    expr: ExprId,
-    var: ExprId,
-    x: f64,
-    pool: &ExprPool,
-) -> Option<(f64, f64)> {
-    eval(expr, var, x, pool).map(|c| (c.re, c.im))
-}
-
 /// `Some(x)` when `d/dx candidate` and `integrand` disagree at the real point
 /// `x`, at which the integrand is a finite non-real number; `None` when every
 /// such point agrees or none could be evaluated.

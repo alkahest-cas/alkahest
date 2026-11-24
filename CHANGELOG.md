@@ -39,8 +39,10 @@
 ### Changed
 
 - **`integrate` returns real-valued logarithms from every route.** #575 rewrote `log(a)` on its own routes only: as `log(−a)` where `a < 0` on the integrand's real domain, or as `log|a|` where `a` changes sign. The rewrite now runs as the last step of every `integrate` call, so it also covers the rule engine's u-substitution, Rothstein–Trager, Risch–Norman, the pre-normaliser and the rationalised-cofactor route. For example, `∫1/x = log|x|` and `∫coth x = log|tanh x| − ½log(1 − tanh²x)`. `∫asin(x)/(√(1−x²) + 1)` (Charlwood #14) is now real on all of `(−1, 1)`. It used to carry `log((√(1−x²) − 1)/x)`, which is complex on `0 < x < 1`.
-  - The rewrite runs only on answers that contain a logarithm of the variable. It is re-verified, and it must also hold on the integrand's complex branch. The check for that evaluates `abs` and `sign` on ℂ, and if the rewrite fails it the original answer stands.
-  - `dsolve` keeps principal-branch logarithms in its quadratures. There a free constant absorbs the difference, so `exp(∫dx/x)` stays `x` and does not become `|x|`.
+  - The rewrite runs only on answers that contain a logarithm of the variable and are built from elementary functions, `erf` and `erfi`. It is checked numerically: the new answer must be real wherever the integrand is, and it must differentiate back to the integrand there. If either check fails, the original answer stands.
+  - When the integrand also has a complex branch on the real line, a sign-changing `a` becomes `½·log(a²)`, not `log|a|`. The two agree on the real domain, but only `½·log(a²)` is still an antiderivative on the complex branch, as the original was.
+  - Definite integrals take the principal-log antiderivative first. They retry with the real one only when the first is refused for a domain hole: `∫_{−½}^{½} atanh x dx = 0` used to be refused. `|c|` is folded at numeric bounds.
+  - `dsolve` and the Euler–Maclaurin expansion keep principal-branch logarithms in their quadratures. There a free constant absorbs the difference, so `exp(∫dx/x)` stays `x` and does not become `|x|`.
 - **`dsolve` writes `erfi` as the real primitive.** The Hermite and Laguerre second solutions from reduction of order, such as `y'' − 2xy' + 4y = 0` and `y'' + xy' + y = 0`, now come out as `erfi(z)`, not `−i·erf(i·z)`. The dsolve gate and `evaluate(..., mode="complex")` evaluate `erfi` on ℂ.
 
 ### Performance
