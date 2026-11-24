@@ -3742,6 +3742,18 @@ fn integrate_dispatch(
                 if let Some(r) = super::prenorm::try_prenormalised(expr, var, pool)? {
                     return Ok(r);
                 }
+                // Two square roots of linear radicands, rationalised together
+                // by `s = √(αx+β₁) + √(αx+β₂)` (`∫asin(√x − √(x+1))`).
+                crate::budget::check()?;
+                if let Some(r) = super::radical_pair::try_radical_pair(expr, var, pool) {
+                    return Ok(r);
+                }
+                // A radical function of one `sin θ` (or `cos θ`) alone:
+                // `s = sin θ` with the sign of `cos θ` kept explicitly.
+                crate::budget::check()?;
+                if let Some(r) = super::sine_subst::try_sine_substitution(expr, var, pool) {
+                    return Ok(r);
+                }
             }
 
             crate::budget::check()?;

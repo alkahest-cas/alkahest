@@ -79,6 +79,31 @@ fn real_where_integrand_is(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
 /// Derivation-log rule name of the final real-log pass in `integrate`.
 pub(crate) const REAL_LOG_RULE: &str = "int_real_valued_logs";
 
+thread_local! {
+    /// Depth of [`PrincipalLogs`] scopes on this thread.
+    static PRINCIPAL_LOGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While alive, the outermost `integrate` keeps principal-branch logarithms
+/// (skips [`realify_answer`]).  For callers whose antiderivatives only ever
+/// feed an expression with a free constant that absorbs the difference —
+/// `dsolve`'s `exp(∫p dx)` is `x`, not `|x|`, for `p = 1/x`, and `C·x` is the
+/// same family as `C·|x|`.
+pub(crate) struct PrincipalLogs;
+
+impl PrincipalLogs {
+    pub(crate) fn enter() -> Self {
+        PRINCIPAL_LOGS.with(|d| d.set(d.get() + 1));
+        PrincipalLogs
+    }
+}
+
+impl Drop for PrincipalLogs {
+    fn drop(&mut self) {
+        PRINCIPAL_LOGS.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 /// The final pass of the outermost `integrate`: [`realify_logs`] on any
 /// answer that carries a `log` of the variable, `None` when nothing changed.
 /// Answers without one (most of them) cost a single tree walk.
@@ -88,6 +113,9 @@ pub(crate) fn realify_answer(
     var: ExprId,
     pool: &ExprPool,
 ) -> Option<ExprId> {
+    if PRINCIPAL_LOGS.with(|d| d.get()) > 0 {
+        return None;
+    }
     let mut logs = Vec::new();
     collect_logs(f, var, pool, &mut logs);
     if logs.is_empty() {

@@ -192,7 +192,7 @@ pub const MAX_IBP_STEPS: u32 = 3;
 /// nesting is useful (a residual that is itself a by-parts problem); deeper
 /// nesting has not paid for itself on any measured corpus and is where the
 /// combinatorial blow-up lives.
-const MAX_REENTRY_DEPTH: u32 = 1;
+const MAX_REENTRY_DEPTH: u32 = 2;
 
 /// How much larger `∫v·du` may be than `∫u·dv` before the split is judged
 /// wrong.  A by-parts step is supposed to *simplify*; `1.6` leaves room for the

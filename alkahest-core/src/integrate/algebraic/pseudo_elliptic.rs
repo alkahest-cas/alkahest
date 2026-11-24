@@ -308,11 +308,9 @@ mod tests {
         let y = pool.func("sqrt", vec![qpoly_to_expr(&p_rad, t, &pool)]);
         let f = integrate_pseudo_elliptic(&q(num), &q(den), &p_rad, y, t, &pool)
             .expect("pseudo-elliptic antiderivative");
-        let df = crate::simplify::engine::simplify(
-            crate::diff::diff(f, t, &pool).unwrap().value,
-            &pool,
-        )
-        .value;
+        let df =
+            crate::simplify::engine::simplify(crate::diff::diff(f, t, &pool).unwrap().value, &pool)
+                .value;
         let integrand = pool.mul(vec![
             qpoly_to_expr(&q(num), t, &pool),
             pool.pow(qpoly_to_expr(&q(den), t, &pool), pool.integer(-1_i32)),
@@ -323,7 +321,10 @@ mod tests {
             env.insert(t, xv);
             let a = crate::jit::eval_interp(df, &env, &pool).unwrap();
             let b = crate::jit::eval_interp(integrand, &env, &pool).unwrap();
-            assert!((a - b).abs() < 1e-10 * (1.0 + b.abs()), "{a} vs {b} at {xv}");
+            assert!(
+                (a - b).abs() < 1e-10 * (1.0 + b.abs()),
+                "{a} vs {b} at {xv}"
+            );
         }
         f
     }
