@@ -169,6 +169,13 @@ def mul : Poly → Poly → Poly
   | [], _ => []
   | (tm, tc) :: p, q => add (mulTerm tm tc q) (mul p q)
 
+/-- Product with the shorter operand outermost: `mul` merges one partial product per
+term of its first argument into the running sum. -/
+def mulS (p q : Poly) : Poly :=
+  match Nat.blt q.length p.length with
+  | true => mul q p
+  | false => mul p q
+
 /-- Natural power. -/
 def pow (p : Poly) : Nat → Poly
   | 0 => const 1
@@ -260,6 +267,12 @@ theorem eval_mul (v : List ℝ) : ∀ p q, eval v (mul p q) = eval v p * eval v 
   | [], q => by simp [mul]
   | (m, c) :: p, q => by
     simp only [mul, eval_add, eval_mulTerm, eval_mul v p q, eval_cons]; ring
+
+theorem eval_mulS (v : List ℝ) (p q : Poly) : eval v (mulS p q) = eval v p * eval v q := by
+  unfold mulS
+  split
+  · rw [eval_mul, mul_comm]
+  · rw [eval_mul]
 
 theorem eval_pow (v : List ℝ) (p : Poly) : ∀ n, eval v (pow p n) = eval v p ^ n
   | 0 => by simp [pow, eval_const]

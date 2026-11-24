@@ -43,7 +43,7 @@ def combo (NT : NTable) : List Rel → List Cof → Option Poly
   | _ :: _, [] => none
   | r :: rs, c :: cs =>
     match relPoly NT r, combo NT rs cs with
-    | some g, some s => some (Poly.add (Poly.mul c.toPoly g) s)
+    | some g, some s => some (Poly.add (Poly.mulS c.toPoly g) s)
     | _, _ => none
 
 /-- Side conditions of all relations. -/
@@ -90,7 +90,7 @@ theorem combo_sound {ρ vals : List ℝ} {NT : NTable} (hG : Good ρ vals NT) :
         · simp at hg
       have hs0 : s'.eval vals = 0 :=
         combo_sound hG (fun d hd => hc d (by simp [relConds, hd])) hs
-      rw [Poly.eval_add, Poly.eval_mul, hg0, hs0]; ring
+      rw [Poly.eval_add, Poly.eval_mulS, hg0, hs0]; ring
     · simp at h
 
 theorem checkEq_sound {H : List Cond} {lhs rhs : AExpr} {w : Witness}

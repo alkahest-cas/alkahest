@@ -98,13 +98,13 @@ def norm (NT : NTable) : AExpr → Option Poly
     | _, _ => none
   | .mul a b =>
     match norm NT a, norm NT b with
-    | some p, some q => some (Poly.mul p q)
+    | some p, some q => some (Poly.mulS p q)
     | _, _ => none
   | .div a b =>
     match norm NT a, norm NT b with
     | some p, some q =>
       match normInv NT q with
-      | some r => some (Poly.mul p r)
+      | some r => some (Poly.mulS p r)
       | none => none
     | _, _ => none
   | .neg a =>
@@ -237,7 +237,7 @@ theorem norm_sound {ρ vals : List ℝ} {NT : NTable} (hG : Good ρ vals NT) :
     split at h
     · rename_i pa pb ha hb
       simp at h; subst h
-      rw [Poly.eval_mul, norm_sound hG ha, norm_sound hG hb]; rfl
+      rw [Poly.eval_mulS, norm_sound hG ha, norm_sound hG hb]; rfl
     · simp at h
   | .div a b, p, h => by
     unfold norm at h
@@ -246,7 +246,7 @@ theorem norm_sound {ρ vals : List ℝ} {NT : NTable} (hG : Good ρ vals NT) :
       split at h
       · rename_i r hr
         simp at h; subst h
-        rw [Poly.eval_mul, norm_sound hG ha, normInv_sound hG hr, norm_sound hG hb]
+        rw [Poly.eval_mulS, norm_sound hG ha, normInv_sound hG hr, norm_sound hG hb]
         simp [AExpr.eval, div_eq_mul_inv]
       · simp at h
     · simp at h

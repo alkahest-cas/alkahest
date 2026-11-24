@@ -1542,9 +1542,34 @@ fn multiple_classes(
     Ok(out)
 }
 
+/// `Mono.cmp`: lexicographic order on dense exponent vectors (a monomial order).
+fn mono_cmp(a: &Mono, b: &Mono) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    for k in 0.. {
+        match (a.get(k), b.get(k)) {
+            (None, None) => return Equal,
+            (None, Some(_)) => return Less,
+            (Some(_), None) => return Greater,
+            (Some(&(i, e)), Some(&(j, f))) => {
+                if i != j {
+                    return if i < j { Greater } else { Less };
+                }
+                if e != f {
+                    return e.cmp(&f);
+                }
+            }
+        }
+    }
+    Equal
+}
+
 fn cof_data(p: &Poly, out: &mut String) {
+    // In the kernel's own (descending) order, so `Poly.ofTerms` inserts each
+    // term with one comparison instead of walking the list.
+    let mut terms: Vec<(&Mono, &Rational)> = p.0.iter().collect();
+    terms.sort_by(|x, y| mono_cmp(y.0, x.0));
     out.push('[');
-    for (j, (m, c)) in p.0.iter().enumerate() {
+    for (j, (m, c)) in terms.into_iter().enumerate() {
         if j > 0 {
             out.push_str(", ");
         }
