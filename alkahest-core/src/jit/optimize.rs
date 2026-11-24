@@ -324,7 +324,7 @@ impl Rewriter<'_> {
             // operation) while only serialising the sum. The scheme has to
             // win on structure — shared factors, no powers — alone.
             let cost = op_cost_with(&[scheme], &new_stop, &reassociated, false, self.pool);
-            if best.as_ref().is_none_or(|b| cost < b.0) {
+            if best.as_ref().map_or(true, |b| cost < b.0) {
                 links.extend(reassociated);
                 best = Some((cost, scheme, links));
             }
