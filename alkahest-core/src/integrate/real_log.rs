@@ -125,11 +125,51 @@ pub(crate) fn realify_answer(
     }
     let mut logs = Vec::new();
     collect_logs(f, var, pool, &mut logs);
-    if logs.is_empty() {
+    if logs.is_empty() || !cheap_to_sample(f, pool) || !cheap_to_sample(integrand, pool) {
         return None;
     }
     let g = realify_logs(f, integrand, var, pool);
     (g != f).then_some(g)
+}
+
+/// `true` when every function in `e` is elementary (or `erf`/`erfi`), so
+/// sampling it costs microseconds.  The pass samples the answer at some
+/// 200 points; an `EllipticPi` there can take seconds per point, more than
+/// the integration did, and a `RootSum` hides its logarithms anyway.
+fn cheap_to_sample(e: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Func { name, args } => {
+            matches!(
+                name.as_str(),
+                "exp"
+                    | "log"
+                    | "sqrt"
+                    | "abs"
+                    | "sign"
+                    | "sin"
+                    | "cos"
+                    | "tan"
+                    | "asin"
+                    | "acos"
+                    | "atan"
+                    | "sinh"
+                    | "cosh"
+                    | "tanh"
+                    | "asinh"
+                    | "acosh"
+                    | "atanh"
+                    | "erf"
+                    | "erfi"
+            ) && args.iter().all(|&a| cheap_to_sample(a, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().all(|&a| cheap_to_sample(a, pool)),
+        ExprData::Pow { base, exp } => cheap_to_sample(base, pool) && cheap_to_sample(exp, pool),
+        ExprData::Symbol { .. }
+        | ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_) => true,
+        _ => false,
+    }
 }
 
 /// See the module docs.  Returns `f` unchanged when nothing needs rewriting

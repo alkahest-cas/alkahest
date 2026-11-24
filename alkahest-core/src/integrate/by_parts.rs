@@ -1841,6 +1841,26 @@ impl Rat {
     }
 }
 
+/// `true` when a fractional power (or `sqrt`) of something depending on
+/// `var` occurs in `e`.
+fn has_var_radical(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if is_free_of(e, var, pool) {
+        return false;
+    }
+    match pool.get(e) {
+        ExprData::Pow { base, exp } => {
+            matches!(pool.get(exp), ExprData::Rational(_)) || has_var_radical(base, var, pool)
+        }
+        ExprData::Func { name, args } => {
+            name == "sqrt" || args.iter().any(|&a| has_var_radical(a, var, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| has_var_radical(a, var, pool))
+        }
+        _ => false,
+    }
+}
+
 /// Run the by-parts chain starting from the split `first`, maintaining
 /// `I = acc + mult·∫w dx`.
 ///
@@ -1852,6 +1872,13 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
     let mut w = integrand;
     let mut split = first;
     let mut seen: Vec<ExprId> = vec![integrand];
+    // The extra closing work on the caller's own integrand (nested by-parts,
+    // the multi-form close of a grown residual) is for transcendental
+    // integrands: with an algebraic radical the sub-integrals reach the
+    // elliptic and Trager machinery, where one more level of nesting costs
+    // seconds on a decline.
+    // Nor for the `dv = dx` split, whose residual `x·f′` is a fresh composite.
+    let extra_allowed = !first.trivial_dv && !has_var_radical(integrand, var, pool);
 
     for step in 0..MAX_IBP_STEPS {
         crate::budget::check().ok()?;
@@ -1908,7 +1935,7 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
             // (`∫x·log(x²+1)·atan²x`); on a sub-integral, one engine call.
             let top = IBP_DEPTH.with(|d| d.get()) == 1 && !GROWN_CLOSE.with(|g| g.get());
             if step == 0 && top {
-                let res = if super::engine::in_outermost_integrate() {
+                let res = if super::engine::in_outermost_integrate() && extra_allowed {
                     let _g = GrownCloseGuard::enter();
                     close_integral(raw_w, var, pool)
                 } else {
@@ -1943,6 +1970,7 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         // the closing attempt may itself use by parts once (`∫(x − tan x)/tan²x`
         // leaves `∫x·tan²x + tan x`).
         let closed = if step == 0
+            && extra_allowed
             && IBP_DEPTH.with(|d| d.get()) == 1
             && !GROWN_CLOSE.with(|g| g.get())
             && super::engine::in_outermost_integrate()
