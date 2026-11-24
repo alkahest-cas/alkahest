@@ -4054,6 +4054,19 @@ impl PyDerivedResult {
         if let Some((integrand, var)) = self.integration_verification_input {
             let pool_py = self.value.pool.clone_ref(py);
             let pool = pool_py.borrow(py);
+            // `HasDerivAt (fun x => F) f x` on an explicit domain, proved from
+            // F's expression tree; the older derivation-log `deriv` emitter is
+            // the fallback for anything it withholds.
+            if let Ok(src) = alkahest_core::emit_integration_hasderiv_cert(
+                self.raw.value,
+                integrand,
+                var,
+                &pool.inner,
+            ) {
+                if !src.contains("sorry") && !src.contains("admit") {
+                    return Some(src);
+                }
+            }
             let src =
                 alkahest_core::emit_integration_cert(self.raw.value, integrand, var, &pool.inner);
             if src.is_empty() || src.contains("sorry") || src.contains("admit") {
@@ -4129,6 +4142,12 @@ impl PyDerivedResult {
     ///   not the `∏ k = n!` identity), ``"withheld_resultant_shape"`` (the
     ///   Sylvester matrix is larger than 7×7 or a coefficient is too large), or
     ///   ``"withheld_uncertifiable_step"``.
+    /// * ``detail`` — for a withheld indefinite integral, the specific code
+    ///   from the ``HasDerivAt`` emitter (``"withheld_special_function"``,
+    ///   ``"withheld_rootsum"``, ``"withheld_unsupported_function"``,
+    ///   ``"withheld_unsupported_node"``, ``"withheld_constant_sign"``,
+    ///   ``"withheld_identity_not_reduced"``, ``"withheld_empty_domain"``,
+    ///   ``"withheld_certificate_too_large"``); ``None`` otherwise.
     /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
     ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
     ///   no sound Lean encoding today. This is a *diagnostic*: an empty list
@@ -4182,6 +4201,24 @@ impl PyDerivedResult {
 
         status.set_item("certifiable", certifiable).unwrap();
         status.set_item("reason", reason).unwrap();
+        // For a withheld indefinite integral: the specific reason the
+        // `HasDerivAt` emitter gave (`withheld_special_function`,
+        // `withheld_identity_not_reduced`, …). `None` otherwise.
+        let detail: Option<&'static str> = match self.integration_verification_input {
+            Some((integrand, var)) if !certifiable => {
+                let pool_py = self.value.pool.clone_ref(py);
+                let pool = pool_py.borrow(py);
+                alkahest_core::emit_integration_hasderiv_cert(
+                    self.raw.value,
+                    integrand,
+                    var,
+                    &pool.inner,
+                )
+                .err()
+            }
+            _ => None,
+        };
+        status.set_item("detail", detail).unwrap();
         status.set_item("blocking_steps", blocking).unwrap();
         status
     }

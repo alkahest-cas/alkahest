@@ -74,11 +74,11 @@ FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 # naturally filtered out below like any other empty cert, so including it
 # costs nothing and keeps this list matching "every derivation-producing
 # function the textbook gate exercises."
-# NOTE: `integrate` is deliberately omitted. Its certificates now emit (Part A,
-# via the FTC derivative relation) but are verified deterministically through
-# the strict corpus (`tests/lean_corpus.py`), not this harvested pool — see
-# the module docstring.
+# `integrate` is recorded too: its indefinite results emit `HasDerivAt`
+# certificates for most elementary answers, and every one the textbook gate
+# produces is compiled here alongside the strict corpus.
 RECORDED_FUNCTIONS = (
+    "integrate",
     "diff",
     "simplify",
     "simplify_trig",

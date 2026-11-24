@@ -347,8 +347,8 @@ def test_lean_diff_export():
 
 
 def test_lean_integrate_certifies_via_ftc_derivative():
-    """Part A: ∫ f dx = F certifies via the FTC derivative relation
-    `deriv (fun x => F) x = f`, never the false unwrapped equality `f = F`
+    """∫ f dx = F certifies via the derivative relation
+    `HasDerivAt (fun x => F) f x`, never the false unwrapped equality `f = F`
     (e.g. `sin x = -cos x`)."""
     p = pool()
     x = p.symbol("x")
@@ -358,7 +358,7 @@ def test_lean_integrate_certifies_via_ftc_derivative():
     assert cert
     assert to_lean(r) == cert
     # The sound statement is the derivative relation, not `sin x = -cos x`.
-    assert "deriv (fun" in cert
+    assert "HasDerivAt (fun" in cert
     assert "sorry" not in cert
     assert "admit" not in cert
     # Must never assert the false unwrapped integration equality.
@@ -376,15 +376,16 @@ def test_lean_integrate_log_certifies_via_ftc():
     assert isinstance(cert, str)
     assert cert
     assert to_lean(r) == cert
-    assert "deriv (fun" in cert
+    assert "HasDerivAt (fun" in cert
     assert "sorry" not in cert
     assert "admit" not in cert
-    assert "(hx : 0 < x)" in cert
+    # `Real.log` differentiates wherever its argument is nonzero.
+    assert "(h1 : (x : ℝ) ≠ 0)" in cert
 
 
 def test_lean_integrate_cos_two_x_certifies_via_ftc():
-    """∫ cos(2x) dx certifies via FTC: F = (1/2) sin(2x) uses const_mul of
-    the linear-inner chain, not a widened unconditional product_rule."""
+    """∫ cos(2x) dx certifies: F = (1/2) sin(2x) is differentiated by
+    `HasDerivAt.sin` of the linear inner argument."""
     p = pool()
     x = p.symbol("x")
     r = integrate(cos(2 * x), x)
@@ -392,10 +393,10 @@ def test_lean_integrate_cos_two_x_certifies_via_ftc():
     assert isinstance(cert, str)
     assert cert
     assert to_lean(r) == cert
-    assert "deriv (fun" in cert
+    assert "HasDerivAt (fun" in cert
     assert "sorry" not in cert
     assert "admit" not in cert
-    assert "const_mul" in cert or "mul_const" in cert
+    assert ".sin)" in cert
 
 
 def test_lean_definite_integral_cos_two_x_certificate():
@@ -439,20 +440,17 @@ def test_lean_definite_log_withholds_zero_endpoint():
         to_lean(r)
 
 
-def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
-    """∫ x log x and d/dx of its antiderivative stay withheld.
-
-    Differentiating F = ½ x² log x − x²/4 produces an n-ary inverse
-    cancellation (`x² · x⁻¹ · ½`) that `ring` cannot close. Emitting that
-    cleanup made the textbook-gate Lean pool red; withhold beats a
-    non-typechecking certificate.
+def test_lean_int_x_log_x_certifies_but_diff_of_its_F_withholds():
+    """∫ x log x certifies through the `HasDerivAt` emitter, whose final
+    identity (`x² · x⁻¹ · ½ = x · ½`) is a `linear_combination` over
+    `x * x⁻¹ = 1`. The rewrite-log certificate for d/dx of the same F still
+    withholds: its n-ary inverse cancellation is beyond the step emitter.
     """
     p = pool()
     x = p.symbol("x")
     r = integrate(x * log(x), x)
-    assert r.certificate is None
-    with pytest.raises(alkahest.CertificateUnavailableError):
-        to_lean(r)
+    assert r.certificate
+    assert "HasDerivAt (fun" in r.certificate
     dF = diff(r.value, x)
     assert dF.certificate is None
     with pytest.raises(alkahest.CertificateUnavailableError):
@@ -460,19 +458,20 @@ def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
 
 
 def test_lean_withholds_non_elementary_integrate_certificate():
-    """An antiderivative whose derivative escapes the certifiable diff fragment
-    (here `∫ x·exp(x²) dx`, a chain composite) stays withheld rather than
-    emitting an admission."""
+    """An antiderivative with a special function (here `∫ exp(-x²) dx`, an
+    `erf` answer: Mathlib has no `erf` derivative) stays withheld rather than
+    emitting an admission, and says why."""
     p = pool()
     x = p.symbol("x")
-    r = integrate(x * exp(x**2), x)
+    r = integrate(exp(-(x**2)), x)
     assert r.certificate is None
+    assert r.certificate_status["detail"] == "withheld_special_function"
     with pytest.raises(alkahest.CertificateUnavailableError):
         to_lean(r)
 
 
 def test_lean_integrate_inv_x_via_log():
-    """∫ x⁻¹ dx = log x certifies via FTC reuse of Real.deriv_log."""
+    """∫ x⁻¹ dx = log x certifies via `HasDerivAt.log` on `x ≠ 0`."""
     p = pool()
     x = p.symbol("x")
     r = integrate(x**-1, x)
@@ -480,12 +479,12 @@ def test_lean_integrate_inv_x_via_log():
     assert isinstance(cert, str)
     assert cert
     assert "sorry" not in cert
-    assert "Real.deriv_log" in cert
+    assert ".log h1" in cert
     assert to_lean(r) == cert
 
 
 def test_lean_integrate_x_neg_two_via_ftc():
-    """∫ x⁻² dx = -x⁻¹ certifies via FTC reuse of d/dx (-x⁻¹)."""
+    """∫ x⁻² dx = -x⁻¹ certifies via `HasDerivAt.inv` on `x ≠ 0`."""
     p = pool()
     x = p.symbol("x")
     r = integrate(x**-2, x)
@@ -493,8 +492,8 @@ def test_lean_integrate_x_neg_two_via_ftc():
     assert isinstance(cert, str)
     assert cert
     assert "sorry" not in cert
-    assert "(hx : x ≠ 0)" in cert
-    assert "deriv_inv" in cert
+    assert "(h1 : (x : ℝ) ≠ 0)" in cert
+    assert ".inv h1" in cert
     assert to_lean(r) == cert
 
 
@@ -946,8 +945,8 @@ def test_lean_integrate_inv_one_plus_x_squared():
     r = integrate(integrand, x)
     assert r.certificate
     assert "sorry" not in r.certificate
-    assert "deriv (fun" in r.certificate
-    assert "Real.arctan" in r.certificate or "hasDerivAt_arctan" in r.certificate
+    assert "HasDerivAt (fun" in r.certificate
+    assert "Real.arctan" in r.certificate
     # Residual check still labels the antiderivative as exact.
     assert "atan" in str(r.value)
 
