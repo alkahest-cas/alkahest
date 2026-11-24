@@ -1902,16 +1902,20 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
             structural_size(next_w, pool) as f64 > GROWTH_LIMIT * structural_size(w, pool) as f64;
         if grew && !(step == 0 && split.trivial_dv) {
             // A larger residual is still worth one attempt to *close*, without
-            // recursing on it — on the first step of a by-parts call on the
-            // caller's own integrand only, which bounds the cost to one engine
-            // call per split: `∫x·cot²x` has `v = −x − cot x`, bigger than
-            // `cot²x`, and `∫v dx` is immediate.
-            let top = IBP_DEPTH.with(|d| d.get()) == 1
-                && super::engine::in_outermost_integrate()
-                && !GROWN_CLOSE.with(|g| g.get());
+            // recursing on it, on the first step of a top-level by-parts chain:
+            // `∫x·cot²x` has `v = −x − cot x`, bigger than `cot²x`, and `∫v dx`
+            // is immediate.  On the caller's own integrand the attempt is the
+            // full `close_integral` with one extra level of by-parts nesting
+            // (`∫x·log(x²+1)·atan²x`); on a sub-integral, one engine call.
+            let top = IBP_DEPTH.with(|d| d.get()) == 1 && !GROWN_CLOSE.with(|g| g.get());
             if step == 0 && top {
-                let _g = GrownCloseGuard::enter();
-                if let Some(res) = close_integral(raw_w, var, pool) {
+                let res = if super::engine::in_outermost_integrate() {
+                    let _g = GrownCloseGuard::enter();
+                    close_integral(raw_w, var, pool)
+                } else {
+                    integrate(next_w, var, pool).ok().map(|r| r.value)
+                };
+                if let Some(res) = res {
                     return Some(
                         simplify(
                             pool.add(vec![

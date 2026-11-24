@@ -64,6 +64,15 @@ impl Drop for StrictGuard {
     }
 }
 
+/// `true` when `integrand` takes a finite non-real value at some real sample
+/// (it has a complex branch on the real line that this module checks).
+pub(crate) fn has_complex_branch(integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    may_be_non_real(integrand, pool)
+        && SAMPLES
+            .iter()
+            .any(|&x| eval(integrand, var, x, pool).is_some_and(|f| f.im != 0.0 && f.is_finite()))
+}
+
 /// [`complex_branch_mismatch`] with `abs` and `sign` evaluated on ℂ.
 ///
 /// For the real-log rewrite: `log|a|` has derivative `a′/a` only where `a` is

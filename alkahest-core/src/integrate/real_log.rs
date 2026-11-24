@@ -11,9 +11,14 @@
 //! [`realify_logs`] rewrites each `log(a)` whose argument is negative somewhere
 //! on the integrand's real domain: to `log(−a)` when `a` is never positive
 //! there (smooth, and the same derivative), else to `log(|a|)` (the same
-//! derivative wherever `a ≠ 0`).  The rewritten candidate is re-gated against
-//! the integrand and must evaluate to a finite real number at every sample
-//! where the integrand does; otherwise the original is kept.
+//! derivative wherever `a ≠ 0`) — or to `½·log(a²)` when the integrand has a
+//! complex branch on the real line, where `log|a|` would not differentiate
+//! back to it.  The rewritten candidate is re-gated against the integrand and
+//! must evaluate to a finite real number at every sample where the integrand
+//! does; otherwise the original is kept.
+//!
+//! [`realify_answer`] runs this as the last step of every outermost
+//! `integrate` call, whichever route produced the answer.
 
 use std::collections::HashMap;
 
@@ -136,6 +141,12 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
     if logs.is_empty() {
         return f;
     }
+    // `log|a|` differentiates to `a′/a` only where `a` is real: on a complex
+    // branch of the integrand it is not an antiderivative where `log(a)` was,
+    // and a symbolic `d/dx` (which simplifies `sign(a)/|a|` to `1/a`) cannot
+    // see that.  There the analytic `½·log(a²)` is used instead: the same
+    // real value on the real domain, derivative `a′/a` everywhere.
+    let complex_branch = super::branch_check::has_complex_branch(integrand, var, pool);
     let mut map = HashMap::new();
     for l in logs {
         let ExprData::Func { args, .. } = pool.get(l) else {
@@ -156,12 +167,18 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
         if !neg {
             continue;
         }
-        let arg = if pos {
-            pool.func("abs", vec![a])
+        let replacement = if pos && complex_branch {
+            pool.mul(vec![
+                pool.rational(1, 2),
+                pool.func("log", vec![pool.pow(a, pool.integer(2_i32))]),
+            ])
+        } else if pos {
+            pool.func("log", vec![pool.func("abs", vec![a])])
         } else {
-            simplify(pool.mul(vec![pool.integer(-1_i32), a]), pool).value
+            let minus_a = simplify(pool.mul(vec![pool.integer(-1_i32), a]), pool).value;
+            pool.func("log", vec![minus_a])
         };
-        map.insert(l, pool.func("log", vec![arg]));
+        map.insert(l, replacement);
     }
     if map.is_empty() {
         return f;
