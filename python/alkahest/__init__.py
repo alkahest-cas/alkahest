@@ -314,6 +314,7 @@ from .alkahest import (  # noqa: F401
     laguerre_l,
     lambert_w,
     lambert_wm1,
+    lean_certificate_mode,
     legendre_p,
     lie_algebra,
     lie_su2,
@@ -378,6 +379,7 @@ from .alkahest import (  # noqa: F401
     satisfiable,
     sensitivity_system,
     series,
+    set_lean_certificate_mode,
     sign,
     simplify,
     simplify_auto,
@@ -459,10 +461,6 @@ from .alkahest import (
 )
 from .alkahest import (
     integrate_definite as _native_integrate_definite,
-)
-from .alkahest import (  # Lean certificates: reflective kernel vs tactic emitter
-    lean_certificate_mode,
-    set_lean_certificate_mode,
 )
 from .controls import (  # G10 — controls layer
     ControlsError,
