@@ -147,13 +147,13 @@ pub use matrix::{
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
     dsolve::{
-        dsolve, dsolve_with,
+        dsolve, dsolve_parametric, dsolve_with,
         system::{
             dsolve_system, dsolve_system_opts, dsolve_system_with, DsolveSystemError,
             SystemSolution,
         },
         DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution, OdeInput,
-        SolutionForm,
+        ParametricBranch, ParametricReport, SolutionForm,
     },
     lower_to_first_order,
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
@@ -599,8 +599,8 @@ pub mod experimental {
         dsolve_system, dsolve_system_opts, dsolve_system_with, DsolveSystemError, SystemSolution,
     };
     pub use crate::ode::dsolve::{
-        dsolve, dsolve_with, DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution,
-        OdeInput, SolutionForm,
+        dsolve, dsolve_parametric, dsolve_with, DsolveBranch, DsolveError, DsolveReport,
+        DsolveResult, DsolveSolution, OdeInput, ParametricBranch, ParametricReport, SolutionForm,
     };
     pub use crate::ode::from_equations::{ode_from_equations, EquationSystem, EquationSystemError};
     pub use crate::ode::sensitivity::{

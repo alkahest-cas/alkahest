@@ -119,6 +119,18 @@ CORPUS: list[tuple[str, str, str, int, dict[str, float]]] = [
     ("ba08", "bessel", "x**2*ypp + x*yp + (4*x**2 - 9)*y", 2, {}),
     ("ba09", "bessel", "x*ypp + y", 2, {}),
     ("ba10", "bessel", "x*ypp - yp + x*y", 2, {}),
+    # -- added with the elliptic / special-quadrature / Lagrange round ------------
+    ("nl14", "autonomous", "ypp - y + y**3", 2, {}),
+    ("nl15", "autonomous", "ypp + y + y**3", 2, {}),
+    ("nl16", "autonomous", "ypp - 3*y**2 + 2*y - 1", 2, {}),
+    ("nl17", "autonomous", "ypp + 4*sin(y)", 2, {}),
+    ("nl18", "autonomous", "ypp + 2*exp(-y)", 2, {}),
+    ("nl19", "autonomous", "ypp + exp(2*y)", 2, {}),
+    ("fo26", "lagrange", "y - x*yp**2 - yp", 1, {}),
+    ("fo27", "lagrange", "y - x*(1 + yp) - yp**2", 1, {}),
+    ("sp10", "hermite", "ypp - 2*x*yp + 2*y", 2, {}),
+    ("sp11", "laguerre", "x*ypp + (1 - x)*yp + 3*y", 2, {}),
+    ("ex06", "second-exact", "ypp - x*yp - y", 2, {}),
 ]
 
 # Linear constant-coefficient systems ``d(vars)/dt = rhs`` for

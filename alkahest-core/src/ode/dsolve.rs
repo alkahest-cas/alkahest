@@ -18,6 +18,10 @@
 //! 7. Riccati `y' = q₀(x) + q₁(x)·y + q₂(x)·y²` **with a polynomial particular
 //!    solution** found by ansatz (declined otherwise)
 //!
+//! Lagrange (d'Alembert) equations `y = x·f(y') + g(y')` have a *parametric*
+//! general solution `(x(p), y(p))`, `p = y'`, reported by [`dsolve_parametric`]
+//! (see the private `lagrange` submodule) rather than by [`dsolve`].
+//!
 //! A first-order answer may be [`SolutionForm::Implicit`]: separable and exact
 //! equations frequently have no closed form for `y`.  An explicit `y(x)` is
 //! always preferred when any class produces one.  Such an answer is reported by
@@ -32,7 +36,14 @@
 //! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = r(x)`
 //! - general variable coefficients `a₂(x)y'' + a₁(x)y' + a₀(x)y = r(x)`, when a
 //!   first homogeneous solution is found by ansatz — the second then follows by
-//!   reduction of order (see the private `variation` submodule)
+//!   reduction of order (see the private `variation` submodule); when that
+//!   quadrature is `∫R(x)·e^{g(x)}` with `g` linear or quadratic, the second
+//!   solution is elementary plus one `Ei`/`erf`/`erfi` term (Hermite and
+//!   Laguerre at integer index; private `special_quad` submodule)
+//! - autonomous `y'' = f(y)` with an elliptic energy integral — `f` quadratic
+//!   (Weierstrass `℘`), cubic without constant term after the shift (Jacobi
+//!   `cn`/`nc`), `sin y` (pendulum, Jacobi amplitude) — and Liouville's
+//!   `y'' = a·e^{by}` (private `autonomous` submodule)
 //!
 //! **Higher order**: constant-coefficient `Σ aₖ y^(k) = r(x)`, solved through
 //! the characteristic polynomial (rational + quadratic factorization;
@@ -104,16 +115,20 @@ use crate::simplify::engine::{distribute_recip, simplify, simplify_expanded};
 use std::collections::HashMap;
 use std::fmt;
 
+mod autonomous;
 mod constant_coeff;
 #[cfg(test)]
 mod corpus;
 mod exact_roots;
 mod first_order;
+mod lagrange;
 mod special_linear;
+mod special_quad;
 pub mod system;
 mod variation;
 mod verify;
 
+pub use lagrange::{dsolve_parametric, ParametricBranch, ParametricReport};
 #[cfg(test)]
 pub(crate) use verify::solution_is_verified;
 pub(crate) use verify::{implicit_relation_is_zero, residual_is_zero};

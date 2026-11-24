@@ -146,7 +146,8 @@ use alkahest_core::calculus::puiseux::{
 };
 use alkahest_core::ode::dsolve::system::DsolveSystemError as CoreDsolveSystemError;
 use alkahest_core::ode::dsolve::{
-    dsolve_with as core_dsolve_with, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
+    dsolve_parametric as core_dsolve_parametric, dsolve_with as core_dsolve_with,
+    DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
 };
 use alkahest_core::ode::numeric::{
     integrate_rk4 as core_integrate_rk4, integrate_rk45 as core_integrate_rk45,
@@ -5082,6 +5083,55 @@ fn elliptic_f(py: Python<'_>, phi: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> P
     make_binary_func(py, "EllipticF", phi, m)
 }
 
+/// Jacobi elliptic sine `JacobiSN(u, m)` (parameter `m = k²`).
+#[pyfunction]
+fn jacobi_sn(py: Python<'_>, u: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    make_binary_func(py, "JacobiSN", u, m)
+}
+
+/// Jacobi elliptic cosine `JacobiCN(u, m)` (parameter `m = k²`).
+#[pyfunction]
+fn jacobi_cn(py: Python<'_>, u: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    make_binary_func(py, "JacobiCN", u, m)
+}
+
+/// Jacobi delta amplitude `JacobiDN(u, m)` (parameter `m = k²`).
+#[pyfunction]
+fn jacobi_dn(py: Python<'_>, u: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    make_binary_func(py, "JacobiDN", u, m)
+}
+
+/// Jacobi amplitude `JacobiAmplitude(u, m)`, the inverse of `EllipticF(phi, m)`.
+#[pyfunction]
+fn jacobi_am(py: Python<'_>, u: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    make_binary_func(py, "JacobiAmplitude", u, m)
+}
+
+/// Weierstrass `℘(z; g2, g3)` as a symbolic node `WeierstrassP(z, g2, g3)`,
+/// parametrised by its invariants (`℘'² = 4℘³ − g2·℘ − g3`). Not to be
+/// confused with `experimental.weierstrass_p(z, tau)`, a numeric evaluator
+/// parametrised by the period ratio.
+#[pyfunction]
+fn weierstrass_wp(
+    py: Python<'_>,
+    z: &Bound<'_, PyAny>,
+    g2: &Bound<'_, PyAny>,
+    g3: &Bound<'_, PyAny>,
+) -> PyResult<PyExpr> {
+    make_ternary_func(py, "WeierstrassP", z, g2, g3)
+}
+
+/// `℘'(z; g2, g3)` as a symbolic node `WeierstrassPPrime(z, g2, g3)`.
+#[pyfunction]
+fn weierstrass_wp_prime(
+    py: Python<'_>,
+    z: &Bound<'_, PyAny>,
+    g2: &Bound<'_, PyAny>,
+    g3: &Bound<'_, PyAny>,
+) -> PyResult<PyExpr> {
+    make_ternary_func(py, "WeierstrassPPrime", z, g2, g3)
+}
+
 /// Incomplete elliptic integral of the third kind, `EllipticPi(n, phi, m)`.
 #[pyfunction]
 fn elliptic_pi(
@@ -6530,6 +6580,13 @@ fn fps_error_to_py(e: CoreFpsError) -> PyErr {
 /// mistake a relation for a solution. Explicit answers keep exactly the keys
 /// and values they had before `form` existed.
 ///
+/// A first-order Lagrange (d'Alembert) equation `y = x*f(y') + g(y')` that no
+/// explicit or implicit class solves is answered in **parametric** form:
+/// `form` is `"parametric"`, `y_of_x` and `implicit_relation` are `None`, and
+/// the curve is `x = x_of_p`, `y = y_of_p` in the parameter `parameter`
+/// (the slope `y'`). `singular_solutions` lists the verified singular lines
+/// `y(x)`. Both the curve and the lines are verified before they are returned.
+///
 /// The coefficients may be symbolic: `y'' + 2*z*w*y' + w**2*y = 0` returns the
 /// uniform two-exponential form. Its discriminant's sign is parameter
 /// dependent, so the family it returns is the general solution only where the
@@ -6578,7 +6635,21 @@ fn py_dsolve(
         guard_depth_all(&pool.inner, &[input.equation, input.x, input.y])?;
         guard_depth_all(&pool.inner, &input.derivs)?;
         let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
-        core_dsolve_with(&input, ctx, &pool.inner).map_err(dsolve_error_to_py)?
+        match core_dsolve_with(&input, ctx, &pool.inner) {
+            Ok(r) => r,
+            // Lagrange's equation has a parametric general solution only;
+            // offer it when no explicit/implicit class answered.
+            Err(e) if input.derivs.len() == 1 => {
+                match core_dsolve_parametric(&input, &pool.inner) {
+                    Ok(rep) => {
+                        drop(pool);
+                        return parametric_to_py(py, &pool_py, rep);
+                    }
+                    Err(_) => return Err(dsolve_error_to_py(e)),
+                }
+            }
+            Err(e) => return Err(dsolve_error_to_py(e)),
+        }
     };
     let pool = pool_py.borrow(py);
     let conditions: Vec<String> = report
@@ -6631,6 +6702,46 @@ fn py_dsolve(
         d.set_item("method", sol.method)?;
         d.set_item("side_conditions", conditions.clone())?;
         d.set_item("notes", report.notes.clone())?;
+        out.append(d)?;
+    }
+    out.into_py_any(py)
+}
+
+/// The `dsolve` result list for a parametric (Lagrange) answer.
+fn parametric_to_py(
+    py: Python<'_>,
+    pool_py: &Py<PyExprPool>,
+    rep: alkahest_core::ode::dsolve::ParametricReport,
+) -> PyResult<Py<PyAny>> {
+    let wrap = |id| {
+        PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        }
+        .into_py_any(py)
+    };
+    let singular = PyList::empty(py);
+    for s in &rep.singular {
+        singular.append(wrap(*s)?)?;
+    }
+    let out = PyList::empty(py);
+    for br in rep.branches {
+        let d = PyDict::new(py);
+        d.set_item("y_of_x", py.None())?;
+        d.set_item("implicit_relation", py.None())?;
+        d.set_item("form", "parametric")?;
+        d.set_item("parameter", wrap(br.parameter)?)?;
+        d.set_item("x_of_p", wrap(br.x_of_p)?)?;
+        d.set_item("y_of_p", wrap(br.y_of_p)?)?;
+        let consts = PyList::empty(py);
+        for c in br.constants {
+            consts.append(wrap(c)?)?;
+        }
+        d.set_item("constants", consts)?;
+        d.set_item("method", br.method)?;
+        d.set_item("singular_solutions", singular.clone())?;
+        d.set_item("side_conditions", Vec::<String>::new())?;
+        d.set_item("notes", Vec::<String>::new())?;
         out.append(d)?;
     }
     out.into_py_any(py)
@@ -23972,6 +24083,12 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(elliptic_e, m)?)?;
     m.add_function(wrap_pyfunction!(elliptic_f, m)?)?;
     m.add_function(wrap_pyfunction!(elliptic_pi, m)?)?;
+    m.add_function(wrap_pyfunction!(jacobi_sn, m)?)?;
+    m.add_function(wrap_pyfunction!(jacobi_cn, m)?)?;
+    m.add_function(wrap_pyfunction!(jacobi_dn, m)?)?;
+    m.add_function(wrap_pyfunction!(jacobi_am, m)?)?;
+    m.add_function(wrap_pyfunction!(weierstrass_wp, m)?)?;
+    m.add_function(wrap_pyfunction!(weierstrass_wp_prime, m)?)?;
     m.add_class::<PyDomain>()?;
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;

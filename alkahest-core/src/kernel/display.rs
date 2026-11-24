@@ -845,6 +845,28 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             let (m, _) = latex_r(args[2], pool);
             format!(r"\Pi\!\left({n};{phi}\,\middle|\,{m}\right)")
         }
+        "JacobiSN" | "JacobiCN" | "JacobiDN" | "JacobiAmplitude" if args.len() == 2 => {
+            let op = match name {
+                "JacobiSN" => r"\operatorname{sn}",
+                "JacobiCN" => r"\operatorname{cn}",
+                "JacobiDN" => r"\operatorname{dn}",
+                _ => r"\operatorname{am}",
+            };
+            let (u, _) = latex_r(args[0], pool);
+            let (m, _) = latex_r(args[1], pool);
+            format!(r"{op}\!\left({u}\,\middle|\,{m}\right)")
+        }
+        "WeierstrassP" | "WeierstrassPPrime" if args.len() == 3 => {
+            let op = if name == "WeierstrassP" {
+                r"\wp"
+            } else {
+                r"\wp'"
+            };
+            let (z, _) = latex_r(args[0], pool);
+            let (g2, _) = latex_r(args[1], pool);
+            let (g3, _) = latex_r(args[2], pool);
+            format!(r"{op}\!\left({z};\,{g2},\,{g3}\right)")
+        }
         // Orthogonal polynomials, Bessel, Airy, zeta and polylogarithm
         // (G11a/b, F24): the textbook sub- and superscripted notation.
         "legendre_p" => latex_indexed("P", &[args[0]], &[], args[1], pool),

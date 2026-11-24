@@ -38,6 +38,10 @@ SOLVED = {
     "ex01", "ex02", "ex03", "ex05",
     "sp01", "sp02", "sp03", "sp08", "sp09",
     *(f"ba{i:02d}" for i in range(1, 11)),
+    # elliptic / special-quadrature / Lagrange round
+    "nl05", "nl06", "nl09", "nl11", "nl12", "ex04", "sp04", "sp05", "sp06", "sp07", "fo24",
+    *(f"nl{i}" for i in range(14, 20)),
+    "fo26", "fo27", "sp10", "sp11", "ex06",
 }  # fmt: skip
 
 
@@ -45,7 +49,12 @@ def _num(e, env):
     try:
         v = complex(ak.eval_expr(e, env))
     except Exception:
-        return None
+        # `erfi(z)` answers are spelled `-i*erf(i*z)`: real-valued, but only
+        # through a complex intermediate.
+        r = ak.evaluate(e, env, mode="complex")
+        if r.status != "ok":
+            return None
+        v = complex(r.value)
     if not cmath.isfinite(v):
         return None
     return v
@@ -110,6 +119,35 @@ def _check_implicit(entry, pool, syms, eq, sol):
     return ok
 
 
+def _check_parametric(entry, pool, syms, eq, sol):
+    """A curve ``(x(p), y(p))`` solves ``F(x, y, y') = 0`` when
+    ``F(x(p), y(p), p) = 0`` and ``dy/dp = p·dx/dp`` along it."""
+    _oid, _cat, _F, order, params = entry
+    assert order == 1
+    p = sol["parameter"]
+    xp = _bind(sol["x_of_p"], pool, sol["constants"], params, syms)
+    yp = _bind(sol["y_of_p"], pool, sol["constants"], params, syms)
+    on_eq = ak.subs(
+        _bind(eq, pool, [], params, syms), {syms["x"]: xp, syms["y"]: yp, syms["yp"]: p}
+    )
+    slope = ak.diff(yp, p).value - p * ak.diff(xp, p).value
+    ok = 0
+    for pv in (0.3, 0.7, 1.3, 2.1, -0.6):
+        for r in (on_eq, slope):
+            v, s = _num(r, {p: pv}), _num(xp, {p: pv})
+            if v is None or s is None:
+                continue
+            assert abs(v) <= 1e-6 * (1 + abs(s)), f"parametric residual {v} at p = {pv}"
+            ok += 1
+    for line in sol["singular_solutions"]:
+        r = ak.subs(eq, {syms["y"]: line, syms["yp"]: ak.diff(line, syms["x"]).value})
+        for xv in XS:
+            v = _num(r, {syms["x"]: xv})
+            assert v is not None, f"singular solution {line} did not evaluate"
+            assert abs(v) <= 1e-9, f"singular solution {line}: {v}"
+    return ok
+
+
 @pytest.mark.parametrize("entry", CORPUS, ids=[e[0] for e in CORPUS])
 def test_corpus_entry(entry):
     oid, _cat, _F, order, _params = entry
@@ -122,7 +160,9 @@ def test_corpus_entry(entry):
         return
     sol = sols[0]
     assert len(sol["constants"]) == order, "a general solution carries `order` constants"
-    if sol["form"] == "implicit":
+    if sol["form"] == "parametric":
+        ok = _check_parametric(entry, pool, syms, eq, sol)
+    elif sol["form"] == "implicit":
         ok = _check_implicit(entry, pool, syms, eq, sol)
     else:
         ok = _check_explicit(entry, pool, syms, eq, sol)

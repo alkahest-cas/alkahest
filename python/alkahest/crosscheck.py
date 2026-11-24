@@ -318,6 +318,13 @@ REFUSED_FUNCTIONS: dict[str, str] = {
     "EllipticE": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticF": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticPi": "elliptic integrals differ in modulus-vs-parameter convention between systems",
+    # SymPy has no Jacobi elliptic functions and no Weierstrass ℘ at all.
+    "JacobiSN": "SymPy has no Jacobi elliptic functions",
+    "JacobiCN": "SymPy has no Jacobi elliptic functions",
+    "JacobiDN": "SymPy has no Jacobi elliptic functions",
+    "JacobiAmplitude": "SymPy has no Jacobi amplitude function",
+    "WeierstrassP": "SymPy has no Weierstrass elliptic function",
+    "WeierstrassPPrime": "SymPy has no Weierstrass elliptic function",
     # SymPy has no `dilog`, and the failure mode is worse than a missing name:
     # `sympify("dilog(x)")` succeeds, silently producing an *undefined* function
     # whose derivative stays an unevaluated `Derivative(dilog(x), x)`. A rename

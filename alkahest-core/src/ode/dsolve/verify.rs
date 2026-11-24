@@ -1313,8 +1313,42 @@ fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
         "acos" => C64::real(std::f64::consts::FRAC_PI_2)
             .add(I.mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln())),
         "abs" => C64::real(z.abs()),
+        // `erfi(z)` is spelled `−i·erf(i·z)`, so the special second solutions
+        // of Hermite-type equations put `erf` on the imaginary axis.
+        "erf" => return erf_complex(z),
+        // Any other registered primitive at a *real* argument (the imaginary
+        // part exactly zero, as for `Ei(x)` and the Jacobi functions at real
+        // data): its own real kernel is the value.
+        _ if a.iter().all(|v| v.im == 0.0) => {
+            let re: Vec<f64> = a.iter().map(|v| v.re).collect();
+            return crate::jit::registry()
+                .numeric_f64(name, &re)
+                .filter(|v| v.is_finite())
+                .map(C64::real);
+        }
         _ => return None,
     })
+}
+
+/// `erf(z)` by its Maclaurin series `2/√π·Σ (−1)ⁿ z^{2n+1}/(n!(2n+1))`, for
+/// `|z| ≤ 4` (beyond that the alternating terms cancel past `f64` and the
+/// value is refused as no information).
+fn erf_complex(z: C64) -> Option<C64> {
+    if !z.is_finite() || z.abs() > 4.0 {
+        return None;
+    }
+    let z2 = z.mul(z);
+    let mut term = z; // (−1)ⁿ z^{2n+1}/n!
+    let mut sum = z;
+    for n in 1..200 {
+        term = term.mul(z2).neg().div(C64::real(n as f64));
+        let t = term.div(C64::real((2 * n + 1) as f64));
+        sum = sum.add(t);
+        if t.abs() < 1e-17 * sum.abs().max(1e-300) {
+            break;
+        }
+    }
+    Some(sum.mul(C64::real(2.0 / std::f64::consts::PI.sqrt())))
 }
 
 // ---------------------------------------------------------------------------

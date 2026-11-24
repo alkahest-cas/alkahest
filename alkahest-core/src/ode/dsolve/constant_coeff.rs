@@ -93,6 +93,12 @@ pub(crate) fn solve_second_order(
             if let Some(res) = super::special_linear::solve_y_absent(input, gen, pool)? {
                 return Ok(res);
             }
+            // `y'' = f(y)` with an elliptic energy integral, or Liouville's
+            // `y'' = a·e^{by}`: the classical inversions, before the `p(y)`
+            // route below can settle for an implicit quadrature.
+            if let Some(res) = super::autonomous::solve_autonomous_special(input, gen, pool)? {
+                return Ok(res);
+            }
             // Nonlinear and free of `x`: `p(y) = y'` makes it first order.
             if let Some(res) = super::special_linear::solve_x_absent(input, gen, pool)? {
                 return Ok(res);
