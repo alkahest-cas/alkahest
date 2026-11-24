@@ -943,6 +943,7 @@ fn traced_lift_loop(
     let mut trace: Option<Trace> = None;
     let mut mismatches = 0usize;
     let mut relearns = 0usize;
+    let mut replayed = 0usize;
     loop {
         if used >= MAX_PRIMES {
             return Err(Unavailable::Fallback);
@@ -981,7 +982,11 @@ fn traced_lift_loop(
                 results.push((p, gb));
             }
             Some(tr) => {
-                let batch: Vec<Prime> = primes.by_ref().take(LANES * batch_width()).collect();
+                // The first pass over a trace takes two primes: a small input
+                // may need no more, and four would be wasted on it.
+                let lanes = if replayed == 0 { 2 } else { LANES };
+                let batch: Vec<Prime> = primes.by_ref().take(lanes * batch_width()).collect();
+                replayed += batch.len();
                 if batch.is_empty() {
                     return Err(Unavailable::Fallback);
                 }
@@ -1505,6 +1510,9 @@ impl ExactVectors {
     }
 }
 
+/// Quotient dimension from which [`verify_lex`] checks one element per job.
+const PARALLEL_VERIFY_MIN_DIM: usize = 32;
+
 /// `Some(true)` when every polynomial of `cand` lies in `I` (its normal form,
 /// assembled from exact coordinate vectors, vanishes) and the lex staircase of
 /// `cand` has exactly `dim ℚ[x]/I` monomials.  Together these make `cand` a
@@ -1541,7 +1549,7 @@ pub(crate) fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Optio
         }
     }
     let ev = &ev;
-    let in_ideal = run_jobs(cand.iter().collect(), |g: &GbPoly| {
+    let check = |g: &GbPoly| {
         // Σ_m c_m·vec(m) with c_m = a_m/b_m and vec(m) = w_m/e_m: multiply
         // through by B·E, B and E the lcms of the b_m and of the e_m, and
         // accumulate (B/b_m)·a_m·(E/e_m)·w_m over ℤ.  The b_m of one basis
@@ -1570,8 +1578,12 @@ pub(crate) fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Optio
             }
         }
         acc.iter().all(|x| *x == 0)
-    })
-    .ok()?;
+    };
+    // Small bases are checked in place: a parallel job costs more than they do.
+    if mats.d < PARALLEL_VERIFY_MIN_DIM {
+        return Some(cand.iter().all(check));
+    }
+    let in_ideal = run_jobs(cand.iter().collect(), check).ok()?;
     Some(in_ideal.into_iter().all(|z| z))
 }
 

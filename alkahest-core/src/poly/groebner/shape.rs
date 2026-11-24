@@ -59,6 +59,12 @@ use rug::Assign;
 /// Primes tried before deciding the ideal is not in shape position.
 const PROBE_PRIMES: usize = 3;
 
+/// Below this many solutions the general conversion is used: its cubic
+/// linear algebra is negligible there, the `g_i` are only a small multiple of
+/// the height of `f`, and the shape path's probe and rebuilding would cost
+/// more than they save.
+const SHAPE_MIN_DEGREE: usize = 8;
+
 /// `*a += x` for `a, x < p²`, folded back below `p²`.
 #[inline(always)]
 fn add_folded(a: &mut u64, x: u64, p2: u64) {
@@ -524,7 +530,7 @@ fn kronecker_to_shape_crt(f: &[Rational], hs: &[Vec<Rational>]) -> Option<Vec<Ve
     // res[k][i]: coefficient k modulo primes[i] (below 2³¹).
     let mut res: Vec<Vec<u32>> = vec![Vec::new(); total];
     let mut probe = total - 1;
-    let mut target = 32usize;
+    let mut target = 8usize;
     let mut drawn = 0usize;
     loop {
         // A prime is refused only when it divides a denominator or the
@@ -650,7 +656,7 @@ pub(crate) fn shape_lex(
     modular: bool,
 ) -> Result<Option<Vec<GbPoly>>, Unavailable> {
     let d = staircase.len();
-    if n < 2 || d == 0 {
+    if n < 2 || d < SHAPE_MIN_DEGREE {
         return Ok(None);
     }
     let Some(mats) = MulMatrices::new(g, n, staircase, idx, true) else {
@@ -800,7 +806,7 @@ mod tests {
 
     #[test]
     fn shape_path_matches_the_general_conversion() {
-        for n in 2..=5 {
+        for n in 3..=5 {
             let gens = katsura_system(n);
             for modular in [false, true] {
                 let (shape, general) = both(&gens, modular);
@@ -817,34 +823,40 @@ mod tests {
 
     #[test]
     fn not_in_shape_position_is_declined() {
-        // ⟨x² − 1, y² − 1⟩: y alone has a minimal polynomial of degree 2 < 4.
+        // ⟨x⁴ − 1, y⁴ − 2⟩: y alone has a minimal polynomial of degree 4 < 16.
         let gens = vec![
-            poly(2, &[(&[2, 0], 1), (&[0, 0], -1)]),
-            poly(2, &[(&[0, 2], 1), (&[0, 0], -1)]),
+            poly(2, &[(&[4, 0], 1), (&[0, 0], -1)]),
+            poly(2, &[(&[0, 4], 1), (&[0, 0], -2)]),
         ];
         let (shape, general) = both(&gens, false);
         assert!(shape.is_none());
         assert_eq!(general.len(), 2);
+        // Few solutions: the general conversion, whatever the shape.
+        let katsura2 = katsura_system(2);
+        assert!(both(&katsura2, false).0.is_none());
     }
 
     #[test]
     fn a_repeated_root_lifts_the_shape_basis_directly() {
-        // ⟨(y − 2)², x − y² − 3⟩ = ⟨y² − 4y + 4, x − 4y + 1⟩: in shape position
-        // with f = (y − 2)² not squarefree, so g is lifted as it is.
-        let gens = vec![
-            poly(2, &[(&[0, 2], 1), (&[0, 1], -4), (&[0, 0], 4)]),
-            poly(2, &[(&[1, 0], 1), (&[0, 2], -1), (&[0, 0], -3)]),
+        // ⟨(y − 2)⁸, x − y² − 3⟩: in shape position with f = (y − 2)⁸, which
+        // is not squarefree, so g = y² + 3 is lifted as it is.
+        let f: Vec<(&[u32], i64)> = vec![
+            (&[0, 8], 1),
+            (&[0, 7], -16),
+            (&[0, 6], 112),
+            (&[0, 5], -448),
+            (&[0, 4], 1120),
+            (&[0, 3], -1792),
+            (&[0, 2], 1792),
+            (&[0, 1], -1024),
+            (&[0, 0], 256),
         ];
+        let g = poly(2, &[(&[1, 0], 1), (&[0, 2], -1), (&[0, 0], -3)]);
+        let gens = vec![poly(2, &f), g.clone()];
         let (shape, general) = both(&gens, false);
         let shape = shape.expect("shape position");
         assert_eq!(canon(&shape), canon(&general));
-        assert_eq!(
-            canon(&shape),
-            canon(&[
-                poly(2, &[(&[0, 2], 1), (&[0, 1], -4), (&[0, 0], 4)]),
-                poly(2, &[(&[1, 0], 1), (&[0, 1], -4), (&[0, 0], 1)]),
-            ])
-        );
+        assert_eq!(canon(&shape), canon(&[poly(2, &f), g]));
     }
 
     #[test]
