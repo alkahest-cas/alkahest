@@ -532,7 +532,16 @@ fn check_all_evaluators(
     // `Piecewise` and falls back to the interpreter, which must agree too).
     #[cfg(any(feature = "cranelift", feature = "jit"))]
     {
-        let native = compile_with(expr, &[x, y], pool, CompileConfig::for_batch(n as u64)).unwrap();
+        // Bit-exact comparison: compile without the Horner/FMA rewrite (#576),
+        // which legitimately changes the last bits of a rewritten sum.
+        let native = compile_with_options(
+            expr,
+            &[x, y],
+            pool,
+            CompileConfig::for_batch(n as u64),
+            CodegenOptions::exact(),
+        )
+        .unwrap();
         let mut out = vec![0.0; n];
         native.call_batch(&[xs, ys], &mut out);
         for i in 0..n {

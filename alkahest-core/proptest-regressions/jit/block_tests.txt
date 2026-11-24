@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4cd32fc51d5d99373bc552ee08ca76a2b62b742487be9e1bde4875139b3b9e33 # Cranelift Horner/FMA vs block, last-bit difference (fixed: exact codegen in the bit-exact check)
