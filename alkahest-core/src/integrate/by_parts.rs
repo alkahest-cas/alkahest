@@ -193,8 +193,8 @@ pub const MAX_IBP_STEPS: u32 = 3;
 /// nesting has not paid for itself on any measured corpus and is where the
 /// combinatorial blow-up lives.
 ///
-/// One exception, [`GROWN_CLOSE`]: the single closing attempt on a grown
-/// first-step residual of the *caller's own* integrand may use one more level
+/// One exception, [`GROWN_CLOSE`]: the first-step closing attempt of a
+/// by-parts call on the *caller's own* integrand may use one more level
 /// (`∫x·log(x²+1)·atan²x` closes through `∫atan x·log(x²+1)`, itself a by-parts
 /// problem).
 const MAX_REENTRY_DEPTH: u32 = 1;
@@ -208,9 +208,8 @@ const GROWTH_LIMIT: f64 = 1.6;
 thread_local! {
     /// Re-entry depth of [`integrate_by_parts`] on the current thread.
     static IBP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    /// Set while the outermost by-parts call tries to close a grown residual
-    /// (see the growth check in `run_chain`): one extra nesting level is
-    /// allowed inside it.
+    /// Set while the outermost by-parts call tries to close its first-step
+    /// residual (see `run_chain`): one extra nesting level is allowed inside it.
     static GROWN_CLOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -1940,7 +1939,20 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         w = next_w;
 
         // ---- 1. close: can the engine finish `∫w dx` outright? ------------
-        if let Some(res) = close_integral(raw_w, var, pool) {
+        // On the first step of a by-parts call on the caller's own integrand,
+        // the closing attempt may itself use by parts once (`∫(x − tan x)/tan²x`
+        // leaves `∫x·tan²x + tan x`).
+        let closed = if step == 0
+            && IBP_DEPTH.with(|d| d.get()) == 1
+            && !GROWN_CLOSE.with(|g| g.get())
+            && super::engine::in_outermost_integrate()
+        {
+            let _g = GrownCloseGuard::enter();
+            close_integral(raw_w, var, pool)
+        } else {
+            close_integral(raw_w, var, pool)
+        };
+        if let Some(res) = closed {
             let tail = pool.mul(vec![mult.to_expr(pool), res]);
             return Some(simplify(pool.add(vec![acc, tail]), pool).value);
         }
