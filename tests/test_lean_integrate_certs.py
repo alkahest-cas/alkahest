@@ -172,6 +172,9 @@ def test_corpus_compiles(tmp_path):
         bodies.append(f"namespace I{i}\n" + "\n".join(body) + f"\nend I{i}\n")
     path = tmp_path / "integrals.lean"
     path.write_text("\n".join(imports) + "\n\n" + "\n".join(bodies))
+    if "import Alkahest.Kernel" in imports:
+        # Kernel certificates import the repository's checker library.
+        subprocess.run([_lake(), "build", "Alkahest"], cwd=_LEAN_DIR, check=True, timeout=3600)
     proc = subprocess.run(
         [_lake(), "env", "lean", "-DwarningAsError=true", "-DautoImplicit=false", str(path)],
         cwd=_LEAN_DIR,

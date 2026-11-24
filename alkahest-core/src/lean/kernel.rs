@@ -278,7 +278,9 @@ impl AE {
     /// The ordinary Lean spelling; `AExpr.eval` unfolds to exactly this term.
     fn lean(&self, names: &[String], out: &mut String) {
         match self {
-            AE::Var(i) => out.push_str(&names[*i as usize]),
+            AE::Var(i) => {
+                let _ = write!(out, "({} : ℝ)", names[*i as usize]);
+            }
             AE::Zero => out.push_str("(0 : ℝ)"),
             AE::One => out.push_str("(1 : ℝ)"),
             AE::Lit(n) => {
@@ -468,7 +470,16 @@ impl Cond {
             Cond::Ne(e) => format!("{} ≠ 0", e.lean_string(names)),
             Cond::Pos(e) => format!("0 < {}", e.lean_string(names)),
             Cond::Nonneg(e) => format!("0 ≤ {}", e.lean_string(names)),
-            Cond::Lt(a, b) => format!("{} < {}", a.lean_string(names), b.lean_string(names)),
+            Cond::Lt(a, b) => {
+                // `-1 < u` / `u < 1` (the `arcsin` domain): the other side fixes
+                // the type, and `-1` / `1` elaborate to `.neg .one` / `.one`.
+                let side = |e: &R| match &**e {
+                    AE::One => "1".to_string(),
+                    AE::Neg(o) if **o == AE::One => "-1".to_string(),
+                    _ => e.lean_string(names),
+                };
+                format!("{} < {}", side(a), side(b))
+            }
         }
     }
     fn has_var(&self) -> bool {

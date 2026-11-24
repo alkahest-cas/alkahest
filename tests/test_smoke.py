@@ -479,8 +479,18 @@ def test_lean_integrate_inv_x_via_log():
     assert isinstance(cert, str)
     assert cert
     assert "sorry" not in cert
-    assert ".log h1" in cert
     assert to_lean(r) == cert
+    # Default: the reflective kernel certificate on `x ≠ 0`.
+    assert r.certificate_status["path"] == "kernel"
+    assert "(h1 : (x : ℝ) ≠ 0)" in cert
+    assert "integral_sound" in cert
+    # The tactic emitter: `HasDerivAt.log` on the same hypothesis.
+    alkahest.set_lean_certificate_mode("tactic")
+    try:
+        assert ".log h1" in r.certificate
+        assert r.certificate_status["path"] == "tactic"
+    finally:
+        alkahest.set_lean_certificate_mode("auto")
 
 
 def test_lean_integrate_x_neg_two_via_ftc():
@@ -493,8 +503,12 @@ def test_lean_integrate_x_neg_two_via_ftc():
     assert cert
     assert "sorry" not in cert
     assert "(h1 : (x : ℝ) ≠ 0)" in cert
-    assert ".inv h1" in cert
     assert to_lean(r) == cert
+    alkahest.set_lean_certificate_mode("tactic")
+    try:
+        assert ".inv h1" in r.certificate
+    finally:
+        alkahest.set_lean_certificate_mode("auto")
 
 
 def test_lean_diff_tanh_certificate():

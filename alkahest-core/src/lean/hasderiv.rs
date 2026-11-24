@@ -2216,7 +2216,7 @@ pub(super) fn single_var(p: &Poly) -> Option<u32> {
         return None;
     }
     let (m, c) = p.0.iter().next()?;
-    (m.len() == 1 && m[0].1 == 1 && *c == 1).then_some(m[0].0)
+    (m.len() == 1 && m[0].1 == 1 && *c == 1).then(|| m[0].0)
 }
 
 pub(super) fn u_as_constant(u: &Poly) -> Option<Rational> {
