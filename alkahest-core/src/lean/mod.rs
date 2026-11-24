@@ -7492,9 +7492,9 @@ mod tests {
             let inv_printed_first = printed.find('⁻').expect("an inverse factor")
                 < printed.find("Real.exp").expect("the numerator");
             let expected = if inv_printed_first {
-                "hg.mul hf"
+                "hg.fun_mul hf"
             } else {
-                "hf.mul hg"
+                "hf.fun_mul hg"
             };
             assert!(
                 tactic.contains(expected),

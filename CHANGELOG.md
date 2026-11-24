@@ -21,6 +21,7 @@
   - `erf`, `erfi` and `Si`. Mathlib still has none of them, so the certificate defines each by its integral (`erf x = 2/√π ∫₀ˣ e^(-t²) dt`, `erfi x = 2/√π ∫₀ˣ e^(t²) dt`, `Si x = ∫₀ˣ sinc t dt`) and proves the derivative lemma from Mathlib's FTC in the same file. `∫ exp(-x²)`, `∫ x² exp(-x²)` and `∫ sin(x)/x` are certified; `Si` answers state `x ≠ 0`.
   - `tanh`, through `sinh / cosh` and `Real.tanh_eq_sinh_div_cosh`. `asinh`, through Mathlib's `HasDerivAt.arsinh`. `acosh`, through `Real.hasDerivAt_arcosh` on `1 < u`.
   - `Ei`, `li`, `Shi`, `Ci`, the Fresnel integrals and elliptic integrals stay withheld with `withheld_special_function`.
+  - The size budget rises from 36 KB to 800 KB of `linear_combination` (1 MB of source). Under v4.9.0, `ring1` took minutes above 36 KB. Under v4.36.0 the 25 calculus-suite answers that were withheld as `withheld_certificate_too_large` all check, the largest (740 KB) in under 2.5 minutes on one core including the Mathlib import. Examples are `∫ 1/(x⁶-1)`, `∫ 1/(2+cos x)`, `∫ √(tan x)` and `∫ x⁴/(1-x²)^(5/2)`.
 - The Lean CI job checks every certificate four at a time. It prints per-corpus and total `verified/total` counts, lists every failure rather than stopping at the first, and always uploads the generated proofs.
 
 ### Performance

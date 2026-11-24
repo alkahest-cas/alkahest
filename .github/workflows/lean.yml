@@ -178,7 +178,7 @@ jobs:
             total=$((total + n))
             failed=$((failed + bad))
           done
-          echo "== Lean $(lean --version | head -n 1): $((total - failed))/$total certificates verified =="
+          echo "== $(lean --version | head -n 1): $((total - failed))/$total certificates verified =="
           if [ "$failed" -ne 0 ]; then
             echo "$failed certificate(s) failed to verify"
             exit 1

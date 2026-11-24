@@ -75,8 +75,12 @@ pub const WITHHELD_EMPTY_DOMAIN: IntegrationCertWithheld = "withheld_empty_domai
 pub const WITHHELD_TOO_LARGE: IntegrationCertWithheld = "withheld_certificate_too_large";
 
 const MAX_TERMS: usize = 6_000;
-const MAX_SRC_BYTES: usize = 250_000;
-const MAX_COMBINATION_BYTES: usize = 36_000;
+/// Size budget for one certificate. Under Mathlib v4.9.0 a `linear_combination`
+/// above 36 KB took `ring1` minutes; under v4.36.0 the largest certificates the
+/// calculus suites produce (~740 KB of combination) check in under 2.5 min on
+/// one core including the Mathlib import, most in under a minute.
+const MAX_SRC_BYTES: usize = 1_000_000;
+const MAX_COMBINATION_BYTES: usize = 800_000;
 const MAX_ROUNDS: usize = 400;
 
 // ===========================================================================
@@ -2231,7 +2235,7 @@ fn surely_positive(e: ExprId, pool: &ExprPool) -> bool {
         ExprData::Rational(r) => r.0 > 0,
         ExprData::Symbol { name, .. } => name == "pi",
         ExprData::Func { name, args } if args.len() == 1 => match name.as_str() {
-            "exp" => true,
+            "exp" | "cosh" => true,
             "sqrt" => surely_positive(args[0], pool),
             _ => false,
         },
@@ -2670,7 +2674,7 @@ pub fn emit_integration_hasderiv_cert(
         format!(" {}", lc_terms.join(" + "))
     };
     // `ring1`'s cost grows with the combination; past this size it can run
-    // for minutes, so withhold rather than hand out a slow certificate.
+    // for many minutes, so withhold rather than hand out a slow certificate.
     if combo.len() > MAX_COMBINATION_BYTES {
         return Err(WITHHELD_TOO_LARGE);
     }
@@ -2858,6 +2862,7 @@ mod tests {
         assert!(src.contains("noncomputable def alkahestErf"), "{src}");
         assert!(src.contains("alkahestErf_hasDerivAt"), "{src}");
         assert!(!src.contains("def alkahestSi"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
         // ∫ sin x / x = Si x on x ≠ 0
         let src = emit(|p, x| {
             (
@@ -2868,6 +2873,7 @@ mod tests {
         .expect("Si cert");
         assert!(src.contains("Real.sinc_of_ne_zero"), "{src}");
         assert!(src.contains("(h1 : (x : ℝ) ≠ 0)"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
         // A wrong special-function answer still does not reduce.
         let r = emit(|p, x| (p.func("erf", vec![x]), p.func("exp", vec![x])));
         assert_eq!(r, Err(WITHHELD_IDENTITY));
@@ -2885,6 +2891,7 @@ mod tests {
         .expect("tanh cert");
         assert!(src.contains("Real.tanh_eq_sinh_div_cosh"), "{src}");
         assert!(!src.contains("(h1 :"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
         // ∫ sech² x = tanh x: the derivative goes through sinh / cosh.
         let src = emit(|p, x| {
             let c = p.func("cosh", vec![x]);
@@ -2892,6 +2899,7 @@ mod tests {
         })
         .expect("d tanh cert");
         assert!(src.contains("congr_of_eventuallyEq"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
         // ∫ 1/√(1+x²) = asinh x
         let src = emit(|p, x| {
             let r = p.func(
@@ -2902,6 +2910,7 @@ mod tests {
         })
         .expect("asinh cert");
         assert!(src.contains(".arsinh"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
         // ∫ 1/√(x²-1) = acosh x on x > 1
         let src = emit(|p, x| {
             let r = p.func(
@@ -2913,6 +2922,7 @@ mod tests {
         .expect("acosh cert");
         assert!(src.contains("Real.hasDerivAt_arcosh"), "{src}");
         assert!(src.contains("(h1 : 1 < (x : ℝ))"), "{src}");
+        println!("=====CERT=====\n{src}=====END=====");
     }
 
     #[test]
