@@ -97,8 +97,8 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
     answers a different question, which is why reading it as the
     validated-bounds coverage bit cost a whole workload.
 
-    What is left is `floor`/`ceil`, and they are left on purpose. They are not
-    differentiable: on a box straddling an integer no Taylor model exists at
+    What is left is `floor`/`ceil`/`sign`, and they are left on purpose. They
+    are not differentiable: on a box straddling an integer no Taylor model exists at
     all, and on one that does not they are a constant, which is not a fact a
     Taylor rule is needed to discover. A sound rule is writable — refuse any
     box containing an integer — but subdivision cannot shrink a
@@ -133,7 +133,9 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         # monotone function), no Taylor-model rule yet.
         "erfi",
     }
-    assert ball_only - specfun == {"ceil", "floor"}
+    # `sign` has a ball kernel (exact ±1 on a ball excluding 0) for the
+    # derivative of `log|a|`; like floor/ceil it is piecewise constant.
+    assert ball_only - specfun == {"ceil", "floor", "sign"}
 
 
 def test_supported_set_is_the_elementary_plus_special_fragment():
