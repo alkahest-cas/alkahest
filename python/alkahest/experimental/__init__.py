@@ -787,8 +787,6 @@ from alkahest.experimental._pde import (
     verify_pde_solution,
 )
 
-# PDE solver (milestone M1): `pdsolve` over method tiers, first order.
-from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
 # PDE milestone M3: the Sturm–Liouville eigenproblem solver and the transform
 # methods (Fourier / Laplace / sine-cosine images), with the half-line
 # sine / cosine transforms.
@@ -805,6 +803,9 @@ from alkahest.experimental._pde_m3 import (
     sturm_liouville,
     transform_solve,
 )
+
+# PDE solver (milestone M1): `pdsolve` over method tiers, first order.
+from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
 from alkahest.experimental.novelty import (
     NoveltyMatch,
     NoveltyVerdict,
@@ -1156,8 +1157,8 @@ __all__ = [
     "expectation",
     "expectation_affine",
     "fd_weights",
-    "fourier_diff_matrix",
     "fourier_cosine_transform",
+    "fourier_diff_matrix",
     "fourier_sine_transform",
     "fourier_transform",
     # Vector calculus
