@@ -221,6 +221,11 @@ Exception subclasses
      ``a < 0`` is invisible to it (``L{θ(t+1)} = 1/s``, not ``e^s/s``), and an
      advance factor ``e^{+as}`` on the inverse is the transform of no causal
      function
+   - ``E-TRANSFORM-021`` … ``E-TRANSFORM-024`` — the Fourier **sine** and
+     **cosine** transforms (``alkahest.experimental.fourier_sine_transform``
+     …): no table entry (``021``), the same variable twice (``022``), a rate
+     known not to be positive — the half-line integral diverges (``023``), an
+     unknown with an odd ``x``-derivative or a non-bare argument (``024``).
    - ``E-TRANSFORM-013`` — **refusal.** The Fourier table entry's decay
      hypothesis is refuted: at a non-positive rate the defining integral
      diverges, and a negative Lorentzian amplitude transforms to the opposite
@@ -317,6 +322,32 @@ Exception subclasses
      wrong dimension, or parameters that could not be eliminated.
    - ``E-PDE-054`` — a malformed ``Integral(f, t, lo, hi)`` / ``Integral(f, x)``
      (the integration variable is not a symbol, or a bound mentions it).
+
+   Milestone M3 (the Sturm–Liouville solver and the transform methods) owns
+   ``150``–``199``:
+
+   - ``E-PDE-150`` — an eigenproblem outside the implemented classes
+     (variable coefficients that ``dsolve`` does not solve, periodic
+     conditions with variable coefficients, an unrecognised singular problem).
+   - ``E-PDE-151`` — a malformed end condition: ``αX + βX' = 0`` with
+     ``α = β = 0``, a regular condition at an infinite end, or ``bounded`` /
+     ``decay`` at an end of a problem that is not one of the classical
+     singular ones.
+   - ``E-PDE-152`` — the eigenvalue condition vanishes identically (every
+     ``λ`` would be an eigenvalue).
+   - ``E-PDE-153`` — an eigenpair was **refuted** by its exact check and
+     withheld; a bug to report, never an answer.
+   - ``E-PDE-160`` — the transform method does not apply: not one linear
+     homogeneous constant-coefficient equation in two variables, or a domain
+     other than ``Line × HalfLine`` (Fourier) or ``HalfLine × HalfLine``
+     (Laplace / sine / cosine).
+   - ``E-PDE-161`` — initial or boundary data missing, duplicated or of the
+     wrong shape (the Laplace method needs zero initial data; the image method
+     a homogeneous Dirichlet or Neumann end).
+   - ``E-PDE-162`` — ``dsolve`` did not solve the transformed ODE, or the
+     bounded solution could not be selected.
+   - ``E-PDE-163`` — the candidate built by a transform method was **refuted**
+     by substitution and withheld.
 
 .. exception:: ProbabilityError
 

@@ -478,6 +478,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // non-positive rate the defining integral diverges, and a negative Lorentzian
     // amplitude has a transform of the opposite sign to the tabulated one.
     ErrorSpec { code: "E-TRANSFORM-013", class: "TransformError", cause: Cause::Domain,      remediation: Some("the rate named in the message is not positive, so the defining integral does not converge; supply a positive rate, or leave it symbolic and read the hypothesis off side_conditions") },
+    ErrorSpec { code: "E-TRANSFORM-021", class: "TransformError", cause: Cause::Unsupported, remediation: Some("the sine/cosine transforms are table-based: reduce f(x) to e^{-ax}, x e^{-ax}, e^{-ax}/x, x/(x^2+a^2), 1/(x^2+a^2), e^{-ax^2}, x e^{-ax^2}, 1/x and linear combinations, with a known to be positive") },
+    ErrorSpec { code: "E-TRANSFORM-022", class: "TransformError", cause: Cause::UserInput, remediation: Some("pass distinct symbols for the space and frequency variables") },
+    ErrorSpec { code: "E-TRANSFORM-023", class: "TransformError", cause: Cause::Domain, remediation: Some("the rate named in the message is not positive, so the half-line integral diverges; supply a positive rate") },
+    ErrorSpec { code: "E-TRANSFORM-024", class: "TransformError", cause: Cause::Unsupported, remediation: Some("the half-line variable must be a single bare argument of the unknown, and only even x-derivatives transform (odd ones exchange sine and cosine)") },
     ErrorSpec { code: "E-TRANSFORM-101", class: "TransformError", cause: Cause::Unsupported, remediation: Some("z_transform is table-based: reduce a[n] to constants, n, n^2, a^n, sin/cos of omega*n, and products of those with a^n or n") },
     ErrorSpec { code: "E-TRANSFORM-102", class: "TransformError", cause: Cause::Unsupported, remediation: Some("inverse_z_transform inverts X(z) whose partial-fraction terms are A*z^p/(z - a)^k with k <= 2; a constant term would invert to the Kronecker delta, for which there is no primitive here") },
     ErrorSpec { code: "E-TRANSFORM-103", class: "TransformError", cause: Cause::UserInput,   remediation: Some("pass distinct symbols for the index and frequency variables") },
@@ -906,6 +910,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-052", class: "PdeError", cause: Cause::Domain,      remediation: Some("the data curve is characteristic (the Jacobian of the curve and the characteristic direction vanishes); pose the data on a transversal curve") },
     ErrorSpec { code: "E-PDE-053", class: "PdeError", cause: Cause::Unsupported, remediation: Some("give Cauchy data as u(curve) = value on a curve of dimension n-1 (e.g. u(x, 0) = f(x)); conditions on derivatives are not supported for first-order problems") },
     ErrorSpec { code: "E-PDE-054", class: "PdeError", cause: Cause::UserInput,  remediation: Some("Integral(f, t, lo, hi) needs a symbol t that the bounds do not mention; Integral(f, x) needs a symbol x") },
+    ErrorSpec { code: "E-PDE-150", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the eigenproblem solver handles constant-coefficient regular problems, regular problems whose separated ODE dsolve solves, and the classical singular problems (Bessel, Legendre, Chebyshev, Hermite, Laguerre); transform the equation to one of those or solve the ODE by hand") },
+    ErrorSpec { code: "E-PDE-151", class: "PdeError", cause: Cause::UserInput, remediation: Some("give each separated end Dirichlet, Neumann or Robin (alpha*X + beta*X' = 0 with alpha, beta not both zero); use bounded/decay only at a singular or infinite end") },
+    ErrorSpec { code: "E-PDE-152", class: "PdeError", cause: Cause::Domain, remediation: Some("the eigenvalue condition is identically zero: every lambda would be an eigenvalue; check that the boundary conditions are independent") },
+    ErrorSpec { code: "E-PDE-153", class: "PdeError", cause: Cause::Internal, remediation: Some("an eigenpair failed exact verification and was withheld; please report the problem") },
+    ErrorSpec { code: "E-PDE-160", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the Fourier method needs one linear constant-coefficient homogeneous PDE in (x, t) on a line in x; the Laplace method a half-line in t with homogeneous initial data; check classify_pde") },
+    ErrorSpec { code: "E-PDE-161", class: "PdeError", cause: Cause::UserInput, remediation: Some("supply the initial data at t = 0 (u, and u_t for second order in t) or the boundary value at the finite end, each once") },
+    ErrorSpec { code: "E-PDE-162", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the transformed equation must be a constant-coefficient ODE in the remaining variable that dsolve solves") },
+    ErrorSpec { code: "E-PDE-163", class: "PdeError", cause: Cause::Internal, remediation: Some("the candidate built by the transform method was refuted by substitution and withheld; please report the problem") },
 ];
 
 #[cfg(test)]

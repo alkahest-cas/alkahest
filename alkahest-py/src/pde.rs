@@ -30,7 +30,7 @@ pub(crate) fn pde_err(e: PdeError) -> PyErr {
     })
 }
 
-fn wrap(py: Python<'_>, id: ExprId, pool: &Py<PyExprPool>) -> Py<PyAny> {
+pub(crate) fn wrap(py: Python<'_>, id: ExprId, pool: &Py<PyExprPool>) -> Py<PyAny> {
     PyExpr {
         id,
         pool: pool.clone_ref(py),
@@ -38,12 +38,16 @@ fn wrap(py: Python<'_>, id: ExprId, pool: &Py<PyExprPool>) -> Py<PyAny> {
     .to_py_any(py)
 }
 
-fn wrap_list(py: Python<'_>, ids: &[ExprId], pool: &Py<PyExprPool>) -> PyResult<Py<PyAny>> {
+pub(crate) fn wrap_list(
+    py: Python<'_>,
+    ids: &[ExprId],
+    pool: &Py<PyExprPool>,
+) -> PyResult<Py<PyAny>> {
     PyList::new(py, ids.iter().map(|&i| wrap(py, i, pool)))?.into_py_any(py)
 }
 
 /// Extract an `Expr` and check it lives in `pool` (`E-POOL-001` otherwise).
-fn expr_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<ExprId> {
+pub(crate) fn expr_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<ExprId> {
     let e: PyRef<'_, PyExpr> = ob.extract()?;
     if !e.pool.is(pool) {
         return Err(crate::cross_pool_err(format!(
@@ -53,7 +57,11 @@ fn expr_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<E
     Ok(e.id)
 }
 
-fn exprs_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<Vec<ExprId>> {
+pub(crate) fn exprs_in(
+    ob: &Bound<'_, PyAny>,
+    pool: &Py<PyExprPool>,
+    op: &str,
+) -> PyResult<Vec<ExprId>> {
     let mut out = Vec::new();
     for item in ob.try_iter()? {
         out.push(expr_in(&item?, pool, op)?);
@@ -63,7 +71,7 @@ fn exprs_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<
 
 /// The pool of the first `Expr` found in `ob` (an `Expr` or an iterable of
 /// them).
-fn first_pool(ob: &Bound<'_, PyAny>) -> PyResult<Py<PyExprPool>> {
+pub(crate) fn first_pool(ob: &Bound<'_, PyAny>) -> PyResult<Py<PyExprPool>> {
     if let Ok(e) = ob.extract::<PyRef<'_, PyExpr>>() {
         return Ok(e.pool.clone_ref(ob.py()));
     }
@@ -579,7 +587,10 @@ fn _pde_classify<'py>(
 }
 
 /// Decode a domain spec tuple built by `_pde.py`.
-fn domain_from_spec(spec: &Bound<'_, PyAny>, pool: &Py<PyExprPool>) -> PyResult<PdeDomain> {
+pub(crate) fn domain_from_spec(
+    spec: &Bound<'_, PyAny>,
+    pool: &Py<PyExprPool>,
+) -> PyResult<PdeDomain> {
     let py = spec.py();
     let t: Bound<'_, PyTuple> = spec.extract()?;
     let kind: String = t.get_item(0)?.extract()?;
@@ -646,7 +657,7 @@ fn _pde_domain_condition(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<Py
     Ok(wrap(py, id, &pool))
 }
 
-fn conditions_from(
+pub(crate) fn conditions_from(
     py: Python<'_>,
     conds: &Bound<'_, PyAny>,
     pool: &Py<PyExprPool>,

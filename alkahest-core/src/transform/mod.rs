@@ -4,6 +4,8 @@
 //!   and its **inverse** `L⁻¹{F(s)}(t)`.
 //! - The [`fourier`] submodule provides the **Fourier transform** `F{f(x)}(ξ)`
 //!   and its **inverse** `F⁻¹{g(ξ)}(x)` (unitary, ordinary-frequency convention).
+//! - The [`sincos`] submodule provides the Fourier **sine** and **cosine**
+//!   transforms on the half-line and their inverses (PDE milestone M3).
 //! - The [`ztransform`] submodule provides the **(unilateral) Z-transform**
 //!   `Z{a[n]}(z)` and its **inverse** `Z⁻¹{A(z)}(n)`.
 //!
@@ -60,6 +62,7 @@ use crate::simplify::assumptions::AssumptionContext;
 
 pub mod fourier;
 pub mod laplace;
+pub mod sincos;
 pub mod ztransform;
 
 pub use fourier::{
@@ -70,6 +73,11 @@ pub use laplace::{
     inverse_laplace_transform, inverse_laplace_transform_with_assumptions,
     inverse_laplace_transform_with_conditions, laplace_transform,
     laplace_transform_with_conditions, LaplaceError,
+};
+pub use sincos::{
+    fourier_cosine_transform, fourier_sine_transform, inverse_fourier_cosine_transform,
+    inverse_fourier_sine_transform, sincos_transform, sincos_transformed_name, SinCosError,
+    SinCosKind,
 };
 pub use ztransform::{
     inverse_z_transform, inverse_z_transform_with_assumptions, inverse_z_transform_with_conditions,

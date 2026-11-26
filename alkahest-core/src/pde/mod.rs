@@ -40,7 +40,16 @@
 //!   (M1: first-order linear / semilinear / quasilinear equations by
 //!   characteristics, Cauchy problems, complete integrals); every answer is
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
-//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
+//! * [`mod@sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
+//!   [`SturmLiouvilleProblem`] → [`Eigensystem`] (closed-form or
+//!   `RootOfFamily` eigenvalues with certified enclosures, eigenfunctions,
+//!   weights, norms, `λ = 0` / negative-eigenvalue case analysis; Bessel,
+//!   Legendre, Chebyshev, Hermite and Laguerre problems).
+//! * [`transform_methods`] — (M3) [`fourier_method`], [`laplace_method`],
+//!   [`image_method`] (sine / cosine transforms) and [`transform_solve`]:
+//!   closed forms or verified kernel representations.
+//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0) and
+//!   `E-PDE-150 … E-PDE-199` (M3).
 
 pub mod classify;
 pub mod error;
@@ -50,8 +59,10 @@ pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
 pub mod solve;
+pub mod sturm_liouville;
 pub mod sum;
 pub mod transform;
+pub mod transform_methods;
 pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
@@ -71,12 +82,21 @@ pub use root_family::{
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
 };
+pub use sturm_liouville::{
+    family_enclosures, sturm_liouville, sturm_liouville_with, EigenEnclosure, EigenFamily,
+    EigenMode, EigenVerification, Eigensystem, EndCondition, FamilyRef, LowerSpectrum, SlBoundary,
+    SlOptions, SturmLiouvilleProblem,
+};
 pub use sum::{
     alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
     kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
     INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
 pub use transform::{transformed_name, TransformKind};
+pub use transform_methods::{
+    fourier_method, image_method, laplace_method, transform_solve, KernelTerm, SolutionKind,
+    TransformCheck, TransformSolution,
+};
 pub use verify::{
     verify_pde_solution, verify_solution, PdeVerification, ResidualCheck, VerificationStatus,
 };

@@ -57,6 +57,17 @@ PDE solver (milestone M1; see ``alkahest.experimental._pdsolve``):
   quasilinear by characteristics, Cauchy problems (non-characteristic check,
   breaking time), complete and singular integrals (Clairaut, standard forms,
   Hamilton–Jacobi separation, Lagrange–Charpit)
+PDE milestone M3 (see ``alkahest.experimental._pde_m3``):
+- :func:`sturm_liouville` / :class:`SturmLiouville` → :class:`Eigensystem`:
+  eigenvalues in closed form or as a :func:`RootOfFamily` with a pole-free
+  defining equation and certified enclosures, eigenfunctions, weight, norms,
+  ``λ = 0`` / negative-eigenvalue case analysis; Bessel, Legendre, Chebyshev,
+  Hermite and Laguerre problems; every family verified exactly
+- :func:`transform_solve` → :class:`TransformSolution`: Fourier in ``x`` on a
+  line, Laplace in ``t`` and sine / cosine images on half-lines; closed forms or
+  kernel representations with the kernel verified by substitution;
+  :func:`fourier_sine_transform` / :func:`fourier_cosine_transform` and their
+  inverses; ``E-PDE-150…199``, ``E-TRANSFORM-021…024``
 
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
@@ -776,6 +787,23 @@ from alkahest.experimental._pde import (
     verify_pde_solution,
 )
 
+# PDE milestone M3: the Sturm–Liouville eigenproblem solver and the transform
+# methods (Fourier / Laplace / sine-cosine images), with the half-line
+# sine / cosine transforms.
+from alkahest.experimental._pde_m3 import (
+    EigenFamily,
+    EigenMode,
+    Eigensystem,
+    SturmLiouville,
+    TransformSolution,
+    fourier_cosine_transform,
+    fourier_sine_transform,
+    inverse_fourier_cosine_transform,
+    inverse_fourier_sine_transform,
+    sturm_liouville,
+    transform_solve,
+)
+
 # PDE solver (milestone M1): `pdsolve` over method tiers, first order.
 from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
 from alkahest.experimental.novelty import (
@@ -929,6 +957,9 @@ __all__ = [
     "Distribution",
     "Divisor",
     "DivisorClass",
+    "EigenFamily",
+    "EigenMode",
+    "Eigensystem",
     "EvaluationResult",
     "Exponential",
     # Linear algebra over GF(q), q = p^k — built for linear codes. Rectangular
@@ -1057,6 +1088,7 @@ __all__ = [
     "StabilizerCode",
     "StabilizerError",
     "StabilizerGroup",
+    "SturmLiouville",
     # A Reidemeister-Schreier presentation of a finite-index subgroup. Not
     # simplified: no Tietze pass, so the generator count is the raw
     # [G:H]*|X| - [G:H] + 1.
@@ -1067,6 +1099,7 @@ __all__ = [
     "TelescopingMdCertificate",
     "ThetaError",
     "ThetaValues",
+    "TransformSolution",
     # Probability (continued)
     "Uniform",
     "VectorError",
@@ -1124,7 +1157,9 @@ __all__ = [
     "expectation",
     "expectation_affine",
     "fd_weights",
+    "fourier_cosine_transform",
     "fourier_diff_matrix",
+    "fourier_sine_transform",
     "fourier_transform",
     # Vector calculus
     "functions_to_jets",
@@ -1136,6 +1171,8 @@ __all__ = [
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
     # object, never raises: a declined result is not a non-elementarity verdict.
     "integrate_parallel_risch",
+    "inverse_fourier_cosine_transform",
+    "inverse_fourier_sine_transform",
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
@@ -1205,6 +1242,7 @@ __all__ = [
     "stirling_first",
     "stirling_first_unsigned",
     "stirling_second",
+    "sturm_liouville",
     "sum_independent",
     "sum_of_squares",
     "symplectic_complement",
@@ -1222,6 +1260,7 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    "transform_solve",
     "truncate",
     "truncation_error",
     "variance_affine_independent",
