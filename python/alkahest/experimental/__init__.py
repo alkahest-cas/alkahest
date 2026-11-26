@@ -817,6 +817,9 @@ from alkahest.experimental.novelty import (
     check_novelty,
 )
 from alkahest.experimental.numeric_pde import (
+    MolResult,
+    MolStabilityWarning,
+    MolSystem,
     NumericPdeError,
     Scheme,
     cheb_diff_matrix,
@@ -824,6 +827,7 @@ from alkahest.experimental.numeric_pde import (
     fd_weights,
     fourier_diff_matrix,
     laplacian_stencil,
+    method_of_lines,
     modified_equation,
     stencil,
     truncation_error,
@@ -1021,6 +1025,9 @@ __all__ = [
     "MatGroupError",
     "MatSiftResult",
     "MatrixGroup",
+    "MolResult",
+    "MolStabilityWarning",
+    "MolSystem",
     # Joint laws: multivariate normal, order statistics, negative binomial
     "MultivariateNormal",
     "NegativeBinomial",
@@ -1191,12 +1198,13 @@ __all__ = [
     "laplace_transform",
     # Vector calculus
     "laplacian",
-    # The classical orders in closed form, as an oracle for MatGroup.order()
     "laplacian_indexed",
     "laplacian_stencil",
+    # The classical orders in closed form, as an oracle for MatGroup.order()
     "matgroup_gl_order",
     "matgroup_sl_order",
     "matgroup_sp_order",
+    "method_of_lines",
     "modified_equation",
     "modular_discriminant",
     "modular_lambda",

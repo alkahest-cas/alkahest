@@ -263,6 +263,7 @@ mod fpgroup;
 mod lattice;
 mod linprog;
 mod matgroup;
+mod mol;
 mod pde;
 mod pde_m3;
 
@@ -24014,6 +24015,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     linprog::register(m)?;
     fex::register(m)?;
     matgroup::register(m)?;
+    mol::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_core, m)?)?;

@@ -45,6 +45,7 @@
   - [Novelty filtering against OEIS](./novelty.md)
   - [Ansatz families and conjecture generation](./ansatz.md)
   - [Numerical PDE analysis: stencils, spectral matrices, von Neumann](./numeric-pde.md)
+  - [Method of lines: symbolic PDE to compiled ODE/DAE](./method-of-lines.md)
   - [Cross-CAS differential testing](./crosscheck.md)
   - [SMT/SAT bridge](./smt.md)
   - [PARI/GP interop (optional)](./pari.md)

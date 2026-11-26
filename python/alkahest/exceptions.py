@@ -1090,6 +1090,33 @@ class NumericPdeError(AlkahestError):
       unsupported derivative order).
     - ``E-PDE-358`` — kernel generation failed (no JIT, or an expression
       with a free symbol the kernel does not bind).
+
+    Method of lines (:func:`~alkahest.experimental.method_of_lines`, M7b):
+
+    - ``E-PDE-359`` — unsupported problem: no domain, not 1–3 intervals, no
+      single time variable, or symbolic bounds.
+    - ``E-PDE-360`` — an equation cannot be solved for one highest time
+      derivative (nonlinear in it, two unknowns' derivatives, order > 2), or
+      the system is not square.
+    - ``E-PDE-361`` — invalid grid (too few points, nodes not increasing or
+      not spanning the interval, grid too coarse for the stencil).
+    - ``E-PDE-362`` — a boundary condition that is not on one face (or a
+      periodicity pair), involves no unknown, fixes the time argument,
+      over-determines a face, or conflicts with periodicity.
+    - ``E-PDE-363`` — a boundary condition cannot be eliminated (nonlinear
+      in the boundary value, tangential derivatives); use
+      ``bc_mode="algebraic"``.
+    - ``E-PDE-364`` — a missing or malformed initial condition.
+    - ``E-PDE-365`` — an invalid option (scheme, order, ``bc_mode``,
+      Fourier without periodicity, WENO on a stretched grid, ...).
+    - ``E-PDE-366`` — free symbols without values (pass ``params=``).
+    - ``E-PDE-367`` — building or compiling the native program failed.
+    - ``E-PDE-368`` — the time integration failed.
+    - ``E-PDE-369`` — a DAE given to a method that cannot integrate it, or
+      boundary constraints of differentiation index > 1.
+    - ``E-PDE-370`` — export needs JAX, or a kernel has no JAX translation.
+    - ``E-PDE-371`` — a SciPy-backed method or format without SciPy.
+    - ``E-PDE-372`` — invalid integration arguments.
     """
 
     def __init__(
