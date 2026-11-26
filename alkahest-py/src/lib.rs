@@ -268,8 +268,8 @@ mod pde;
 mod pde_m3;
 mod pde_m4;
 mod pde_m5;
-mod pde_second_order;
 mod pde_m6;
+mod pde_second_order;
 
 // ---------------------------------------------------------------------------
 // V1-3: Structured Python exception hierarchy
