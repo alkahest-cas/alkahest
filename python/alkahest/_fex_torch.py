@@ -121,7 +121,7 @@ class TorchEvaluator:
         kind = spec.get("kind")
         if kind not in ("poisson", "transport", "cubic_schrodinger", "expr"):
             raise _err(f"problem kind {kind!r} is not supported on the torch evaluator")
-        if problem.loss not in ("least_squares", "normalized", "rayleigh", "centered"):
+        if problem.loss not in ("least_squares", "normalized", "rayleigh", "centered", "dirichlet"):
             raise _err(f"loss {problem.loss!r} is not supported on the torch evaluator")
         if spec.get("second_order") is not None:
             raise _err("a non-diagonal second-order form is not supported on the torch evaluator")
@@ -165,7 +165,7 @@ class TorchEvaluator:
         gc = spec.get("grad_coeffs")
         self.grad_coeffs = None if gc is None else T(gc)
         self.expr_op = None
-        if kind == "expr":
+        if kind == "expr" and problem.loss != "dirichlet":
             self.expr_op = _split_operator(problem, pts, T, mask)
         from .fex import _shape_tree
 
@@ -371,7 +371,9 @@ class TorchEvaluator:
         return u, lap, c, dot, W
 
     def _loss(self, e: Any, th: Any) -> Any:
-        if self.expr_op is not None:
+        if self.loss_kind == "dirichlet":
+            order = 1
+        elif self.expr_op is not None:
             order = 2 if self.expr_op["uses_lap"] else 1
         else:
             order = 1 if (self.loss_kind == "rayleigh" or self.kind == "transport") else 2
@@ -382,6 +384,9 @@ class TorchEvaluator:
             num = (dot(c, c) + pot * u * u).mean(-1)
             den = (u * u).mean(-1)
             loss = num / den
+        elif self.loss_kind == "dirichlet":
+            w = self.pot if self.pot is not None else 1.0
+            loss = (w * dot(c, c)).mean(-1)
         else:
             if self.kind == "poisson":
                 r = -lap

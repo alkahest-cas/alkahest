@@ -514,6 +514,49 @@ class Problem:
         )
 
     @classmethod
+    def dirichlet(
+        cls,
+        jet: Jet,
+        weight: Any = None,
+        bc: Any = None,
+        *,
+        strong_form: Any = None,
+        bc_weight: float = 100.0,
+        exact: Callable | None = None,
+    ) -> Problem:
+        """The Ritz (variational) energy ``mean(w(x)·|∇u|²) + λ·mean((u − bc)²)``
+        over the problem's interior points (``loss="dirichlet"``), with
+        ``w = weight`` (``1`` when ``None``).
+
+        Its minimiser under the boundary data solves ``∇·(w∇u) = 0``. For the
+        committor of Song, Cameron & Yang's variational formulation, sample
+        the points from a density ``ρ`` and take ``w = e^{−βV}/ρ``.
+        ``strong_form`` (default ``Δu``) is the Euler–Lagrange operator, read
+        only by :func:`analyze`. Fitted by BFGS (the energy has no residual
+        vector); :func:`finalize` does not verify it.
+        """
+        op = strong_form(jet) if callable(strong_form) else strong_form
+        if op is None:
+            op = jet.lap
+        return cls._make(
+            jet.dim,
+            "expr",
+            jet,
+            0.0,
+            bc,
+            weight,
+            exact,
+            operator=op,
+            u=jet.u,
+            lap=jet.lap,
+            grad=jet.grad,
+            ut=jet.ut,
+            time=jet.time,
+            bc_weight=bc_weight,
+            loss="dirichlet",
+        )
+
+    @classmethod
     def pide(
         cls,
         dim: int,

@@ -593,8 +593,14 @@ Exception subclasses
      outside the template's tables in ``slot_ops``, a slot with nothing
      allowed, an unknown baseline)
    - ``E-FEX-014`` — :class:`alkahest.fex.TorchEvaluator` is unavailable
-     (no PyTorch or no CUDA) or does not cover the problem (operators given
-     as expressions, the centred loss)
+     (no PyTorch or no CUDA) or does not cover the problem (an expression
+     operator outside ``F₀(u, Δu, x) + Σ aᵢ(x) ∂ᵢu + b·|∇u|²``, a
+     non-diagonal second-order form)
+   - ``E-FEX-015`` — a malformed partial integro-differential problem
+     (:meth:`alkahest.fex.Problem.pide`): a nonlocal term or second-order
+     form of the wrong size or with non-finite entries, a jump law with a
+     negative variance, or nonlocal terms with a loss that has no residual
+     vector
 
 .. exception:: JitError
 

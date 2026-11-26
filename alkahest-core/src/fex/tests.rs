@@ -1323,3 +1323,53 @@ fn nonlocal_problems_are_checked() {
         .expect("registered");
     assert_eq!(spec.remediation, err.remediation());
 }
+
+#[test]
+fn dirichlet_energy_value_and_gradient() {
+    // mean(w |∇u|²) + λ mean((u − g)²) against jets_at, and its gradient
+    // against finite differences.
+    let d = 3;
+    let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let mut rng = Rng(23);
+    let n = 120;
+    let xi = grid(&mut rng, n, d, -1.0, 1.0);
+    let xb = grid(&mut rng, 30, d, -1.0, 1.0);
+    let w = |x: &[f64]| (-(x[0] * x[0] - 1.0).powi(2)).exp();
+    let prob = Problem::new(
+        d,
+        PdeOperator::poisson(),
+        ScalarField::Zero,
+        ScalarField::Func(Arc::new(|x: &[f64]| 0.5 * (1.0 + x[0]))),
+    )
+    .unwrap()
+    .with_potential(ScalarField::Func(Arc::new(w)))
+    .with_loss(LossKind::Dirichlet);
+    assert!(!prob.loss().is_least_squares());
+    let ev = Evaluator::new(&t, &prob, &xi, &xb).unwrap();
+    let e = [7usize, 1, 3, 8];
+    let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.4, 0.4)).collect();
+    let jets = ev.jets_at(&e, &th, &xi).unwrap();
+    let mut want = 0.0;
+    for p in 0..n {
+        let g = &jets.grad[p * d..(p + 1) * d];
+        want += w(&xi[p * d..(p + 1) * d]) * g.iter().map(|v| v * v).sum::<f64>() / n as f64;
+    }
+    let jb = ev.jets_at(&e, &th, &xb).unwrap();
+    for p in 0..30 {
+        let r = jb.u[p] - 0.5 * (1.0 + xb[p * d]);
+        want += 100.0 * r * r / 30.0;
+    }
+    let got = ev.loss(&e, &th).unwrap();
+    assert!(close(got, want, 1e-12), "{got} vs {want}");
+    let mut g = vec![0.0; t.n_params()];
+    ev.loss_and_grad(&e, &th, &mut g).unwrap();
+    let fd = fd_grad(&ev, &e, &th);
+    for k in 0..g.len() {
+        assert!(
+            (g[k] - fd[k]).abs() < 1e-5 * (1.0 + fd[k].abs()),
+            "k={k}: {} vs {}",
+            g[k],
+            fd[k]
+        );
+    }
+}

@@ -75,6 +75,7 @@ PAPER_DIMS = {
     "eigen": [10, 12, 14, 16, 18],
     "eigen_quartic": [10, 12, 14, 16, 18],
     "committor": [10],
+    "committor_ritz": [10],
     "pide4": [2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
     "pide5": [25, 50, 75, 100],
 }
@@ -180,6 +181,35 @@ def make(kind: str, d: int, rng: np.random.Generator, n_test: int = 20000):
         xb[500:, 0] = 1.0
         xt = rng.uniform(-1.0, 1.0, size=(n_test, d))
         xt[:, 1:] = rng.normal(0.0, math.sqrt(1 / (0.6 * beta)), size=(n_test, d - 1))
+        y, q = _committor_1d(beta)
+        exact = lambda p: np.interp(p[:, 0], y, q)  # noqa: E731
+        unary = [*unary, "tanh"]
+        mode = "plain"
+    elif kind == "committor_ritz":
+        # Song–Cameron–Yang's variational form: minimise mean(w·|∇q|²) over
+        # points from ρ (x₁ uniform, the rest from their Gaussian factor of
+        # e^{−βV}), with w = e^{−βV}/ρ ∝ e^{−β(x₁² − 1)²}.
+        beta = 5.0
+        jet = fex.Jet(d)
+        x = jet.x
+        dV = [4 * x[0] * (x[0] ** 2 - 1)] + [0.6 * v for v in x[1:]]
+        strong = jet.lap / beta - sum(a * g for a, g in zip(dV, jet.grad))
+        prob = fex.Problem.dirichlet(
+            jet,
+            weight=ak.exp(-beta * (x[0] ** 2 - 1) ** 2),
+            bc=(1 + x[0]) / 2,
+            strong_form=strong,
+            bc_weight=100.0,
+        )
+        sd = math.sqrt(1 / (0.6 * beta))
+        xi = rng.uniform(-1.0, 1.0, size=(5000, d))
+        xi[:, 1:] = rng.normal(0.0, sd, size=(5000, d - 1))
+        xb = rng.uniform(-1.0, 1.0, size=(1000, d))
+        xb[:, 1:] = rng.normal(0.0, sd, size=(1000, d - 1))
+        xb[:500, 0] = -1.0
+        xb[500:, 0] = 1.0
+        xt = rng.uniform(-1.0, 1.0, size=(n_test, d))
+        xt[:, 1:] = rng.normal(0.0, sd, size=(n_test, d - 1))
         y, q = _committor_1d(beta)
         exact = lambda p: np.interp(p[:, 0], y, q)  # noqa: E731
         unary = [*unary, "tanh"]
@@ -310,7 +340,7 @@ def run_one(kind, d, seed, method, epochs, do_finalize, controller=None):
     rng = np.random.default_rng(seed)
     prob, xi, xb, xt, exact, unary, mode = make(kind, d, rng)
     t0 = time.perf_counter()
-    target = None if prob.loss == "rayleigh" else 1e-20
+    target = None if prob.loss in ("rayleigh", "dirichlet") else 1e-20
     if method == "unpruned":
         tpl = fex.Template("depth2_sub", unary=unary, dim=d)
         res = fex.search(
@@ -357,7 +387,7 @@ def run_one(kind, d, seed, method, epochs, do_finalize, controller=None):
     if lam is not None:
         row["eigenvalue"] = lam
         row["eigenvalue_rel_err"] = abs(lam - prob.reference_eigenvalue) / prob.reference_eigenvalue
-    if do_finalize and err <= 1e-4 and kind not in ("committor", "eigen_quartic"):
+    if do_finalize and err <= 1e-4 and kind not in ("committor", "committor_ritz", "eigen_quartic"):
         t1 = time.perf_counter()
         try:
             out = fex.finalize(res, prob, family=pide_family(kind, prob))
@@ -454,16 +484,25 @@ def gpu(args) -> list[dict]:
     import torch
 
     rows = []
-    for kind, d in [
-        ("poisson", 10),
-        ("poisson", 50),
-        ("conservation", 20),
-        ("nls", 12),
-        ("eigen", 10),
+    for kind, d, transform in [
+        ("poisson", 10, None),
+        ("poisson", 50, None),
+        ("conservation", 20, None),
+        ("nls", 12, None),
+        ("eigen", 10, None),
+        # Expression operators (G6): x-dependent gradient coefficients, the
+        # centred loss with |∇v|², and a PIDE with its nonlocal term.
+        ("committor", 10, None),
+        ("eigen", 10, "exp"),
+        ("nls", 12, "exp"),
+        ("pide4", 20, None),
     ]:
         rng = np.random.default_rng(0)
         prob, xi, xb, _xt, _ex, unary, _m = make(kind, d, rng, n_test=10)
-        tpl = fex.Template("depth2_sub", unary=unary, dim=d)
+        if transform:
+            prob = fex.transform_problem(prob, transform)
+            xb = None
+        tpl = fex.Template("depth2_sub", unary=unary, dim=prob.dim)
         n = args.batch
         es = tpl.random_skeletons(n, rng)
         th = tpl.init_params(n, rng)
@@ -472,7 +511,7 @@ def gpu(args) -> list[dict]:
         ev.fit(es, th, method="adam", max_iter=40, lr=1e-3)
         cpu = n / (time.perf_counter() - t)
         row = {
-            "problem": kind,
+            "problem": kind + (f" (u = e^v, {prob.loss})" if transform else ""),
             "d": d,
             "batch": n,
             "cpu_threads": args.threads,

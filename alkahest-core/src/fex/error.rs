@@ -212,7 +212,7 @@ impl AlkahestError for FexError {
                 "give each nonlocal term one shift (and optionally one scale) per coordinate and finite coefficients, a second-order form with one diagonal entry per coordinate and off-diagonal entries (i, j, a) with i < j, a jump law with a finite mean and variance, and use a least-squares or centred loss"
             }
             FexError::Backend { .. } => {
-                "install PyTorch (with CUDA for device='cuda'), and use the GPU evaluator for the built-in problems (poisson, transport, cubic_schrodinger, eigen); operators written as expressions and the centred loss run on alkahest.fex.Evaluator"
+                "install PyTorch (with CUDA for device='cuda'); the GPU evaluator covers the built-in problems and expression operators of the form F0(u, lap, x) + sum a_i(x) u_i + b(u, lap, x) |grad u|^2 (least-squares, centred, normalised and Rayleigh losses, without a non-diagonal second-order form); anything else runs on alkahest.fex.Evaluator"
             }
         })
     }

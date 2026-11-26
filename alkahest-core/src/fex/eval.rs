@@ -214,7 +214,7 @@ impl Evaluator {
         };
         let rhs = rows(interior, ni, &|x| problem.rhs.eval(x));
         let uses_pot = !problem.potential.is_zero()
-            && (matches!(problem.loss, LossKind::Rayleigh)
+            && (matches!(problem.loss, LossKind::Rayleigh | LossKind::Dirichlet)
                 || matches!(&problem.operator, PdeOperator::Linear(l) if l.potential));
         let pot = if uses_pot {
             rows(interior, ni, &|x| problem.potential.eval(x))
@@ -1046,6 +1046,7 @@ impl Evaluator {
                 self.scalar_loss(ops, th, grad.is_some(), Some(power))
             }
             LossKind::Rayleigh => self.scalar_loss(ops, th, grad.is_some(), None),
+            LossKind::Dirichlet => self.dirichlet_loss(ops, th, grad.is_some()),
             LossKind::CenteredLeastSquares => self.centered_loss(ops, th, grad.is_some()),
         };
         match out {
@@ -1133,6 +1134,77 @@ impl Evaluator {
                     if want_grad {
                         self.seed_root(&mut s, 2.0 * rv * w, true);
                         self.backward(ops, &ti, th, p, self.order, &self.qm, &mut s, &mut g);
+                    }
+                } else {
+                    let p = row - self.int.n;
+                    self.forward(ops, &tb, th, p, 0, &self.qm, &mut s);
+                    let w = self.bd.weight;
+                    let rv = w * (s.jets[root] - self.bd.target[p]);
+                    if !rv.is_finite() {
+                        return None;
+                    }
+                    l += rv * rv;
+                    if want_grad {
+                        self.seed_root(&mut s, 2.0 * rv * w, false);
+                        self.backward(ops, &tb, th, p, 0, &self.qm, &mut s, &mut g);
+                    }
+                }
+            }
+            Some((l, g))
+        });
+        let mut loss = 0.0;
+        let mut grad = if want_grad { vec![0.0; np] } else { Vec::new() };
+        for part in parts {
+            let (l, g) = part?;
+            loss += l;
+            for (a, b) in grad.iter_mut().zip(&g) {
+                *a += b;
+            }
+        }
+        Some((loss, grad))
+    }
+
+    /// The Ritz energy `mean(w |∇u|²) + λ mean(r_bd²)` and its gradient in
+    /// one forward/reverse pass per point.
+    fn dirichlet_loss(
+        &self,
+        ops: &[NodeOp],
+        th: &[f64],
+        want_grad: bool,
+    ) -> Option<(f64, Vec<f64>)> {
+        let np = self.template.n_params();
+        let ti = self.tables(&self.int, ops, &self.qm);
+        let tb = self.tables(&self.bd, ops, &self.qm);
+        let st = self.stride;
+        let root = (self.template.plan.len() - 1) * st;
+        let ni = self.int.n as f64;
+        let parts = map_tasks(self.row_chunks(), |(r0, r1)| {
+            let mut s = self.scratch();
+            let mut g = if want_grad { vec![0.0; np] } else { Vec::new() };
+            let mut l = 0.0;
+            for row in r0..r1 {
+                if row < self.int.n {
+                    let p = row;
+                    self.forward(ops, &ti, th, p, 1, &self.qm, &mut s);
+                    let w = if self.int.pot.is_empty() {
+                        1.0
+                    } else {
+                        self.int.pot[p]
+                    };
+                    let gr = &s.jets[root + 2..root + st];
+                    let e = w * mdot(gr, gr, &self.mask) / ni;
+                    if !e.is_finite() {
+                        return None;
+                    }
+                    l += e;
+                    if want_grad {
+                        let n_adj = s.adj.len();
+                        s.adj[..n_adj].fill(0.0);
+                        for i in 0..st - 2 {
+                            s.adj[root + 2 + i] =
+                                2.0 * w * self.mask[i] * s.jets[root + 2 + i] / ni;
+                        }
+                        self.backward(ops, &ti, th, p, 1, &self.qm, &mut s, &mut g);
                     }
                 } else {
                     let p = row - self.int.n;

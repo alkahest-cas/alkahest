@@ -21,6 +21,8 @@ on:
       - 'tests/lean_gosper_corpus.py'
       - 'tests/lean_integrate_corpus.py'
       - 'tests/lean_ode_corpus.py'
+      - 'tests/lean_fex_corpus.py'
+      - 'python/alkahest/_fex_lean.py'
       - 'alkahest-core/src/integrate/**'
       - 'alkahest-core/src/poly/resultant.rs'
       - 'alkahest-core/src/holonomic/**'
@@ -130,6 +132,10 @@ jobs:
         run: |
           python tests/lean_ode_corpus.py --output /tmp/lean_ode/
 
+      - name: Generate Lean proofs (FEX PDE-residual certificates, reflective kernel)
+        run: |
+          python tests/lean_fex_corpus.py --output /tmp/lean_fex/
+
       - name: Generate Lean proofs (full deduplicated textbook-gate pool)
         run: |
           # Every distinct certificate the library emits from the textbook gate
@@ -187,7 +193,7 @@ jobs:
           export -f check
           total=0
           failed=0
-          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_integrate /tmp/lean_integrate_tactic /tmp/lean_ode /tmp/lean_pool /tmp/lean_sos; do
+          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_integrate /tmp/lean_integrate_tactic /tmp/lean_ode /tmp/lean_fex /tmp/lean_pool /tmp/lean_sos; do
             n=$(ls "$dir"/*.lean 2>/dev/null | wc -l)
             echo "== Verifying $n certificates in $dir =="
             log=$(mktemp)

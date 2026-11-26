@@ -535,6 +535,13 @@ pub enum LossKind {
     /// `−Δu + V u = λ u` becomes `−Δv − |∇v|² + V = λ`, and the fitted mean
     /// of the residual is the eigenvalue. Levenberg–Marquardt applies.
     CenteredLeastSquares,
+    /// The Ritz (variational) energy `mean(w(x)·|∇u|²) + λ·mean(r_bd²)`,
+    /// with `w` the problem's potential field (`1` when it is zero) and the
+    /// gradient over the spatial coordinates. Its minimiser under the
+    /// boundary data solves `∇·(w ∇u) = 0`: with points sampled from a
+    /// density `ρ` and `w = e^{−βV}/ρ`, the committor of Song, Cameron &
+    /// Yang's variational formulation. The operator is not read.
+    Dirichlet,
 }
 
 impl LossKind {
@@ -681,7 +688,7 @@ impl Problem {
     /// Highest jet order needed at interior points.
     pub(crate) fn interior_order(&self) -> u8 {
         match self.loss {
-            LossKind::Rayleigh => 1,
+            LossKind::Rayleigh | LossKind::Dirichlet => 1,
             _ => self.operator.order(),
         }
     }
