@@ -51,11 +51,18 @@
 //! * [`transform_methods`] — (M3) [`fourier_method`], [`laplace_method`],
 //!   [`image_method`] (sine / cosine transforms) and [`transform_solve`]:
 //!   closed forms or verified kernel representations.
-//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0) and
-//!   `E-PDE-150 … E-PDE-199` (M3).
+//! * [`green`] — (milestone M5) Green's functions: the fundamental-solution
+//!   table ([`fundamental_solution`]), the method of images
+//!   ([`image_green_function`], Kelvin inversion for the disk and ball),
+//!   eigenfunction-series and variation-of-parameters Green's functions
+//!   ([`eigen_green_function`], [`ode_green_function`]) and the
+//!   representation `u = ∫ G f + boundary terms` ([`green_solve`]).
+//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0),
+//!   `E-PDE-150 … E-PDE-199` (M3) and `E-PDE-250 … E-PDE-299` (M5).
 
 pub mod classify;
 pub mod error;
+pub mod green;
 pub mod integral;
 pub mod jet;
 pub mod mol;
@@ -72,6 +79,12 @@ pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
 pub use error::PdeError;
+pub use green::{
+    eigen_green_function, fundamental_solution, fundamental_solution_nd, green_solve,
+    image_green_function, ode_green_function, FundamentalSolution, GreenCheck, GreenFunction,
+    GreenOperator, GreenSolution, GreenSolutionKind, GreenTerm, ImageRegion, SeriesKind,
+    WallCondition,
+};
 pub use integral::{
     combine_integrals, has_integral, indefinite_integral, indefinite_parts, integral,
     integral_parts, INTEGRAL,

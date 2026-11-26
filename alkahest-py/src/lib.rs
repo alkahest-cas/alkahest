@@ -266,6 +266,7 @@ mod matgroup;
 mod mol;
 mod pde;
 mod pde_m3;
+mod pde_m5;
 mod pde_second_order;
 
 // ---------------------------------------------------------------------------
@@ -24162,6 +24163,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pde::register(m)?;
     pde_second_order::register(m)?;
     pde_m3::register(m)?;
+    pde_m5::register(m)?;
     lattice::register(m)?;
     linprog::register(m)?;
     fex::register(m)?;

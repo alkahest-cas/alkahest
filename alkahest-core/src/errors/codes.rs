@@ -931,6 +931,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-161", class: "PdeError", cause: Cause::UserInput, remediation: Some("supply the initial data at t = 0 (u, and u_t for second order in t) or the boundary value at the finite end, each once") },
     ErrorSpec { code: "E-PDE-162", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the transformed equation must be a constant-coefficient ODE in the remaining variable that dsolve solves") },
     ErrorSpec { code: "E-PDE-163", class: "PdeError", cause: Cause::Internal, remediation: Some("the candidate built by the transform method was refuted by substitution and withheld; please report the problem") },
+    ErrorSpec { code: "E-PDE-250", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the fundamental-solution table covers Laplace, heat, wave, Helmholtz, modified Helmholtz and biharmonic in 1-3 D (Laplace and heat also in n D with symbolic n), Klein-Gordon and telegraph in 1 D; reduce the problem to one of those") },
+    ErrorSpec { code: "E-PDE-251", class: "PdeError", cause: Cause::UserInput, remediation: Some("pass one symbol per space dimension, a source point with as many coordinates, and a time variable for heat, wave, Klein-Gordon and telegraph") },
+    ErrorSpec { code: "E-PDE-252", class: "PdeError", cause: Cause::Unsupported, remediation: Some("images are implemented for half- and quarter-spaces (Dirichlet or Neumann walls), strips and slabs (heat; Laplace with Dirichlet walls), and the Dirichlet disk and ball; use the eigenfunction series for other bounded regions") },
+    ErrorSpec { code: "E-PDE-253", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the eigenfunction series needs every squared norm in closed form and no eigenvalues below the threshold; give the parameter signs (positive symbols) so the Sturm-Liouville solver can exclude negative eigenvalues") },
+    ErrorSpec { code: "E-PDE-254", class: "PdeError", cause: Cause::Domain, remediation: Some("the homogeneous problem has a nontrivial solution, so no Green's function exists; use eigen_green_function, which returns the modified Green's function (data orthogonal to the zero mode)") },
+    ErrorSpec { code: "E-PDE-255", class: "PdeError", cause: Cause::Internal, remediation: Some("a Green's function or representation failed its exact check and was withheld; please report the problem") },
+    ErrorSpec { code: "E-PDE-256", class: "PdeError", cause: Cause::Unsupported, remediation: Some("green_solve handles linear second-order two-point boundary-value problems, the heat and wave equations on the line with sources, and Laplace / Poisson problems on the image-method regions; check classify_pde and the domain") },
 ];
 
 #[cfg(test)]

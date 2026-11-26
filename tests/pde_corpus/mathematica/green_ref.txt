@@ -1,0 +1,59 @@
+laplace_1d	unevaluated	Indeterminate	GreenFunction[{Derivative[2][u][x]}, u[x], {x, -Infinity, Infinity}, xi]
+laplace_2d	closed	{-0.04334801130401411, 0.02505184269197901}	Log[(x - xi)^2 + (-eta + y)^2]/(4*Pi)
+laplace_3d	closed	{-0.101063489926894, -0.06252196639979904}	-1/4*1/(Pi*Sqrt[(x - xi)^2 + (-eta + y)^2 + (z - zeta)^2])
+laplace_nd	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 0, 2][u][x, y, z, w] + Derivative[0, 0, 2, 0][u][x, y, z, w] + Derivative[0, 2, 0, 0][u][x, y, z, w] + Derivative[2, 0, 0, 0][u][x, y, z, w]}, u[x, y, z, w], Element[{x, y, z, w}, FullRegion[4]], {xi, eta, zeta, omega}]
+heat_1d	closed	{0.32650255376484083, 0.13899835683286743}	HeavisideTheta[-s + t]/(2*E^((x - xi)^2/(4*kappa*(-s + t)))*Sqrt[kappa]*Sqrt[Pi]*Sqrt[-s + t])
+heat_2d	closed	{0.1085246574237266}	(E^((-(x - xi)^2 - (-eta + y)^2)/(4*kappa*(-s + t)))*HeavisideTheta[-s + t])/(4*kappa*Pi*(-s + t))
+heat_3d	closed	{0.11863234374073858}	(E^((-(x - xi)^2 - (-eta + y)^2 - (z - zeta)^2)/(4*kappa*(-s + t)))*HeavisideTheta[-s + t])/(4*kappa*Pi*(-s + t)^(3/2))
+heat_nd	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 0, 0, 1][u][x, y, z, w, t] - kappa*(Derivative[0, 0, 0, 2, 0][u][x, y, z, w, t] + Derivative[0, 0, 2, 0, 0][u][x, y, z, w, t] + Derivative[0, 2, 0, 0, 0][u][x, y, z, w, t] + Derivative[2, 0, 0, 0, 0][u][x, y, z, w, t])}, u[x, y, z, w, t], Element[{x, y, z, w}, FullRegion[4]], t, {xi, eta, zeta, omega, s}, Assumptions -> kappa > 0]
+wave_1d	closed	{0.5`20., 0}	HeavisideTheta[c*(-s + t) - Abs[x - xi]]/(2*c)
+wave_2d	closed	{0.26525823848649227, 0. + 0.*I}	HeavisideTheta[-s + t - Sqrt[(x - xi)^2 + (-eta + y)^2]/c]/(2*c*Pi*Sqrt[(-s + t)^2 - ((x - xi)^2 + (-eta + y)^2)/c^2])
+wave_3d	closed	{0.12819352107325155}	DiracDelta[s - t + Sqrt[(x - xi)^2 + (-eta + y)^2 + (z - zeta)^2]/c]/(4*Pi*Sqrt[(x - xi)^2 + (-eta + y)^2 + (z - zeta)^2])
+helmholtz_1d	unevaluated	Indeterminate	GreenFunction[{k^2*u[x] + Derivative[2][u][x]}, u[x], {x, -Infinity, Infinity}, xi, Assumptions -> k > 0]
+helmholtz_2d	closed	{0.04775799737549215 + 0.17485364403287226*I, 0.11673290243743549 + 0.09143053727711764*I}	(I/4)*HankelH2[0, k*Sqrt[(x - xi)^2 + (-eta + y)^2]]
+helmholtz_3d	unevaluated	Indeterminate	GreenFunction[{k^2*u[x, y, z] + Derivative[0, 0, 2][u][x, y, z] + Derivative[0, 2, 0][u][x, y, z] + Derivative[2, 0, 0][u][x, y, z]}, u[x, y, z], Element[{x, y, z}, FullRegion[3]], {xi, eta, zeta}, Assumptions -> k > 0]
+mod_helmholtz_1d	unevaluated	Indeterminate	GreenFunction[{-(k^2*u[x]) + Derivative[2][u][x]}, u[x], {x, -Infinity, Infinity}, xi, Assumptions -> k > 0]
+mod_helmholtz_2d	closed	{-0.05486534741856873, -0.024552665917799303}	-1/2*BesselK[0, k*Sqrt[(x - xi)^2 + (-eta + y)^2]]/Pi
+mod_helmholtz_3d	unevaluated	Indeterminate	GreenFunction[{-(k^2*u[x, y, z]) + Derivative[0, 0, 2][u][x, y, z] + Derivative[0, 2, 0][u][x, y, z] + Derivative[2, 0, 0][u][x, y, z]}, u[x, y, z], Element[{x, y, z}, FullRegion[3]], {xi, eta, zeta}, Assumptions -> k > 0]
+biharmonic_1d	unevaluated	Indeterminate	GreenFunction[{Derivative[4][u][x]}, u[x], {x, -Infinity, Infinity}, xi]
+biharmonic_2d	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 4][u][x, y] + 2*Derivative[2, 2][u][x, y] + Derivative[4, 0][u][x, y]}, u[x, y], Element[{x, y}, FullRegion[2]], {xi, eta}]
+biharmonic_3d	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 4][u][x, y, z] + 2*Derivative[0, 2, 2][u][x, y, z] + Derivative[0, 4, 0][u][x, y, z] + 2*Derivative[2, 0, 2][u][x, y, z] + 2*Derivative[2, 2, 0][u][x, y, z] + Derivative[4, 0, 0][u][x, y, z]}, u[x, y, z], Element[{x, y, z}, FullRegion[3]], {xi, eta, zeta}]
+klein_gordon_1d	unevaluated	Indeterminate	GreenFunction[{m^2*u[x, t] + Derivative[0, 2][u][x, t] - c^2*Derivative[2, 0][u][x, t]}, u[x, t], {x, -Infinity, Infinity}, t, {xi, s}, Assumptions -> c > 0 && m > 0]
+telegraph_1d	unevaluated	Indeterminate	GreenFunction[{2*a*Derivative[0, 1][u][x, t] + Derivative[0, 2][u][x, t] - c^2*Derivative[2, 0][u][x, t]}, u[x, t], {x, -Infinity, Infinity}, t, {xi, s}, Assumptions -> c > 0 && a > 0]
+half_plane_dirichlet	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], DirichletCondition[u[x, y] == 0, y == 0]}, u[x, y], Element[{x, y}, HalfPlane[{{0, 0}, {1, 0}}, {0, 1}]], {xi, eta}]
+half_plane_neumann	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], NeumannValue[0, y == 0]}, u[x, y], Element[{x, y}, HalfPlane[{{0, 0}, {1, 0}}, {0, 1}]], {xi, eta}]
+half_space_dirichlet_3d	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 2][u][x, y, z] + Derivative[0, 2, 0][u][x, y, z] + Derivative[2, 0, 0][u][x, y, z], DirichletCondition[u[x, y, z] == 0, z == 0]}, u[x, y, z], Element[{x, y, z}, ImplicitRegion[z > 0, {x, y, z}]], {xi, eta, zeta}]
+quarter_plane_dn	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], DirichletCondition[u[x, y] == 0, x == 0], NeumannValue[0, y == 0]}, u[x, y], Element[{x, y}, ImplicitRegion[x > 0 && y > 0, {x, y}]], {xi, eta}]
+heat_half_line_dirichlet	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 1][u][x, t] - kappa*Derivative[2, 0][u][x, t], u[0, t] == 0}, u[x, t], {x, 0, Infinity}, t, {xi, s}, Assumptions -> kappa > 0]
+heat_half_line_neumann	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 1][u][x, t] - kappa*Derivative[2, 0][u][x, t], Derivative[1, 0][u][0, t] == 0}, u[x, t], {x, 0, Infinity}, t, {xi, s}, Assumptions -> kappa > 0]
+heat_interval_dd	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 1][u][x, t] - kappa*Derivative[2, 0][u][x, t], u[0, t] == 0, u[L, t] == 0}, u[x, t], {x, 0, L}, t, {xi, s}, Assumptions -> kappa > 0 && L > 0]
+heat_interval_dn	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 1][u][x, t] - kappa*Derivative[2, 0][u][x, t], u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}, u[x, t], {x, 0, L}, t, {xi, s}, Assumptions -> kappa > 0 && L > 0]
+laplace_strip	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], DirichletCondition[u[x, y] == 0, True]}, u[x, y], Element[{x, y}, ImplicitRegion[0 < y < L, {x, y}]], {xi, eta}, Assumptions -> L > 0]
+laplace_slab_3d	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 2][u][x, y, z] + Derivative[0, 2, 0][u][x, y, z] + Derivative[2, 0, 0][u][x, y, z], DirichletCondition[u[x, y, z] == 0, True]}, u[x, y, z], Element[{x, y, z}, ImplicitRegion[0 < z < L, {x, y, z}]], {xi, eta, zeta}, Assumptions -> L > 0]
+disk_dirichlet	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], DirichletCondition[u[x, y] == 0, True]}, u[x, y], Element[{x, y}, Disk[{0, 0}, R]], {xi, eta}, Assumptions -> R > 0]
+ball_dirichlet	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 0, 2][u][x, y, z] + Derivative[0, 2, 0][u][x, y, z] + Derivative[2, 0, 0][u][x, y, z], DirichletCondition[u[x, y, z] == 0, True]}, u[x, y, z], Element[{x, y, z}, Ball[{0, 0, 0}, R]], {xi, eta, zeta}, Assumptions -> R > 0]
+wave_half_line_dirichlet	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, t] - c^2*Derivative[2, 0][u][x, t], u[0, t] == 0}, u[x, t], {x, 0, Infinity}, t, {xi, s}, Assumptions -> c > 0]
+helmholtz_half_plane_dirichlet	unevaluated	Indeterminate	GreenFunction[{k^2*u[x, y] + Derivative[0, 2][u][x, y] + Derivative[2, 0][u][x, y], DirichletCondition[u[x, y] == 0, y == 0]}, u[x, y], Element[{x, y}, HalfPlane[{{0, 0}, {1, 0}}, {0, 1}]], {xi, eta}, Assumptions -> k > 0]
+ode_dirichlet	closed	{0.12, 0.07999999999999996}	(xi - (x*xi)/L)*HeavisideTheta[x - xi] + (x - (x*xi)/L)*HeavisideTheta[-x + xi]
+ode_dirichlet_neumann	closed	{0.3, 0.4}	xi*HeavisideTheta[x - xi] + x*HeavisideTheta[-x + xi]
+ode_robin	closed	{0.18, 0.18666666666666668}	((xi + h*(L - x)*xi)*HeavisideTheta[x - xi])/(1 + h*L) + ((x + h*x*(L - xi))*HeavisideTheta[-x + xi])/(1 + h*L)
+ode_screened	closed	{0.09275803333262707, 0.06070095220742913}	((E^(2*k*L) - E^(2*k*x))*(-1 + E^(2*k*xi))*HeavisideTheta[x - xi])/(2*E^(k*(x + xi))*(-1 + E^(2*k*L))*k) + ((-1 + E^(2*k*x))*(E^(2*k*L) - E^(2*k*xi))*HeavisideTheta[-x + xi])/(2*E^(k*(x + xi))*(-1 + E^(2*k*L))*k)
+ode_oscillator	closed	{-0.1367616840918657, -0.09194075953010286}	-(Csc[1]*HeavisideTheta[-x + xi]*Sin[x]*Sin[1 - xi]) - Csc[1]*HeavisideTheta[x - xi]*Sin[1 - x]*Sin[xi]
+ode_euler	closed	{0.08446242782654347, 0.05114482082479918}	-((HeavisideTheta[-x + xi]*Log[x]*Log[xi/2])/Log[2]) - (HeavisideTheta[x - xi]*Log[x/2]*Log[xi])/Log[2]
+ode_neumann_neumann	unevaluated	Indeterminate	GreenFunction[{-Derivative[2][u][x], Derivative[1][u][0] == 0, Derivative[1][u][1] == 0}, u[x], {x, 0, 1}, xi]
+series_static_dd	closed	{0.12}	(xi - (x*xi)/L)*HeavisideTheta[x - xi] + (x - (x*xi)/L)*HeavisideTheta[-x + xi]
+series_static_robin	closed	{0.18}	((xi + h*(L - x)*xi)*HeavisideTheta[x - xi])/(1 + h*L) + ((x + h*x*(L - xi))*HeavisideTheta[-x + xi])/(1 + h*L)
+series_modified_nn	none	{}	None
+series_heat_dd	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 1][u][x, t] - kappa*Derivative[2, 0][u][x, t], u[0, t] == 0, u[L, t] == 0}, u[x, t], {x, 0, L}, t, {xi, s}, Assumptions -> kappa > 0 && L > 0]
+series_wave_dd	unevaluated	Indeterminate	GreenFunction[{Derivative[0, 2][u][x, t] - c^2*Derivative[2, 0][u][x, t], u[0, t] == 0, u[L, t] == 0}, u[x, t], {x, 0, L}, t, {xi, s}, Assumptions -> c > 0 && L > 0]
+series_bessel_disk	none	{}	None
+bvp_constant_source	closed	{0.105, 0.07999999999999996}	(x - x^2)/2
+bvp_symbolic_source	integral	Indeterminate	2 + 3*x - x*Inactive[Integrate][f[K[1]], {K[1], 0, L}] + Inactive[Integrate][Inactive[Integrate][f[K[1]], {K[1], 0, K[2]}], {K[2], 0, x}]
+bvp_oscillator	closed	{0.3, 0.8}	x
+bvp_euler	closed	{0.07851162325372979, 0.04799690655495015}	(Log[2] - x*Log[2] + Log[x])/Log[2]
+bvp_robin_quadratic	closed	{0.8493249999999999, 0.5658666666666665}	(12 - 6*x - x^4)/12
+heat_line_source	closed	{0.21}	t*x
+heat_line_gaussian	closed	{0.5009821817532617}	ConditionalExpression[1/(E^(x^2/(1 + 4*t))*Sqrt[4 + t^(-1)]*Sqrt[t]), Re[t^(-1)] >= -4]
+wave_line_source	closed	{0.017149999999999995}	Piecewise[{{(t^3*x)/6, t >= 0}}, Indeterminate]
+wave_line_data	closed	{0.43602632124962304}	Piecewise[{{(-1/2*(-t + x)^2 + (t + x)^2/2)/2 + (-Sin[t - x] + Sin[t + x])/2, t >= 0}}, Indeterminate]
+half_plane_lorentzian	closed	{0.5704697986577182}	(1 + y)/(x^2 + (1 + y)^2)

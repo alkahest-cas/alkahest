@@ -53,7 +53,7 @@ fn end_from(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>) -> PyResult<EndConditi
     })
 }
 
-fn boundary_from(
+pub(crate) fn boundary_from(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     periodic: bool,

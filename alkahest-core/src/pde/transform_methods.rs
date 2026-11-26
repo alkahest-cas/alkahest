@@ -278,7 +278,7 @@ fn zstatus(e: ExprId, pool: &ExprPool) -> ZeroStatus {
 /// `(∏ fᵢ^{eᵢ})^r → ∏ fᵢ^{eᵢ r}` and `√z → z^{1/2}` when every factor is
 /// structurally positive — valid exactly there, and what lets `simplify`
 /// merge `P^{1/2}·(P^{−1})^{1/2}` into 1.
-fn expand_positive_powers(e: ExprId, pool: &ExprPool) -> ExprId {
+pub(crate) fn expand_positive_powers(e: ExprId, pool: &ExprPool) -> ExprId {
     use super::sturm_liouville::{sign, Sgn};
     fn split(b: ExprId, pool: &ExprPool) -> Option<Vec<(ExprId, ExprId)>> {
         let factors = match pool.get(b) {
@@ -336,7 +336,7 @@ fn expand_positive_powers(e: ExprId, pool: &ExprPool) -> ExprId {
 ///   where `(π/π²)^{1/2}` does not;
 /// * `|v|` split by sign — for each real symbol `v` under an `abs`, the
 ///   residual with `v = P` and with `v = −P` (`P > 0`).
-fn prove_harder(e: ExprId, pool: &ExprPool) -> bool {
+pub(crate) fn prove_harder(e: ExprId, pool: &ExprPool) -> bool {
     let pp = fresh_symbol("__tm_pi", Domain::Positive, &[e], pool);
     let e1 = simp(
         expand_positive_powers(simp(subs1(e, pi(pool), pp, pool), pool), pool),
@@ -711,7 +711,7 @@ fn integral(body: ExprId, s: ExprId, lo: ExprId, hi: ExprId, pool: &ExprPool) ->
 
 /// For verification: an antiderivative `G` of `g` stands for `∫ g`; every
 /// `Derivative(G(a), k ≥ 1)` in a residual is `g^{(k−1)}(a)`.
-fn resolve_antiderivative(
+pub(crate) fn resolve_antiderivative(
     e: ExprId,
     big: &str,
     g: ExprId,
@@ -1040,6 +1040,72 @@ fn fourier_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
         );
         transformed.push(pool.mul(vec![h, fhat.unwrap_or(placeholder)]));
         let inv = invert_fourier(h, fhat, f, x, t, xi, sv, j, pool)?;
+        // Klein–Gordon / telegraph: the light-cone Bessel kernels (M5)
+        // instead of the Fourier integral.
+        if matches!(inv, Inverse::Spectral) && k == 2 {
+            if let Some(lc) = super::green::light_cone(s.eq, s.u, x, t, pool) {
+                let (lo, hi) = (
+                    sub(x, pool.mul(vec![lc.speed, t]), pool),
+                    pool.add(vec![x, pool.mul(vec![lc.speed, t])]),
+                );
+                let kern = if j == 0 { lc.k_f } else { lc.k_g };
+                let st = verify_solution(&[s.eq], &[s.u], &[kern], &[], pool)?;
+                let mut status = status_to_zero(st.status);
+                if status != ZeroStatus::ProvedZero {
+                    let r = st.checks.first().map(|c| c.residual);
+                    if let Some(r) = r {
+                        if super::green::zstatus(r, pool) == ZeroStatus::ProvedZero {
+                            status = ZeroStatus::ProvedZero;
+                        }
+                    }
+                }
+                checks.push(TransformCheck {
+                    what: "kernel_pde",
+                    index: j,
+                    status,
+                });
+                if j == 0 {
+                    // R = 1 on both characteristics.
+                    for (ci, sgn) in [(0usize, 1i64), (1, -1)] {
+                        let on = subs1(
+                            lc.riemann,
+                            x,
+                            pool.mul(vec![pool.integer(sgn), lc.speed, t]),
+                            pool,
+                        );
+                        checks.push(TransformCheck {
+                            what: "kernel_characteristic",
+                            index: ci,
+                            status: super::green::zstatus(sub(on, pool.integer(1), pool), pool),
+                        });
+                    }
+                    // The d'Alembert-like part of the f-term (not a
+                    // solution on its own, so not in `verify_closed`).
+                    closed.push(pool.mul(vec![
+                        lc.decay,
+                        pool.rational(1, 2),
+                        pool.add(vec![subs1(f, x, lo, pool), subs1(f, x, hi, pool)]),
+                    ]));
+                    notes.push(
+                        "Klein–Gordon / telegraph: u = (∂ₜ + D)(G ∗ f) + G ∗ g with the \
+                         light-cone kernel G = H(ct − |x|) e^{−Dt/2} R/(2c), R the Riemann \
+                         function (J₀ or I₀), which solves the equation and equals 1 on the \
+                         characteristics (checked); the boundary terms of ∂ₜ give \
+                         e^{−Dt/2}(f(x − ct) + f(x + ct))/2"
+                            .into(),
+                    );
+                }
+                terms.push(KernelTerm {
+                    kernel: simp(subs1(kern, x, sub(x, sv, pool), pool), pool),
+                    density: subs1(f, x, sv, pool),
+                    var: sv,
+                    lower: lo,
+                    upper: hi,
+                });
+                methods_note.push("light_cone");
+                continue;
+            }
+        }
         match inv {
             Inverse::Closed {
                 value,
