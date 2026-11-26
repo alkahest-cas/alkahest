@@ -621,25 +621,40 @@ def _split_operator(problem: Any, pts: np.ndarray, T: Any, mask: np.ndarray) -> 
             continue
         lin = ai * g if lin is None else lin + ai * g
     R = op - F0 - (lin if lin is not None else zero)
-    R = ak.simplify(ak.expand(R)).value
     from ._fex_finalize import _symbols_in
 
-    used = [i for i, g in enumerate(grads) if g in _symbols_in(R)]
+    spatial = [i for i in range(len(grads)) if mask[i] != 0.0]
     b = None
-    if used:
-        g = grads[used[0]]
-        b = ak.simplify(ak.diff(ak.diff(R, g).value, g).value / 2).value
-        if _symbols_in(b) & set(grads):
-            raise _err("the operator is not quadratic in the gradient in the supported way")
-        spatial = [i for i in range(len(grads)) if mask[i] != 0.0]
-        if used != spatial:
-            raise _err("a |∇u|² term must run over exactly the spatial coordinates")
-        q = None
-        for i in used:
-            t = grads[i] ** 2
-            q = t if q is None else q + t
-        if ak.is_zero(ak.simplify(ak.expand(R - b * q)).value) is not True:
-            raise _err("the operator's gradient terms are not linear plus b·|∇u|²")
+    q = zero
+    if spatial:
+        g = grads[spatial[0]]
+        b = ak.subs(ak.diff(ak.diff(R, g).value, g).value / 2, g0)
+        for i in spatial:
+            q = q + grads[i] ** 2
+    # The split is checked numerically at random jets and points (it only
+    # decides how the GPU evaluates F; the result is compared with the CPU
+    # evaluator, and nothing is certified from it).
+    syms = [jet.u, jet.lap, *grads, *jet.x]
+    full = ak.compile_expr(op, syms)
+    parts = [ak.compile_expr(F0, syms)] + [ak.compile_expr(ai, syms) for ai in a]
+    bq = None if b is None else ak.compile_expr(b, syms)
+    rs = np.random.default_rng(12345)
+    vals = rs.uniform(0.3, 1.2, size=(len(syms), 8))
+    cols = [vals[k].copy() for k in range(len(syms))]
+    want = np.asarray(ak.numpy_eval(full, *cols), dtype=np.float64)
+    got = np.asarray(ak.numpy_eval(parts[0], *cols), dtype=np.float64)
+    for k, f in enumerate(parts[1:]):
+        got = got + np.asarray(ak.numpy_eval(f, *cols), dtype=np.float64) * vals[2 + k]
+    if bq is not None:
+        bv = np.asarray(ak.numpy_eval(bq, *cols), dtype=np.float64)
+        if np.all(np.abs(bv) == 0.0):
+            b = None
+        else:
+            got = got + bv * sum(vals[2 + i] ** 2 for i in spatial)
+    if not np.allclose(got, want, rtol=1e-10, atol=1e-12):
+        raise _err("the operator's gradient terms are not linear plus b·|∇u|²")
+    if b is not None and _symbols_in(b) & set(grads):
+        raise _err("the operator is not quadratic in the gradient in the supported way")
     coords = list(jet.x)
     for ai in a:
         if _symbols_in(ai) & ({jet.u, jet.lap} | set(grads)):

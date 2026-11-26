@@ -425,6 +425,11 @@ def test_torch_evaluator_matches_rust():
         assert np.allclose(g1[fin], g2[fin], rtol=1e-8, atol=1e-10)
         fits = tev.fit(es[:4], th[:4], max_iter=5)
         assert all(f.loss <= start for f, start in zip(fits, l2[:4]))
+    # A gradient inside a non-polynomial function stays on the CPU evaluator
+    # (expression operators of the form F0 + a·∇u + b|∇u|² are covered:
+    # tests/test_fex_g6.py).
+    jet = fex.Jet(2)
+    bad = fex.Problem.from_operator(jet, ak.sin(jet.grad[0]) + jet.lap)
     with pytest.raises(fex.FexError) as ei:
-        fex.TorchEvaluator(fex.Template("depth1", dim=2), _committor(2), np.zeros((4, 2)))
+        fex.TorchEvaluator(fex.Template("depth1", dim=2), bad, np.zeros((4, 2)))
     assert ei.value.code == "E-FEX-014"
