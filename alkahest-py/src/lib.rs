@@ -3834,6 +3834,94 @@ struct PyDerivedResult {
     resultant_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
 }
 
+/// Which emitter produces indefinite-integration Lean certificates
+/// (`alkahest.set_lean_certificate_mode`): 0 = `"auto"` (the reflective kernel,
+/// falling back to the tactic emitter), 1 = `"kernel_native"` (the kernel
+/// checked by `native_decide`, falling back to tactics), 2 = `"tactic"`.
+static LEAN_CERT_MODE: AtomicUsize = AtomicUsize::new(0);
+
+const LEAN_CERT_MODES: [&str; 3] = ["auto", "kernel_native", "tactic"];
+
+/// Select how indefinite-integration Lean certificates are produced.
+///
+/// ``"auto"`` (the default) emits a reflective certificate checked by the
+/// ``Alkahest.Kernel`` library with ``decide +kernel`` and falls back to the
+/// ``HasDerivAt`` tactic emitter for shapes the kernel does not encode.
+/// ``"kernel_native"`` checks the same certificate with ``native_decide``
+/// (faster on huge certificates; adds Lean's compiler to the trusted base).
+/// ``"tactic"`` uses only the tactic emitter. ``certificate_status["path"]``
+/// reports which one produced a certificate.
+#[pyfunction]
+fn set_lean_certificate_mode(mode: &str) -> PyResult<()> {
+    match LEAN_CERT_MODES.iter().position(|m| *m == mode) {
+        Some(i) => {
+            LEAN_CERT_MODE.store(i, Ordering::Relaxed);
+            Ok(())
+        }
+        None => Err(PyValueError::new_err(format!(
+            "unknown Lean certificate mode {mode:?}; expected one of {LEAN_CERT_MODES:?}"
+        ))),
+    }
+}
+
+/// The current Lean certificate mode (see :func:`set_lean_certificate_mode`).
+#[pyfunction]
+fn lean_certificate_mode() -> &'static str {
+    LEAN_CERT_MODES[LEAN_CERT_MODE.load(Ordering::Relaxed).min(2)]
+}
+
+/// An indefinite-integration certificate: `(source, path, kernel_detail)`.
+/// `path` is `"kernel"`, `"kernel_native"` or `"tactic"`; `kernel_detail` is
+/// why the kernel path withheld (when it was tried and did).
+type IntegrationCert = (Option<String>, Option<&'static str>, Option<&'static str>);
+
+impl PyDerivedResult {
+    fn integration_certificate(
+        &self,
+        integrand: ExprId,
+        var: ExprId,
+        pool: &alkahest_core::ExprPool,
+    ) -> IntegrationCert {
+        let mode = LEAN_CERT_MODE.load(Ordering::Relaxed);
+        let mut kernel_detail = None;
+        if mode < 2 {
+            let (km, path) = if mode == 1 {
+                (alkahest_core::KernelCheckMode::Native, "kernel_native")
+            } else {
+                (alkahest_core::KernelCheckMode::Kernel, "kernel")
+            };
+            match alkahest_core::emit_integration_kernel_cert(
+                self.raw.value,
+                integrand,
+                var,
+                pool,
+                km,
+            ) {
+                Ok(src) if !src.contains("sorry") && !src.contains("admit") => {
+                    return (Some(src), Some(path), None);
+                }
+                Ok(_) => kernel_detail = Some("withheld_unsupported_node"),
+                Err(e) => kernel_detail = Some(e),
+            }
+        }
+        // `HasDerivAt (fun x => F) f x` on an explicit domain, proved from
+        // F's expression tree; the older derivation-log `deriv` emitter is
+        // the fallback for anything it withholds.
+        if let Ok(src) =
+            alkahest_core::emit_integration_hasderiv_cert(self.raw.value, integrand, var, pool)
+        {
+            if !src.contains("sorry") && !src.contains("admit") {
+                return (Some(src), Some("tactic"), kernel_detail);
+            }
+        }
+        let src = alkahest_core::emit_integration_cert(self.raw.value, integrand, var, pool);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            return (None, None, kernel_detail);
+        }
+        (Some(src), Some("tactic"), kernel_detail)
+    }
+}
+
 #[pymethods]
 impl PyDerivedResult {
     /// Envelope schema version for :meth:`to_dict` / :meth:`to_json`. See
@@ -4057,25 +4145,9 @@ impl PyDerivedResult {
         if let Some((integrand, var)) = self.integration_verification_input {
             let pool_py = self.value.pool.clone_ref(py);
             let pool = pool_py.borrow(py);
-            // `HasDerivAt (fun x => F) f x` on an explicit domain, proved from
-            // F's expression tree; the older derivation-log `deriv` emitter is
-            // the fallback for anything it withholds.
-            if let Ok(src) = alkahest_core::emit_integration_hasderiv_cert(
-                self.raw.value,
-                integrand,
-                var,
-                &pool.inner,
-            ) {
-                if !src.contains("sorry") && !src.contains("admit") {
-                    return Some(src);
-                }
-            }
-            let src =
-                alkahest_core::emit_integration_cert(self.raw.value, integrand, var, &pool.inner);
-            if src.is_empty() || src.contains("sorry") || src.contains("admit") {
-                return None;
-            }
-            return Some(src);
+            // The reflective kernel certificate first (unless the mode says
+            // otherwise), then the `HasDerivAt` tactic emitters.
+            return self.integration_certificate(integrand, var, &pool.inner).0;
         }
         // Definite integrals certify the sound interval-FTC equation
         // `∫ x in a..b, f x = F b - F a` (never emitted as a false rewrite).
@@ -4222,6 +4294,20 @@ impl PyDerivedResult {
             _ => None,
         };
         status.set_item("detail", detail).unwrap();
+        // Indefinite integrals: which emitter produced the certificate
+        // (`"kernel"`, `"kernel_native"`, `"tactic"`; `None` when withheld)
+        // and, when the reflective kernel was tried and withheld, its reason.
+        let (path, kernel_detail) = match self.integration_verification_input {
+            Some((integrand, var)) => {
+                let pool_py = self.value.pool.clone_ref(py);
+                let pool = pool_py.borrow(py);
+                let (_, path, kd) = self.integration_certificate(integrand, var, &pool.inner);
+                (path, kd)
+            }
+            None => (certifiable.then_some("tactic"), None),
+        };
+        status.set_item("path", path).unwrap();
+        status.set_item("kernel_detail", kernel_detail).unwrap();
         status.set_item("blocking_steps", blocking).unwrap();
         status
     }
@@ -6792,6 +6878,67 @@ fn parametric_to_py(
         out.append(d)?;
     }
     out.into_py_any(py)
+}
+
+/// `experimental.dsolve_certificate(equation, x, y, derivs, y_of_x, native=False)`
+/// — a Lean certificate that `y = y_of_x` solves `equation = 0`.
+///
+/// `equation`, `x`, `y` and `derivs` follow :func:`dsolve`'s symbol
+/// convention (`derivs[k]` is `y⁽ᵏ⁺¹⁾`). The certificate is checked by the
+/// reflective ``Alkahest.Kernel`` library: on an explicit domain it states
+/// that each listed derivative of the solution is the derivative of the one
+/// before (``HasDerivAt``) and that the equation with them substituted is
+/// identically zero. Free constants (``C1``, …) are universally quantified.
+/// ``native=True`` closes it with ``native_decide`` instead of
+/// ``decide +kernel`` (a larger trusted base). Returns a dict with
+/// ``certificate`` (``str`` or ``None``), ``path`` (``"kernel"``,
+/// ``"kernel_native"`` or ``None``) and ``detail`` (the withheld reason).
+#[pyfunction]
+#[pyo3(
+    name = "dsolve_certificate",
+    signature = (equation, x, y, derivs, y_of_x, native=false)
+)]
+fn py_dsolve_certificate<'py>(
+    py: Python<'py>,
+    equation: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+    y: PyRef<PyExpr>,
+    derivs: Vec<PyExpr>,
+    y_of_x: PyRef<PyExpr>,
+    native: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    same_pool!("dsolve_certificate"; equation, x, y, derivs, y_of_x);
+    let pool_py = equation.pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let ids: Vec<ExprId> = derivs.iter().map(|e| e.id).collect();
+    let (mode, path) = if native {
+        (alkahest_core::KernelCheckMode::Native, "kernel_native")
+    } else {
+        (alkahest_core::KernelCheckMode::Kernel, "kernel")
+    };
+    let r = alkahest_core::emit_ode_solution_kernel_cert(
+        equation.id,
+        x.id,
+        y.id,
+        &ids,
+        y_of_x.id,
+        &pool.inner,
+        mode,
+    );
+    let out = PyDict::new(py);
+    match r {
+        Ok(src) => {
+            out.set_item("certificate", src)?;
+            out.set_item("path", path)?;
+            out.set_item("detail", py.None())?;
+        }
+        Err(e) => {
+            out.set_item("certificate", py.None())?;
+            out.set_item("path", py.None())?;
+            out.set_item("detail", e)?;
+        }
+    }
+    Ok(out)
 }
 
 /// `dsolve` input for an equation written with the applied function `y(x)`
@@ -24006,6 +24153,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     group::register(m)?;
     bigint::register(m)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(set_lean_certificate_mode, m)?)?;
+    m.add_function(wrap_pyfunction!(lean_certificate_mode, m)?)?;
     character::register(m)?;
     coding::register(m)?;
     ffield::register(m)?;
@@ -24154,6 +24303,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Experimental calculus / ODE / transform surface (PRs #152–#161).
     m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_dsolve_system, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dsolve_certificate, m)?)?;
     m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_fourier_transform, m)?)?;

@@ -20,6 +20,7 @@ on:
       - 'tests/lean_sos_corpus.py'
       - 'tests/lean_gosper_corpus.py'
       - 'tests/lean_integrate_corpus.py'
+      - 'tests/lean_ode_corpus.py'
       - 'alkahest-core/src/integrate/**'
       - 'alkahest-core/src/poly/resultant.rs'
       - 'alkahest-core/src/holonomic/**'
@@ -120,7 +121,14 @@ jobs:
 
       - name: Generate Lean proofs (indefinite-integral HasDerivAt corpus)
         run: |
+          # Default mode: reflective `Alkahest.Kernel` certificates, tactic
+          # fallback. The second run keeps the tactic emitter itself checked.
           python tests/lean_integrate_corpus.py --output /tmp/lean_integrate/
+          python tests/lean_integrate_corpus.py --mode tactic --output /tmp/lean_integrate_tactic/
+
+      - name: Generate Lean proofs (ODE solution certificates, reflective kernel)
+        run: |
+          python tests/lean_ode_corpus.py --output /tmp/lean_ode/
 
       - name: Generate Lean proofs (full deduplicated textbook-gate pool)
         run: |
@@ -140,6 +148,18 @@ jobs:
           # downloads its prebuilt oleans so Mathlib is never built from source.
           lake exe cache get
 
+      - name: Build the Alkahest.Kernel library (reflective certificate checker)
+        run: |
+          cd lean
+          # The kernel's own sources must be admission-free: every certificate
+          # that imports it inherits whatever it assumes.
+          if grep -rEn '\b(sorry|admit|axiom)\b' Alkahest Alkahest.lean; then
+            echo "Alkahest.Kernel contains an admission"
+            exit 1
+          fi
+          lake build Alkahest
+          lake env lean -DwarningAsError=true -DautoImplicit=false test/KernelSmoke.lean
+
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
@@ -148,7 +168,7 @@ jobs:
           check() {
             f="$1"
             fname=$(basename "$(dirname "$f")")/$(basename "$f")
-            if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
+            if grep -Eq '\b(sorry|admit|axiom|native_decide)\b' "$f"; then
               echo "FAILED: $fname contains an admission"
               return 1
             fi
@@ -167,7 +187,7 @@ jobs:
           export -f check
           total=0
           failed=0
-          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_integrate /tmp/lean_pool /tmp/lean_sos; do
+          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_integrate /tmp/lean_integrate_tactic /tmp/lean_ode /tmp/lean_pool /tmp/lean_sos; do
             n=$(ls "$dir"/*.lean 2>/dev/null | wc -l)
             echo "== Verifying $n certificates in $dir =="
             log=$(mktemp)
@@ -195,6 +215,8 @@ jobs:
             /tmp/lean_tendsto
             /tmp/lean_gosper
             /tmp/lean_integrate
+            /tmp/lean_integrate_tactic
+            /tmp/lean_ode
             /tmp/lean_pool
             /tmp/lean_sos
           if-no-files-found: ignore

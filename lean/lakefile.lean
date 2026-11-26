@@ -8,3 +8,7 @@ require mathlib from git
   "https://github.com/leanprover-community/mathlib4" @ "v4.36.0"
 
 package alkahestProofs
+
+-- The reflective certificate kernel (`Alkahest.Kernel`): kernel certificates
+-- `import Alkahest.Kernel`, so CI runs `lake build Alkahest` before checking them.
+lean_lib Alkahest

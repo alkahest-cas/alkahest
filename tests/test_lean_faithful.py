@@ -91,6 +91,10 @@ def _apply_lambdas(s: str) -> str:
 def lean_to_py(term: str) -> str:
     """Translate an emitted Lean real-valued term into a Python expression."""
     s = _apply_lambdas(term)
+    # The kernel renderer writes absolute values as |(term)|. Translate
+    # innermost pairs first and preserve function application by juxtaposition.
+    while match := re.search(r"\|(\([^|]*?\))\|", s):
+        s = s[: match.start()] + f"(abs{match[1]})" + s[match.end() :]
     s = re.sub(r"\s*:\s*[ℝℕ]\s*\)", ")", s)
     for lean, py in _FUNCS.items():
         s = s.replace(lean, py)

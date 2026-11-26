@@ -35,6 +35,7 @@
 - [Claim graphs](./claim-graphs.md)
 - [Lean certificates](./lean-certs.md)
   - [Certificate coverage](./certificate-coverage.md)
+  - [The reflective certificate kernel](./lean-kernel.md)
 - [Error handling](./errors.md)
 - [Autoresearch / agent loops](./search-plumbing.md)
   - [Budgets, cancellation, and determinism](./budgets.md)

@@ -314,6 +314,7 @@ from .alkahest import (  # noqa: F401
     laguerre_l,
     lambert_w,
     lambert_wm1,
+    lean_certificate_mode,
     legendre_p,
     lie_algebra,
     lie_su2,
@@ -378,6 +379,7 @@ from .alkahest import (  # noqa: F401
     satisfiable,
     sensitivity_system,
     series,
+    set_lean_certificate_mode,
     sign,
     simplify,
     simplify_auto,
@@ -3755,6 +3757,7 @@ __all__ = [
     # V2-20
     "latex",
     "lattice",
+    "lean_certificate_mode",
     "legendre_p",
     "lie_algebra",
     "lie_su2",
@@ -3856,6 +3859,7 @@ __all__ = [
     "satisfiable",
     "sensitivity_system",
     "series",
+    "set_lean_certificate_mode",
     "sign",
     # Simplification
     "simplify",
