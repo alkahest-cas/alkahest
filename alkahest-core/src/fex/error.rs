@@ -1,6 +1,9 @@
 //! Refusals raised by the FEX evaluation engine (`E-FEX-001` … `E-FEX-008`)
 //! and by finalisation (`E-FEX-009` … `E-FEX-011`, raised from Python's
-//! `alkahest.fex.finalize` / `recovery_metric`).
+//! `alkahest.fex.finalize` / `recovery_metric`), and by the F4 search layer
+//! (`E-FEX-012` … `E-FEX-014`, raised from Python's `analyze` /
+//! `transform_problem` / `reduce_problem`, `search` / `solve` and
+//! `TorchEvaluator`).
 //!
 //! Every variant names what the caller passed and what was expected. None of
 //! them is a numerical failure of a candidate: a candidate whose value
@@ -85,6 +88,24 @@ pub enum FexError {
         /// What was passed.
         detail: String,
     },
+    /// `E-FEX-012`: a dependent-variable substitution or a variable
+    /// reduction was asked of a problem it does not apply to.
+    Transform {
+        /// Why it does not apply.
+        detail: String,
+    },
+    /// `E-FEX-013`: malformed search-controller options (slot restrictions,
+    /// baseline, population, priority queue, curriculum).
+    SearchOptions {
+        /// Which option and why.
+        detail: String,
+    },
+    /// `E-FEX-014`: the GPU (PyTorch) evaluator is unavailable or does not
+    /// cover the problem.
+    Backend {
+        /// What is missing.
+        detail: String,
+    },
 }
 
 impl fmt::Display for FexError {
@@ -106,6 +127,9 @@ impl fmt::Display for FexError {
             FexError::Finalize { detail } => write!(f, "FEX finalize: {detail}"),
             FexError::Family { detail } => write!(f, "FEX problem family: {detail}"),
             FexError::Recovery { detail } => write!(f, "FEX recovery metric: {detail}"),
+            FexError::Transform { detail } => write!(f, "FEX transform: {detail}"),
+            FexError::SearchOptions { detail } => write!(f, "FEX search options: {detail}"),
+            FexError::Backend { detail } => write!(f, "FEX evaluator backend: {detail}"),
         }
     }
 }
@@ -126,6 +150,9 @@ impl AlkahestError for FexError {
             FexError::Finalize { .. } => "E-FEX-009",
             FexError::Family { .. } => "E-FEX-010",
             FexError::Recovery { .. } => "E-FEX-011",
+            FexError::Transform { .. } => "E-FEX-012",
+            FexError::SearchOptions { .. } => "E-FEX-013",
+            FexError::Backend { .. } => "E-FEX-014",
         }
     }
 
@@ -163,6 +190,15 @@ impl AlkahestError for FexError {
             }
             FexError::Recovery { .. } => {
                 "pass two Expr from the same ExprPool (or a SearchResult / finalize result for 'found')"
+            }
+            FexError::Transform { .. } => {
+                "propose only the transforms analyze() lists for this problem: u = e^v needs an operator that is homogeneous in u (rhs = 0) or an eigenproblem, and boundary data that are positive or absent; a variable reduction needs operator and data free of the dropped coordinates once their derivatives vanish"
+            }
+            FexError::SearchOptions { .. } => {
+                "give slot_ops as {'leaf' | 'unary' | 'binary': [operator names]} or one list of names per slot, naming operators of the template's tables and leaving every slot at least one; baseline is 'quantile', 'ewma' or 'mean'; population, pqt_size and curriculum are non-negative integers"
+            }
+            FexError::Backend { .. } => {
+                "install PyTorch (with CUDA for device='cuda'), and use the GPU evaluator for the built-in problems (poisson, transport, cubic_schrodinger, eigen); operators written as expressions and the centred loss run on alkahest.fex.Evaluator"
             }
         })
     }

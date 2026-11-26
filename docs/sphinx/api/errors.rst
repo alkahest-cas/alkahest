@@ -560,6 +560,17 @@ Exception subclasses
      reduce to the problem at the problem's own dimension
    - ``E-FEX-011`` — :func:`alkahest.fex.recovery_metric` was not given two
      expressions
+   - ``E-FEX-012`` — :func:`alkahest.fex.transform_problem` /
+     :func:`alkahest.fex.reduce_problem` were asked for a substitution or a
+     variable reduction that does not apply (``u = e^v`` of an
+     inhomogeneous problem, a dropped coordinate the operator still reads)
+   - ``E-FEX-013`` — malformed controller options for
+     :func:`alkahest.fex.search` / :func:`alkahest.fex.solve` (an operator
+     outside the template's tables in ``slot_ops``, a slot with nothing
+     allowed, an unknown baseline)
+   - ``E-FEX-014`` — :class:`alkahest.fex.TorchEvaluator` is unavailable
+     (no PyTorch or no CUDA) or does not cover the problem (operators given
+     as expressions, the centred loss)
 
 .. exception:: JitError
 

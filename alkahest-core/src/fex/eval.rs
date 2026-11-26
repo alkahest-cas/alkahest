@@ -697,7 +697,7 @@ impl Evaluator {
     }
 
     fn require_ls(&self, what: &str) -> Result<(), FexError> {
-        if self.problem.loss != LossKind::LeastSquares {
+        if !self.problem.loss.is_least_squares() {
             return Err(FexError::LossKind {
                 detail: format!(
                     "{what} needs a least-squares problem, this one is {:?}",
@@ -744,12 +744,12 @@ impl Evaluator {
         ops: &[NodeOp],
         th: &[f64],
         r: &mut [f64],
-        jac: Option<&mut [f64]>,
+        mut jac: Option<&mut [f64]>,
     ) -> bool {
         let np = self.template.n_params();
         let ti = self.tables(&self.int, ops);
         let tb = self.tables(&self.bd, ops);
-        let ok = match jac {
+        let ok = match jac.as_deref_mut() {
             Some(j) => {
                 let tasks: Vec<(usize, &mut [f64], &mut [f64])> = r
                     .chunks_mut(CHUNK)
@@ -782,6 +782,32 @@ impl Evaluator {
         };
         if !ok {
             r.fill(f64::INFINITY);
+        } else if self.problem.loss == LossKind::CenteredLeastSquares {
+            // Remove the interior mean from the interior rows (and from each
+            // Jacobian column): the residual minimised over an additive
+            // constant. Interior rows share one weight, so this is the
+            // weighted residual's mean.
+            let ni = self.int.n;
+            let mean = r[..ni].iter().sum::<f64>() / ni as f64;
+            for v in &mut r[..ni] {
+                *v -= mean;
+            }
+            if let Some(j) = jac {
+                let mut col = vec![0.0; np];
+                for row in j[..ni * np].chunks(np) {
+                    for (c, v) in col.iter_mut().zip(row) {
+                        *c += v;
+                    }
+                }
+                for c in &mut col {
+                    *c /= ni as f64;
+                }
+                for row in j[..ni * np].chunks_mut(np) {
+                    for (v, c) in row.iter_mut().zip(&col) {
+                        *v -= c;
+                    }
+                }
+            }
         }
         ok
     }
@@ -935,6 +961,7 @@ impl Evaluator {
                 self.scalar_loss(ops, th, grad.is_some(), Some(power))
             }
             LossKind::Rayleigh => self.scalar_loss(ops, th, grad.is_some(), None),
+            LossKind::CenteredLeastSquares => self.centered_loss(ops, th, grad.is_some()),
         };
         match out {
             Some((l, g)) if l.is_finite() && g.iter().all(|v| v.is_finite()) => {
@@ -963,6 +990,39 @@ impl Evaluator {
             .step_by(CHUNK)
             .map(|r0| (r0, (r0 + CHUNK).min(m)))
             .collect()
+    }
+
+    /// The centred least-squares loss: residual rows (and the Jacobian when
+    /// a gradient is wanted) through [`Self::cand_rows`], which removes the
+    /// interior mean; then `Σ r²` and `2 Jᵀ r`.
+    fn centered_loss(
+        &self,
+        ops: &[NodeOp],
+        th: &[f64],
+        want_grad: bool,
+    ) -> Option<(f64, Vec<f64>)> {
+        let np = self.template.n_params();
+        let m = self.n_residuals();
+        let mut r = vec![0.0; m];
+        let mut j = if want_grad {
+            vec![0.0; m * np]
+        } else {
+            Vec::new()
+        };
+        let ok = self.cand_rows(ops, th, &mut r, want_grad.then_some(&mut j[..]));
+        if !ok {
+            return None;
+        }
+        let loss = r.iter().map(|v| v * v).sum();
+        let mut g = if want_grad { vec![0.0; np] } else { Vec::new() };
+        if want_grad {
+            for (row, rv) in j.chunks(np).zip(&r) {
+                for (gp, jv) in g.iter_mut().zip(row) {
+                    *gp += 2.0 * rv * jv;
+                }
+            }
+        }
+        Some((loss, g))
     }
 
     /// `Σ r²` and (optionally) `Σ 2 r ∂r/∂θ`, without storing the Jacobian.

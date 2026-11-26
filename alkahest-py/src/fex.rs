@@ -504,9 +504,10 @@ impl PyFexProblem {
             "least_squares" | "ls" => LossKind::LeastSquares,
             "normalized" => LossKind::Normalized { power },
             "rayleigh" => LossKind::Rayleigh,
+            "centered" | "least_squares_centered" => LossKind::CenteredLeastSquares,
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown loss {other:?}; use least_squares, normalized or rayleigh"
+                    "unknown loss {other:?}; use least_squares, normalized, rayleigh or centered"
                 )))
             }
         };
@@ -537,6 +538,7 @@ impl PyFexProblem {
             LossKind::LeastSquares => "least_squares",
             LossKind::Normalized { .. } => "normalized",
             LossKind::Rayleigh => "rayleigh",
+            LossKind::CenteredLeastSquares => "centered",
             _ => "other",
         }
     }

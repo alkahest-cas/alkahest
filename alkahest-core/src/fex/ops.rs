@@ -35,6 +35,8 @@ pub enum UnaryOp {
     Log,
     /// `|s|`; its derivatives are taken as `sign(s)` and `0`.
     Abs,
+    /// `tanh(s)` (in the committor FEX paper's table, Song–Cameron–Yang).
+    Tanh,
 }
 
 /// A binary operator in the FEX table 𝔹.
@@ -52,7 +54,7 @@ pub enum BinaryOp {
 }
 
 /// Every unary operator, in a fixed order (used to index per-operator caches).
-pub const ALL_UNARY: [UnaryOp; 11] = [
+pub const ALL_UNARY: [UnaryOp; 12] = [
     UnaryOp::Zero,
     UnaryOp::One,
     UnaryOp::Id,
@@ -64,6 +66,7 @@ pub const ALL_UNARY: [UnaryOp; 11] = [
     UnaryOp::Cos,
     UnaryOp::Log,
     UnaryOp::Abs,
+    UnaryOp::Tanh,
 ];
 
 /// The FEX paper's unary table, in the reference implementation's order:
@@ -86,7 +89,7 @@ pub const PAPER_BINARY: [BinaryOp; 3] = [BinaryOp::Add, BinaryOp::Mul, BinaryOp:
 
 impl UnaryOp {
     /// Parse a table entry: `0`, `1`, `id`, `sq`, `cube`, `quartic`, `exp`,
-    /// `sin`, `cos`, `log`, `abs` (plus a few aliases such as `x^2`).
+    /// `sin`, `cos`, `log`, `abs`, `tanh` (plus a few aliases such as `x^2`).
     pub fn parse(name: &str) -> Result<UnaryOp, FexError> {
         let n = name.trim().to_ascii_lowercase();
         Ok(match n.as_str() {
@@ -101,6 +104,7 @@ impl UnaryOp {
             "cos" => UnaryOp::Cos,
             "log" | "ln" => UnaryOp::Log,
             "abs" => UnaryOp::Abs,
+            "tanh" => UnaryOp::Tanh,
             _ => {
                 return Err(FexError::UnknownOperator {
                     name: name.to_string(),
@@ -124,6 +128,7 @@ impl UnaryOp {
             UnaryOp::Cos => "cos",
             UnaryOp::Log => "log",
             UnaryOp::Abs => "abs",
+            UnaryOp::Tanh => "tanh",
         }
     }
 
@@ -174,6 +179,12 @@ impl UnaryOp {
                 }
             }
             UnaryOp::Abs => [s.abs(), if s >= 0.0 { 1.0 } else { -1.0 }, 0.0, 0.0],
+            UnaryOp::Tanh => {
+                // t = tanh s: t' = 1 − t², t'' = −2t(1 − t²), t''' = (1 − t²)(6t² − 2).
+                let t = s.tanh();
+                let q = 1.0 - t * t;
+                [t, q, -2.0 * t * q, q * (6.0 * t * t - 2.0)]
+            }
         }
     }
 
@@ -191,6 +202,7 @@ impl UnaryOp {
             UnaryOp::Cos => pool.func("cos", vec![arg]),
             UnaryOp::Log => pool.func("log", vec![arg]),
             UnaryOp::Abs => pool.func("abs", vec![arg]),
+            UnaryOp::Tanh => pool.func("tanh", vec![arg]),
         }
     }
 }
