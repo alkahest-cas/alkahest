@@ -824,12 +824,13 @@ fn real_somewhere(v: ExprId, pool: &ExprPool) -> bool {
     }
     let syms: Vec<ExprId> = super::jet::symbols_of(v, pool).into_iter().collect();
     let mut any_eval = false;
-    for k in 0..6 {
-        let mut env = super::solve::util::sample_env(&syms, k);
-        if k % 2 == 1 {
-            for v in env.values_mut() {
-                *v = -*v;
-            }
+    // Preserve the small probes and also sample outside the unit-scale box.
+    // A real wave number can require |kappa| > 2 for its speed to be real.
+    for k in 0..12 {
+        let mut env = super::solve::util::sample_env(&syms, k % 6);
+        let scale = if k < 6 { 1.0 } else { 4.0 };
+        for value in env.values_mut() {
+            *value *= if k % 2 == 0 { scale } else { -scale };
         }
         match crate::jit::eval_interp(v, &env, pool) {
             Some(x) if x.is_finite() => return true,
