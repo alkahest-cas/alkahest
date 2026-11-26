@@ -33,7 +33,10 @@ mod kernel;
 mod piecewise;
 mod zeilberger;
 pub use hasderiv::{emit_integration_hasderiv_cert, IntegrationCertWithheld};
-pub use kernel::{emit_integration_kernel_cert, emit_ode_solution_kernel_cert, KernelCheckMode};
+pub use kernel::{
+    emit_integration_kernel_cert, emit_ode_solution_kernel_cert, emit_pde_kernel_cert,
+    KernelCheckMode,
+};
 pub use zeilberger::emit_zeilberger_cert;
 
 // ---------------------------------------------------------------------------

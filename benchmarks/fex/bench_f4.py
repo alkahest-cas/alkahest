@@ -17,7 +17,22 @@ Cameron & Yang, arXiv 2306.12268):
   ``β⁻¹ = 0.2``, ``d = 10``: ``β⁻¹Δq − ∇V·∇q = 0`` with ``q = 0`` at
   ``x₁ = −1`` and ``q = 1`` at ``x₁ = 1`` (reference: the exact 1-D
   committor ``∫e^{β(y²−1)²}`` by quadrature). Operator table: the paper's
-  plus ``tanh``, as in Song–Cameron–Yang.
+  plus ``tanh``, as in Song–Cameron–Yang;
+* the high-dimensional PIDEs of Hardwick, Liang & Yang (FEX-PG,
+  arXiv 2410.00835, §4.3), ``d`` spatial coordinates plus ``t ∈ [0, 1]``,
+  ``x ∈ [−1, 1]^d``, terminal condition ``u(1, x) = |x|²/d``, jumps
+  ``z ~ N(μ, σ²)`` i.i.d. per coordinate at rate ``λ``:
+
+  - ``pide4`` (their eq. 32): ``u_t + ½θ²Δu + λ∫(u(x+z) − u − z·∇u)φ(z)dz =
+    λ(μ² + σ²) + θ²`` with ``θ = 0.3``, ``λ = 0.3``, ``μ = 1``, ``σ² = 10⁻⁴``
+    (``ε = 0``, so no drift);
+  - ``pide5`` (their eq. 33): drift ``(ε/2)|x|·x``, ``σ = θ(I + S)`` lower
+    bidiagonal, ``ε = 0.05``, ``θ = 0.2``, ``λ = 0.3``, jump standard
+    deviation ``10⁻⁴`` and ``μ = 1`` (the paper does not state ``μ``). The
+    right-hand side is the one the stated solution satisfies,
+    ``λ(μ² + σ²) + (2d−1)/d·θ² + (ε/d)|x|³``: with ``σ`` as printed,
+    ``½Tr(σσᵀ·(2/d)I) = (2d−1)/d·θ²``, not the paper's ``(2d−2)/d·θ²``
+    (see ``tests/test_fex_g6.py``).
 
 Modes:
 
@@ -60,6 +75,8 @@ PAPER_DIMS = {
     "eigen": [10, 12, 14, 16, 18],
     "eigen_quartic": [10, 12, 14, 16, 18],
     "committor": [10],
+    "pide4": [2, 4, 6, 8, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+    "pide5": [25, 50, 75, 100],
 }
 
 # ---------------------------------------------------------------------------
@@ -167,9 +184,91 @@ def make(kind: str, d: int, rng: np.random.Generator, n_test: int = 20000):
         exact = lambda p: np.interp(p[:, 0], y, q)  # noqa: E731
         unary = [*unary, "tanh"]
         mode = "plain"
+    elif kind in ("pide4", "pide5"):
+        prob = make_pide(kind, d)
+        dim = d + 1
+        xi = fex.sample_box(5000, dim, -1.0, 1.0, rng)
+        xi[:, 0] = rng.uniform(0.0, 1.0, 5000)
+        xb = fex.sample_initial_slice(1000, dim, -1.0, 1.0, 0, 1.0, rng)
+        xt = fex.sample_box(n_test, dim, -1.0, 1.0, rng)
+        xt[:, 0] = rng.uniform(0.0, 1.0, n_test)
+        exact = lambda p: (p[:, 1:] ** 2).sum(1) / d  # noqa: E731
+        mode = "plain"
     else:
         raise ValueError(kind)
     return prob, xi, xb, xt, exact, unary, mode
+
+
+def make_pide(kind: str, d: int):
+    """The FEX-PG benchmark PIDEs (``d`` spatial coordinates; coordinate 0
+    is ``t``), with exact constants."""
+    from fractions import Fraction as Q
+
+    jet = fex.Jet(d + 1, time=0)
+    pool = jet.pool
+    x = jet.x[1:]
+    lam, mu = Q(3, 10), Q(1)
+    r2 = sum(v**2 for v in x)
+    if kind == "pide4":
+        theta, var = Q(3, 10), Q(1, 10000)
+        rhs = lam * (mu**2 + var) + theta**2
+        return fex.Problem.pide(
+            d + 1,
+            time=0,
+            diffusion=theta,
+            jump=fex.GaussianJump(lam, mu, var),
+            rhs=pool.rational(rhs.numerator, rhs.denominator),
+            terminal=r2 / d,
+            T=1,
+            jet=jet,
+        )
+    eps, theta, var = Q(1, 20), Q(1, 5), Q(1, 10**8)
+    c0 = lam * (mu**2 + var) + Q(2 * d - 1, d) * theta**2
+    c1 = eps / d
+    rhs = pool.rational(c0.numerator, c0.denominator) + pool.rational(
+        c1.numerator, c1.denominator
+    ) * r2 ** pool.rational(3, 2)
+    half_eps = eps / 2
+    return fex.Problem.pide(
+        d + 1,
+        time=0,
+        drift=fex.RadialDrift(
+            lambda r: pool.rational(half_eps.numerator, half_eps.denominator) * r
+        ),
+        diffusion=fex.BidiagonalDiffusion(theta),
+        jump=fex.GaussianJump(lam, mu, var),
+        rhs=rhs,
+        terminal=r2 / d,
+        T=1,
+        jet=jet,
+    )
+
+
+def pide_family(kind: str, prob):
+    """The FEX-PG problem family in symbolic ``d`` (for ``finalize(family=)``):
+    ``pide5``'s right-hand side has a ``(2d − 1)/d`` that one dimension does
+    not determine."""
+    if kind != "pide5":
+        return None
+    import alkahest as ak
+
+    fs = fex.family_symbols(prob)
+    pool = fs.pool
+    lam, mu, var, theta, eps = (
+        pool.rational(3, 10),
+        pool.integer(1),
+        pool.rational(1, 10**8),
+        pool.rational(1, 5),
+        pool.rational(1, 20),
+    )
+    r2 = fs.sum(lambda xi: xi**2)
+    rhs = (
+        lam * (mu**2 + var)
+        + (2 * fs.d - 1) / fs.d * theta**2
+        + eps / fs.d * r2 ** pool.rational(3, 2)
+    )
+    _ = ak
+    return {"rhs": rhs, "bc": r2 / fs.d}
 
 
 def rel_l2(res, prob, xt, exact, mode) -> float:
@@ -258,10 +357,10 @@ def run_one(kind, d, seed, method, epochs, do_finalize, controller=None):
     if lam is not None:
         row["eigenvalue"] = lam
         row["eigenvalue_rel_err"] = abs(lam - prob.reference_eigenvalue) / prob.reference_eigenvalue
-    if do_finalize and err <= 1e-4 and kind != "committor" and kind != "eigen_quartic":
+    if do_finalize and err <= 1e-4 and kind not in ("committor", "eigen_quartic"):
         t1 = time.perf_counter()
         try:
-            out = fex.finalize(res, prob)
+            out = fex.finalize(res, prob, family=pide_family(kind, prob))
             v = out["verification"]
             row["finalize_s"] = round(time.perf_counter() - t1, 2)
             row["finalize_exact"] = out["exact"]
@@ -271,6 +370,21 @@ def run_one(kind, d, seed, method, epochs, do_finalize, controller=None):
             row["verified_symbolic_d_interior"] = (v["symbolic_d"] or {}).get("interior_verified")
             row["eigenvalue_exact"] = out.get("eigenvalue")
             row["expr"] = str(out["expr"])[:240]
+            cert = out.get("certificate") or {}
+            row["certificate"] = cert.get("status")
+            row["certificate_path"] = cert.get("path")
+            row["certificate_reason"] = cert.get("reason")
+            if cert.get("lean") and getattr(run_one, "lean_dir", None):
+                import hashlib
+
+                h = hashlib.sha1(cert["lean"].encode()).hexdigest()[:10]
+                fn = f"{run_one.lean_dir}/{kind}_{d}_{seed}_{method}_{h}.lean"
+                with open(fn, "w") as f:
+                    f.write(cert["lean"])
+                row["certificate_file"] = fn
+            conc = v["concrete"] or {}
+            if "taylor_exact_on_solution" in conc:
+                row["taylor_exact_on_solution"] = conc["taylor_exact_on_solution"]
         except Exception as exc:  # report, never hide
             row["finalize_error"] = f"{type(exc).__name__}: {exc}"[:200]
     return row
@@ -408,9 +522,10 @@ def table(args) -> list[dict]:
         groups.setdefault((r["problem"], r["d"]), {}).setdefault(r["method"], []).append(r)
     print(
         "| problem | d | method | solved | time to solution (median s) | total (median s) "
-        "| candidates | rel. L² (median) | finalize proves (fitted d / all d) |"
+        "| candidates | rel. L² (median) | finalize (median s) "
+        "| finalize proves (fitted d / all d) | Lean certificate emitted |"
     )
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for (kind, d), by in groups.items():
         for m in ("unpruned", "pruned", "soft"):
             rs = by.get(m, [])
@@ -420,12 +535,14 @@ def table(args) -> list[dict]:
             fin = sum(1 for r in rs if r.get("verified_concrete_interior"))
             sym = sum(1 for r in rs if r.get("verified_symbolic_d_interior"))
             tts = _median([r["seconds_to_target"] for r in rs])
+            cert = sum(1 for r in rs if r.get("certificate") == "emitted")
             print(
                 f"| {kind} | {d} | {m} | {len(ok)}/{len(rs)} | {_fmt(tts)} "
                 f"| {_fmt(_median([r['seconds'] for r in rs]))} "
                 f"| {_median([r['candidates_scored'] for r in rs])} "
                 f"| {_fmt(_median([r['rel_l2'] for r in rs]), '{:.1e}')} "
-                f"| {fin}/{sym} of {len(rs)} |"
+                f"| {_fmt(_median([r.get('finalize_s') for r in rs]))} "
+                f"| {fin}/{sym} of {len(rs)} | {cert}/{len(rs)} |"
             )
     return []
 
@@ -443,7 +560,9 @@ def main(argv=None) -> int:
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--no-finalize", action="store_true")
     ap.add_argument("--json")
+    ap.add_argument("--lean-dir", help="write each emitted Lean certificate here")
     args = ap.parse_args(argv)
+    run_one.lean_dir = args.lean_dir
     rows = {"suite": suite, "controller": controller, "gpu": gpu, "table": table}[args.mode](args)
     if args.json and args.mode != "table":
         with open(args.json, "w") as f:

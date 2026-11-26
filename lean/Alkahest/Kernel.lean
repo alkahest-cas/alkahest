@@ -12,5 +12,7 @@ theorem per checker turns `check data = true` into the mathematical statement.
 * `Alkahest.Kernel.Deriv` — symbolic derivative `D` and `HasDerivAt` soundness
 * `Alkahest.Kernel.Rel`   — atom relations (`sin² + cos² = 1`, `u·u⁻¹ = 1`, …)
 * `Alkahest.Kernel.Check` — `checkEq`, `checkIntegral` and their soundness
+* `Alkahest.Kernel.Pde`   — `checkPde`: PDE residuals on the jet `(u, Δu, ∇u)`
 -/
 import Alkahest.Kernel.Check
+import Alkahest.Kernel.Pde

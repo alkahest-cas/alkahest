@@ -178,8 +178,134 @@ _CLOSE = (
 )
 
 
-def concrete_certificate(kind, expr, coords, time, src, concrete, exact) -> dict[str, Any]:
-    """The Lean certificate dict for a finalised concrete-``d`` solution."""
+#: Largest dimension a reflective-kernel certificate is emitted for.
+MAX_KERNEL_DIM = 64
+
+
+def _pull_exp_constants(e: Any) -> Any:
+    """``exp(q·log c + rest) → c^q · exp(rest)`` (integer ``q``): the same
+    function, written so the kernel's exponential atoms are rational
+    multiples of one another (``exp(−log 3 + S/d)³`` against ``exp(2S/d)``)."""
+    from ._fex_finalize import _children, _number_value, _rebuild
+
+    pool = e._pool
+
+    def f(node: Any, kids: list) -> Any:
+        nd = node.node()
+        if not (nd[0] == "func" and nd[1] == "exp" and len(kids) == 1):
+            return None
+        a = kids[0]
+        terms = _children(a) if a.node()[0] == "add" else [a]
+        keep, pulled = [], []
+        for t in terms:
+            fs = _children(t) if t.node()[0] == "mul" else [t]
+            nums = [c for c in fs if _number_value(c) is not None]
+            rest = [c for c in fs if _number_value(c) is None]
+            q = Fraction(1)
+            for c in nums:
+                v = _number_value(c)
+                q = q * v if isinstance(v, Fraction) else None
+                if q is None:
+                    break
+            if (
+                q is not None
+                and q.denominator == 1
+                and len(rest) == 1
+                and rest[0].node()[0] == "func"
+                and rest[0].node()[1] == "log"
+            ):
+                (c,) = _children(rest[0])
+                if _num(c) is not None and _num(c) > 0:
+                    pulled.append(c ** int(q.numerator))
+                    continue
+            keep.append(t)
+        if not pulled:
+            return None
+        inner = pool.integer(0)
+        for t in keep:
+            inner = inner + t
+        out = _ak.exp(inner)
+        for c in pulled:
+            out = c * out
+        return out
+
+    return _rebuild(e, f)
+
+
+def kernel_certificate(kind, expr, coords, time, src, native: bool = False) -> dict[str, Any]:
+    """A reflective-kernel certificate (``Alkahest.Kernel.Pde``) that the
+    operator vanishes on the jet of ``expr`` everywhere: Poisson, the cubic
+    Schrödinger equation, the eigenproblem and linear transport. Returns the
+    certificate dict, ``status`` ``"emitted"`` or ``"withheld"``."""
+    from .alkahest import _pde_kernel_certificate
+
+    pool = coords[0]._pool
+    out: dict[str, Any] = {"status": "withheld", "externally_verified": False}
+    if len(coords) > MAX_KERNEL_DIM:
+        out["reason"] = WITHHELD_TOO_LARGE
+        out["detail"] = f"dimension {len(coords)} > {MAX_KERNEL_DIM}"
+        return out
+    u = pool.symbol("u")
+    lap = pool.symbol("lap_u")
+    grad = [pool.symbol(f"u_x{k}") for k in range(len(coords))]
+    rhs = src.get("rhs")
+    pot = src.get("potential")
+    if kind == "transport":
+        op = None
+        for c, g in zip(src["coeffs"], grad):
+            if _ak.is_zero(c) is True:
+                continue
+            op = c * g if op is None else op + c * g
+        use_grad = True
+    elif kind in ("poisson", "cubic_schrodinger", "eigen") and time is None:
+        op = -lap
+        if kind == "cubic_schrodinger":
+            op = op + u**3
+        if pot is not None:
+            op = op + pot * u
+        if kind == "eigen":
+            lam = src.get("eigenvalue")
+            if lam is None:
+                out["reason"] = WITHHELD_INEXACT
+                return out
+            op = op - lam * u
+        use_grad = False
+    else:
+        out["reason"] = WITHHELD_OPERATOR
+        return out
+    if op is None:
+        out["reason"] = WITHHELD_OPERATOR
+        return out
+    if rhs is not None:
+        op = op - rhs
+    sol = _pull_exp_constants(expr)
+    r = _pde_kernel_certificate(op, sol, list(coords), u, lap, grad if use_grad else [], native)
+    if r["certificate"] is None:
+        out["reason"] = str(r["detail"])
+        out["path"] = None
+        return out
+    out.update(
+        {
+            "status": "emitted",
+            "reason": "emitted",
+            "theorem": "fex_pde",
+            "path": r["path"],
+            "lean": r["certificate"],
+            "solution_form": str(sol),
+            "covers": "the PDE residual at every point of ℝ^d, with Mathlib's deriv along each "
+            "coordinate line (boundary conditions are not part of the theorem)",
+        }
+    )
+    return out
+
+
+def concrete_certificate(
+    kind, expr, coords, time, src, concrete, exact, *, prefer: str = "kernel"
+) -> dict[str, Any]:
+    """The Lean certificate dict for a finalised concrete-``d`` solution:
+    the reflective kernel (``prefer="kernel"``, any of Poisson, cubic
+    Schrödinger, eigen, transport), falling back to the ``HasDerivAt``
+    tactic proof for Poisson and transport."""
     out: dict[str, Any] = {"status": "withheld", "externally_verified": False}
     if not exact:
         out["reason"] = WITHHELD_INEXACT
@@ -187,6 +313,16 @@ def concrete_certificate(kind, expr, coords, time, src, concrete, exact) -> dict
     if not concrete or not concrete.get("interior_verified"):
         out["reason"] = WITHHELD_NOT_VERIFIED
         return out
+    kernel_reason = None
+    if prefer == "kernel" and src is not None:
+        try:
+            kc = kernel_certificate(kind, expr, coords, time, src)
+        except Exception as exc:  # an emitter refusal is a withheld certificate
+            kc = {"status": "withheld", "reason": WITHHELD_NODE, "detail": str(exc)}
+        if kc["status"] == "emitted":
+            return kc
+        kernel_reason = kc.get("reason")
+        out["kernel_reason"] = kernel_reason
     if kind not in ("poisson", "transport") or src is None:
         out["reason"] = WITHHELD_OPERATOR
         out["detail"] = "certificates cover -Δu = f and Σ c_k ∂u/∂x_k = f"
@@ -209,6 +345,7 @@ def concrete_certificate(kind, expr, coords, time, src, concrete, exact) -> dict
             "lean": src_text,
             "covers": "the PDE residual at every point of ℝ^d (boundary conditions are "
             "not part of the theorem)",
+            "path": "tactic",
         }
     )
     return out

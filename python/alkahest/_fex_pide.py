@@ -339,7 +339,7 @@ def build(
             r2 = None
             for i in spatial:
                 r2 = x[i] ** 2 if r2 is None else r2 + x[i] ** 2
-            beta = drift.coefficient(_ak.sqrt(r2), pool)
+            beta = drift.coefficient(r2 ** pool.rational(1, 2), pool)
             if _ak.is_zero(beta) is not True:
                 bg = None
                 for i in spatial:
@@ -531,6 +531,26 @@ def _term_expectation(term: Any, zs: list[Any], mean: Any, var: Any, pool: Any) 
     return out
 
 
+def _sum_terms(e: Any, cap: int = 20000) -> list[Any]:
+    """``e`` as a list of product terms (``expand`` may keep a numeric
+    content factor outside a sum: ``¼·(x² + 2xz + …)``)."""
+    nd = e.node()
+    if nd[0] == "add":
+        out: list[Any] = []
+        for c in _kids(e):
+            out.extend(_sum_terms(c, cap))
+        return out
+    if nd[0] == "mul":
+        acc: list[Any] = [None]
+        for c in _kids(e):
+            ts = _sum_terms(c, cap)
+            if len(acc) * len(ts) > cap:
+                raise NoClosedForm("the expanded candidate is too large")
+            acc = [t if a is None else a * t for a in acc for t in ts]
+        return acc if acc != [None] else [e]
+    return [e]
+
+
 def gaussian_expectation(
     expr: Any,
     coords: list[Any],
@@ -553,7 +573,7 @@ def gaussian_expectation(
     else:
         mp = {x: x + z for x, z in zip(coords, zs)}
     e = _ak.expand(_ak.subs(expr, mp))
-    terms = _kids(e) if e.node()[0] == "add" else [e]
+    terms = _sum_terms(e)
     out = None
     for t in terms:
         v = _term_expectation(t, zs, mean, var, pool)
@@ -619,7 +639,7 @@ def pide_residual_concrete(u: Any, problem: Any, src: dict, *, exact_jump: bool 
         r2 = None
         for i in spatial:
             r2 = coords[i] ** 2 if r2 is None else r2 + coords[i] ** 2
-        beta = drift.coefficient(_ak.sqrt(r2), pool)
+        beta = drift.coefficient(r2 ** pool.rational(1, 2), pool)
         for i in spatial:
             r = r + beta * coords[i] * _ak.diff(u, coords[i]).value
     elif drift is not None:
@@ -717,6 +737,31 @@ def jump_operator_symbolic(u: Any, fs: Any, jump: GaussianJump) -> Any:
     return lam * (eu - u - mu * _sum_partials_indexed(u, fs))
 
 
+def _first_coordinate_second_partial(u: Any, fs: Any) -> Any:
+    """``∂²u/∂x₁²`` for ``u`` affine in its sums ``Σᵢ fₖ(xᵢ)``:
+    ``Σₖ (∂u/∂Sₖ)·fₖ''(x₁)``; refuses any other ``u``."""
+    from ._fex_finalize import _rebuild
+    from .experimental import Indexed
+
+    pool = fs.pool
+    sums = _sum_nodes(u)
+    stand = [pool.symbol(f"__fex_S{k}") for k in range(len(sums))]
+    mp = dict(zip(sums, stand))
+    g = _rebuild(u, lambda node, _k: mp.get(node))
+    if not _affine_in(g, stand):
+        raise NoClosedForm("a bidiagonal diffusion lifts only for u affine in its sums")
+    x1 = Indexed(fs.x, pool.integer(1))
+    out = pool.integer(0)
+    for s_node, s_sym in zip(sums, stand):
+        args = s_node.node()[2]
+        body, k = args[0], args[1]
+        w = pool.symbol("__fex_w1")
+        f = _ak.subs(body, {Indexed(fs.x, k): w})
+        f2 = _ak.diff(_ak.diff(f, w).value, w).value
+        out = out + _ak.diff(g, s_sym).value * _ak.subs(f2, {w: x1})
+    return out
+
+
 def pide_operator_symbolic(u: Any, fs: Any, desc: dict, src: dict) -> Any:
     """The PIDE residual for symbolic ``d``."""
     from .experimental import Indexed, Sum, laplacian_indexed, simplify_sums
@@ -731,7 +776,7 @@ def pide_operator_symbolic(u: Any, fs: Any, desc: dict, src: dict) -> Any:
             raise NoClosedForm("only a radial drift β(|x|)·x lifts to symbolic d")
         j = pool.symbol("j", "integer")
         xj = Indexed(fs.x, j)
-        R = _ak.sqrt(Sum(fs.xi() ** 2, fs.i, 1, fs.d))
+        R = Sum(fs.xi() ** 2, fs.i, 1, fs.d) ** pool.rational(1, 2)
         beta = drift.coefficient(R, pool)
         if _ak.is_zero(beta) is not True:
             one = pool.integer(1)
@@ -740,22 +785,14 @@ def pide_operator_symbolic(u: Any, fs: Any, desc: dict, src: dict) -> Any:
     diff_ = desc["diffusion"]
     if diff_ is not None:
         if isinstance(diff_, BidiagonalDiffusion):
+            # σσᵀ has (1, 1 + c², …, 1 + c²) on its diagonal and c next to
+            # it. For u affine in its sums the Hessian is diagonal, so
+            # ½Tr(σσᵀ∇²u) = ½θ²((1 + c²)Δu − c²·∂₁²u).
             th = to_expr(diff_.theta, pool)
             c = to_expr(diff_.sub, pool)
-            j = pool.symbol("j", "integer")
-            xj = Indexed(fs.x, j)
-            xjm = Indexed(fs.x, j - 1)
-            one, two = pool.integer(1), pool.integer(2)
+            d11 = _first_coordinate_second_partial(u, fs)
             lap = laplacian_indexed(u, fs.x, 1, fs.d)
-            # ½θ²[Δu + c² Σ_{j≥2} ∂²_{j−1}u + 2c Σ_{j≥2} ∂_{j−1}∂_j u]
-            d_jm = _ak.diff(u, xjm).value
-            dd = simplify_sums(_ak.diff(d_jm, xjm).value, [(j, two, fs.d)])
-            mixed = simplify_sums(_ak.diff(d_jm, xj).value, [(j, two, fs.d)])
-            extra = c**2 * simplify_sums(Sum(dd, j, 2, fs.d)) + 2 * c * simplify_sums(
-                Sum(mixed, j, 2, fs.d)
-            )
-            r = r + th**2 / 2 * (lap + extra)
-            _ = one
+            r = r + th**2 / 2 * ((1 + c**2) * lap - c**2 * d11)
         elif exact_number(diff_) is not None or isinstance(diff_, _ak.Expr):
             th = to_expr(diff_, pool)
             r = r + th**2 / 2 * laplacian_indexed(u, fs.x, 1, fs.d)
