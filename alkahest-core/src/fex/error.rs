@@ -3,7 +3,8 @@
 //! `alkahest.fex.finalize` / `recovery_metric`), and by the F4 search layer
 //! (`E-FEX-012` … `E-FEX-014`, raised from Python's `analyze` /
 //! `transform_problem` / `reduce_problem`, `search` / `solve` and
-//! `TorchEvaluator`).
+//! `TorchEvaluator`), and malformed partial integro-differential problems
+//! (`E-FEX-015`).
 //!
 //! Every variant names what the caller passed and what was expected. None of
 //! them is a numerical failure of a candidate: a candidate whose value
@@ -106,6 +107,14 @@ pub enum FexError {
         /// What is missing.
         detail: String,
     },
+    /// `E-FEX-015`: a malformed partial integro-differential problem — a
+    /// nonlocal term or second-order form of the wrong size, a jump law
+    /// without the moments its Taylor replacement needs, or a nonlocal term
+    /// with a loss that has no residual vector.
+    Nonlocal {
+        /// What is wrong.
+        detail: String,
+    },
 }
 
 impl fmt::Display for FexError {
@@ -130,6 +139,7 @@ impl fmt::Display for FexError {
             FexError::Transform { detail } => write!(f, "FEX transform: {detail}"),
             FexError::SearchOptions { detail } => write!(f, "FEX search options: {detail}"),
             FexError::Backend { detail } => write!(f, "FEX evaluator backend: {detail}"),
+            FexError::Nonlocal { detail } => write!(f, "FEX nonlocal (PIDE) term: {detail}"),
         }
     }
 }
@@ -153,6 +163,7 @@ impl AlkahestError for FexError {
             FexError::Transform { .. } => "E-FEX-012",
             FexError::SearchOptions { .. } => "E-FEX-013",
             FexError::Backend { .. } => "E-FEX-014",
+            FexError::Nonlocal { .. } => "E-FEX-015",
         }
     }
 
@@ -196,6 +207,9 @@ impl AlkahestError for FexError {
             }
             FexError::SearchOptions { .. } => {
                 "give slot_ops as {'leaf' | 'unary' | 'binary': [operator names]} or one list of names per slot, naming operators of the template's tables and leaving every slot at least one; baseline is 'quantile', 'ewma' or 'mean'; population, pqt_size and curriculum are non-negative integers"
+            }
+            FexError::Nonlocal { .. } => {
+                "give each nonlocal term one shift (and optionally one scale) per coordinate and finite coefficients, a second-order form with one diagonal entry per coordinate and off-diagonal entries (i, j, a) with i < j, a jump law with a finite mean and variance, and use a least-squares or centred loss"
             }
             FexError::Backend { .. } => {
                 "install PyTorch (with CUDA for device='cuda'), and use the GPU evaluator for the built-in problems (poisson, transport, cubic_schrodinger, eigen); operators written as expressions and the centred loss run on alkahest.fex.Evaluator"

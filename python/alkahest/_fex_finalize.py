@@ -304,15 +304,83 @@ def _exact_float(x: float) -> Const | None:
 # ---------------------------------------------------------------------------
 
 
-class _Refitter:
-    """Fit the free parameter groups of one candidate with the others held."""
+def _ls_twin(problem: Any) -> Any:
+    """The problem's operator with a least-squares loss, ``bc = 0`` and
+    boundary weight 1: evaluated with the interior points as its boundary
+    points, one residual/Jacobian call gives the interior residuals ``r``,
+    ``u`` itself and both Jacobians."""
+    from . import fex as _fex
 
-    def __init__(self, ev: Any, e: list[int], theta: np.ndarray, least_squares: bool):
+    spec = dict(problem.spec)
+    kind = spec.pop("kind")
+    rhs = spec.pop("rhs", None)
+    spec.pop("bc", None)
+    pot = spec.pop("potential", None)
+    spec.pop("pide", None)
+    spec["loss"] = "least_squares"
+    spec["bc_weight"] = 1.0
+    if kind == "poisson" and problem.loss == "rayleigh":
+        raise ValueError("a Rayleigh quotient has no residual form")
+    return _fex.Problem._make(problem.dim, kind, problem.jet, rhs, 0.0, pot, None, **spec)
+
+
+class _NormalizedResiduals:
+    """Residual vector and exact Jacobian of a normalised loss
+    ``mean(r²) / mean(|u|^p)`` without boundary rows:
+    ``r̃ = r / √N``, ``J̃ = J/√N − r ⊗ ∇N / (2 N^{3/2})``, ``N = mean |u|^p``,
+    so ``‖r̃‖²`` is the loss and Levenberg–Marquardt applies (instead of a
+    BFGS refit per gated step, which dominated ``finalize`` on the cubic
+    Schrödinger equation at large d)."""
+
+    def __init__(self, tpl: Any, problem: Any, pts: Any):
+        from . import fex as _fex
+
+        self.p = float(problem.spec.get("power", 3.0))
+        self.ev = _fex.Evaluator(tpl, _ls_twin(problem), pts, pts)
+        self.n = self.ev.n_interior
+        self.wb = 1.0 / math.sqrt(self.n)
+
+    def __call__(self, e: Any, th: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        r, J = self.ev.residual_and_jacobian(e, th)
+        n = self.n
+        if not np.all(np.isfinite(r)):
+            return np.full(n, np.inf), np.zeros((n, J.shape[1]))
+        ri, Ji = r[:n], J[:n]
+        u = r[n:] / self.wb
+        Ju = J[n:] / self.wb
+        p = self.p
+        au = np.abs(u)
+        N = float(np.mean(au**p))
+        if not (N > 0 and math.isfinite(N)):
+            return np.full(n, np.inf), np.zeros_like(Ji)
+        dN = (p * (au ** (p - 1)) * np.sign(u)) @ Ju / n
+        sq = math.sqrt(N)
+        rt = ri / sq
+        Jt = Ji / sq - np.outer(ri, dN) / (2.0 * N * sq)
+        return rt, Jt
+
+
+class _Refitter:
+    """Fit the free parameter groups of one candidate with the others held.
+
+    ``rj``, when given, returns the residual vector and Jacobian whose
+    squared norm is the loss (Levenberg–Marquardt); otherwise a residual
+    loss uses the evaluator's own and any other loss BFGS."""
+
+    def __init__(
+        self,
+        ev: Any,
+        e: list[int],
+        theta: np.ndarray,
+        least_squares: bool,
+        rj: Any = None,
+    ):
         self.ev = ev
         self.e = list(e)
         self.n = len(theta)
         self.theta = np.array(theta, dtype=np.float64)
-        self.ls = least_squares
+        self.ls = least_squares or rj is not None
+        self.rj = rj if rj is not None else (lambda e_, th: ev.residual_and_jacobian(e_, th))
         self.evals = 0
 
     def expand(self, groups: list[list[int]], fixed: dict[int, float], phi: np.ndarray):
@@ -349,7 +417,7 @@ class _Refitter:
 
     def _lm(self, groups, fixed, phi, T, max_iter):
         th = self.expand(groups, fixed, phi)
-        r, J = self.ev.residual_and_jacobian(self.e, th)
+        r, J = self.rj(self.e, th)
         self.evals += 1
         f = float(r @ r) if np.all(np.isfinite(r)) else math.inf
         if not math.isfinite(f):
@@ -368,16 +436,19 @@ class _Refitter:
                     step = -np.linalg.lstsq(M, g, rcond=None)[0]
                 phi_new = phi + step
                 th_new = self.expand(groups, fixed, phi_new)
-                r_new, J_new = self.ev.residual_and_jacobian(self.e, th_new)
+                r_new, J_new = self.rj(self.e, th_new)
                 self.evals += 1
                 f_new = float(r_new @ r_new) if np.all(np.isfinite(r_new)) else math.inf
                 if f_new < f:
+                    rel = (f - f_new) / max(f, 1e-300)
                     phi, th, r, J, f = phi_new, th_new, r_new, J_new, f_new
                     lam = max(lam / 5.0, 1e-15)
                     improved = True
                     break
                 lam *= 8.0
-            if not improved or f < 1e-32:
+            # Stop at rounding level: a step that gains less than one part in
+            # 10¹⁰ (or a loss of 1e-32) will not change any gated decision.
+            if not improved or f < 1e-32 or rel < 1e-10:
                 break
         return th, f
 
@@ -807,6 +878,11 @@ def _sum_partials_indexed(u: Any, fs: FamilySymbols) -> Any:
 def _operator_symbolic(kind: str, u: Any, fs: FamilySymbols, src: dict[str, Any]) -> Any:
     from .experimental import laplacian_indexed
 
+    if kind == "pide":
+        from ._fex_pide import pide_operator_symbolic
+
+        return pide_operator_symbolic(u, fs, src["__pide"], src)
+
     if kind in ("poisson", "cubic_schrodinger", "eigen"):
         lap = laplacian_indexed(u, fs.x, 1, fs.d)
         r = -lap
@@ -872,6 +948,113 @@ def _expand_args(e: Any) -> Any:
         return None
 
     return _rebuild(e, f)
+
+
+def _split_exps(e: Any) -> Any:
+    """``exp(Σ qⱼ mⱼ) → Π exp(mⱼ / Lⱼ)^(qⱼ Lⱼ)``: every exponential is split
+    over the terms of its (expanded) argument, with one atom
+    ``exp(m / L)`` per monomial ``m`` (``L`` the common denominator of its
+    rational coefficients anywhere in ``e``) and ``exp(q·log c) = c^q``. A
+    residual that is then identically zero as a polynomial in those atoms is
+    zero — the step only rewrites ``exp(a + b) = exp(a)·exp(b)`` and
+    ``exp(k a) = exp(a)^k``, so ``exp(2S/d)`` and ``exp(S/d)³`` meet."""
+    from math import lcm
+
+    pool = e._pool
+
+    class _Inexact(Exception):
+        pass
+
+    def lin(t: Any, q: Fraction, out: list) -> None:
+        nv = _number_value(t)
+        if nv is not None:
+            if not isinstance(nv, Fraction):
+                raise _Inexact
+            out.append((q * nv, None))
+            return
+        nd = t.node()
+        if nd[0] == "add":
+            for c in _children(t):
+                lin(c, q, out)
+            return
+        if nd[0] == "mul":
+            c0 = Fraction(1)
+            rest = []
+            for c in _children(t):
+                v = _number_value(c)
+                if isinstance(v, Fraction):
+                    c0 *= v
+                elif v is None:
+                    rest.append(c)
+                else:
+                    raise _Inexact
+            if len(rest) == 1 and rest[0].node()[0] == "add":
+                lin(rest[0], q * c0, out)
+                return
+            if not rest:
+                out.append((q * c0, None))
+                return
+            m = rest[0]
+            for c in rest[1:]:
+                m = m * c
+            out.append((q * c0, m))
+            return
+        out.append((q, t))
+
+    def parts(arg: Any) -> list[tuple[Fraction, Any]]:
+        out: list[tuple[Fraction, Any]] = []
+        try:
+            lin(arg, Fraction(1), out)
+        except _Inexact:
+            return []
+        merged: dict[str, list] = {}
+        for q, m in out:
+            k = "" if m is None else str(m)
+            if k in merged:
+                merged[k][0] += q
+            else:
+                merged[k] = [q, m]
+        return [(q, m) for q, m in merged.values() if q != 0]
+
+    dens: dict[str, int] = {}
+    reps: dict[str, Any] = {}
+
+    def scan(node: Any, kids: list) -> Any:
+        nd = node.node()
+        if nd[0] == "func" and nd[1] == "exp" and len(kids) == 1:
+            for q, m in parts(kids[0]):
+                if m is None:
+                    continue
+                k = str(m)
+                reps.setdefault(k, m)
+                dens[k] = lcm(dens.get(k, 1), q.denominator)
+        return None
+
+    _rebuild(e, scan)
+
+    def build(node: Any, kids: list) -> Any:
+        nd = node.node()
+        if not (nd[0] == "func" and nd[1] == "exp" and len(kids) == 1):
+            return None
+        ps = parts(kids[0])
+        if not ps:
+            return None
+        out = pool.integer(1)
+        for q, m in ps:
+            if m is None:
+                out = out * _ak.exp(_qexpr(q, pool))
+                continue
+            mn = m.node()
+            if mn[0] == "func" and mn[1] == "log" and q.denominator == 1:
+                (c,) = _children(m)
+                out = out * c ** int(q.numerator)
+                continue
+            L = dens[str(m)]
+            atom = _ak.exp(m / L) if L != 1 else _ak.exp(m)
+            out = out * atom ** int(q * L)
+        return out
+
+    return _rebuild(e, build)
 
 
 def _relaxed_face(c: dict) -> bool:
@@ -950,6 +1133,7 @@ def _verify_residuals(pool: Any, pde: list[Any], bc: list[Any], ic: list[Any]) -
         _simplify_args,
         _expand_args,
         lambda r: _ak.expand(_expand_args(r)),
+        lambda r: _ak.expand(_split_exps(r)),
     )
     for form in forms:
         try:
@@ -989,6 +1173,8 @@ def _status_counts(v: dict) -> dict:
 def _problem_kind(problem: Any) -> str:
     spec = problem.spec
     kind = spec.get("kind")
+    if spec.get("pide") is not None:
+        return "pide"
     if kind == "poisson" and spec.get("loss") == "rayleigh":
         return "eigen"
     return kind
@@ -1164,8 +1350,16 @@ def finalize(
         fit_bd = None
         eig = {"estimate": lam, "exact": lam_exact}
     ev = _fex.Evaluator(tpl, fit_problem, pts, fit_bd)
-    least_squares = fit_problem.loss == "least_squares"
-    rf = _Refitter(ev, e, theta, least_squares)
+    least_squares = fit_problem.loss in ("least_squares", "centered")
+    rj = None
+    if fit_problem.loss == "normalized" and (
+        fit_bd is None or float(fit_problem.spec.get("bc_weight", 0.0)) == 0.0
+    ):
+        try:
+            rj = _NormalizedResiduals(tpl, fit_problem, pts)
+        except Exception as exc:  # fall back to BFGS
+            log.append(f"normalised refits by BFGS ({exc})")
+    rf = _Refitter(ev, e, theta, least_squares, rj=rj)
     n = tpl.n_params
     kinds = tpl.slot_kinds
     offs = tpl.param_offsets
@@ -1196,7 +1390,16 @@ def finalize(
     def attempt(new_fixed: dict[int, Const], new_groups: list[list[int]], label: str) -> bool:
         nonlocal th_cur, loss_cur, fixed, groups
         ff = {k: c.value() for k, c in new_fixed.items()}
-        th, lo = rf.fit(new_groups, ff, phi_of(th_cur, new_groups))
+        phi0 = phi_of(th_cur, new_groups)
+        # Warm start: when the constrained point already passes the gate (an
+        # exact snap, a coefficient that was zero to rounding), no refit.
+        th0 = rf.expand(new_groups, ff, phi0)
+        lo0 = rf.loss(th0)
+        if lo0 <= loss_tol:
+            fixed, groups, th_cur, loss_cur = new_fixed, new_groups, th0, lo0
+            log.append(f"{label}: accepted (loss {lo0:.3e}, no refit)")
+            return True
+        th, lo = rf.fit(new_groups, ff, phi0)
         if lo <= loss_tol:
             fixed, groups, th_cur, loss_cur = new_fixed, new_groups, th, lo
             log.append(f"{label}: accepted (loss {lo:.3e})")
@@ -1230,11 +1433,46 @@ def finalize(
             for k in small:
                 how[k] = "filtered"
         else:
-            for k in small:
-                if k in fixed:
-                    continue
-                if attempt({**fixed, k: Const(())}, without(groups, {k}), f"filter θ{k}"):
+            # Coefficients that are zero to rounding go together; the rest
+            # one at a time, except that near-equal weights of one leaf (a
+            # group the tying step will merge) are tried as one block.
+            scale = max((abs(float(v)) for v in th_cur), default=1.0)
+            tiny = [k for k in small if abs(th_cur[k]) <= 1e-9 * max(scale, 1.0)]
+            if len(tiny) > 1 and attempt(
+                {**fixed, **{k: Const(()) for k in tiny}},
+                without(groups, set(tiny)),
+                f"filter {len(tiny)} at rounding level",
+            ):
+                for k in tiny:
                     how[k] = "filtered"
+            rest = [k for k in small if k not in fixed]
+            blocks: list[list[int]] = []
+            seen: set[int] = set()
+            for k in rest:
+                if k in seen:
+                    continue
+                slot = max(sl for sl in range(len(offs)) if offs[sl] <= k and kinds[sl] != "binary")
+                peers = [
+                    j
+                    for j in rest
+                    if j not in seen
+                    and kinds[slot] == "leaf"
+                    and offs[slot] <= j < offs[slot] + dim
+                    and j - offs[slot] != time
+                    and _close(th_cur[j], th_cur[k], 1e-3)
+                ]
+                blk = peers if len(peers) >= 3 else [k]
+                seen.update(blk)
+                blocks.append(blk)
+            for blk in blocks:
+                if any(k in fixed for k in blk):
+                    continue
+                label = f"filter θ{blk[0]}" if len(blk) == 1 else f"filter {len(blk)} equal weights"
+                if attempt(
+                    {**fixed, **{k: Const(()) for k in blk}}, without(groups, set(blk)), label
+                ):
+                    for k in blk:
+                        how[k] = "filtered"
 
     # 3. Grouping: tie the free spatial weights of each leaf that agree.
     def leaf_weights(slot: int) -> list[int]:
@@ -1386,6 +1624,15 @@ def finalize(
             "verified": False,
             "reason": "the candidate is identically zero",
         }
+    elif kind == "pide":
+        if all_exact and src_exact is not None:
+            verification["concrete"] = _verify_concrete_pide(expr, problem, src_exact, pool)
+        else:
+            verification["concrete"] = {
+                "status": "unverified",
+                "verified": False,
+                "reason": "not every parameter has an exact value",
+            }
     elif kind == "expr":
         verification["concrete"] = {
             "status": "unverified",
@@ -1409,7 +1656,7 @@ def finalize(
     if (
         symbolic_d
         and not trivial
-        and kind in ("poisson", "transport", "cubic_schrodinger", "eigen")
+        and kind in ("poisson", "transport", "cubic_schrodinger", "eigen", "pide")
     ):
         lifted = _lift_and_verify(
             tpl, e, fixed, groups, problem, kind, time, domain, family, all_exact, out
@@ -1552,6 +1799,50 @@ def _verify_concrete(kind, expr, coords, time, src, domain, spec, pool) -> dict:
     return v
 
 
+def _verify_concrete_pide(expr: Any, problem: Any, src: dict, pool: Any) -> dict:
+    """The PIDE residual at the fitted ``d`` with the **exact** jump integral
+    (:func:`alkahest._fex_pide.gaussian_expectation`), and the terminal
+    condition on ``t = T``. Also reports whether the Taylor-moment
+    replacement the search used is itself exact on this solution."""
+    from . import _fex_pide as _pd
+
+    desc = problem.spec["pide"]
+    coords = problem.x
+    t = coords[desc["time"]]
+    try:
+        res = _pd.pide_residual_concrete(expr, problem, src, exact_jump=True)
+    except _pd.NoClosedForm as exc:
+        return {
+            "status": "unverified",
+            "verified": False,
+            "interior_verified": False,
+            "reason": f"the jump integral of this candidate has no closed form here ({exc})",
+        }
+    ics = []
+    has_bc = problem.spec.get("bc_weight", 100.0) > 0
+    if has_bc:
+        g = src.get("bc")
+        g = pool.integer(0) if g is None else g
+        ics.append(_ak.subs(expr - g, {t: desc["T"]}))
+    v = _verify_residuals(pool, [res], [], ics)
+    v["interior_verified"] = _interior_verified(v)
+    v["boundary"] = f"terminal slice t = {desc['T']}" if has_bc else "none"
+    v["jump"] = "exact Gaussian expectation (moment generating function)"
+    if desc["jump"] is not None and not desc["jump"].multiplicative:
+        try:
+            jt = _pd.jump_operator_taylor(expr, coords, _spatial(coords, desc), desc["jump"], pool)
+            je = _pd.jump_operator_exact(expr, coords, _spatial(coords, desc), desc["jump"], pool)
+            vt = _verify_residuals(pool, [jt - je], [], [])
+            v["taylor_exact_on_solution"] = vt["status"] == "exactly_verified"
+        except _pd.NoClosedForm:
+            v["taylor_exact_on_solution"] = None
+    return v
+
+
+def _spatial(coords: list[Any], desc: dict) -> list[int]:
+    return [i for i in range(len(coords)) if i != desc["time"]]
+
+
 def _potential_values(problem: Any, pts: np.ndarray) -> np.ndarray:
     pot = problem.spec.get("potential")
     if pot is None:
@@ -1610,8 +1901,13 @@ def _refine_eigen(problem, tpl, e, theta, pts, max_den, snap_tol, log):
     rounds = 0
     for _ in range(30):
         rounds += 1
-        ev = _fex.Evaluator(tpl, _eigen_twin(problem, lam), sel, None)
-        rf = _Refitter(ev, e, th, False)
+        twin = _eigen_twin(problem, lam)
+        ev = _fex.Evaluator(tpl, twin, sel, None)
+        try:
+            rj = _NormalizedResiduals(tpl, twin, sel)
+        except Exception:
+            rj = None
+        rf = _Refitter(ev, e, th, False, rj=rj)
         th_new, loss = rf.fit(free, hold, np.array([th[g[0]] for g in free]), max_iter=40)
         lam_new = project(th_new)
         if not math.isfinite(lam_new):
@@ -1794,6 +2090,8 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
             if src_ph["time_coeff"] is None:
                 src_ph["time_coeff"] = pool.integer(0)
         _check_family(problem, kind, time, family, fs, out)
+    if kind == "pide":
+        src_ph["__pide"] = spec["pide"]
     if kind == "eigen" and src_ph.get("eigenvalue") is None:
         lam = out.get("eigenvalue")
         if lam is None:
@@ -1814,7 +2112,8 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
     bc_ph, ic_ph = [], []
     if has_bc:
         if time is not None:
-            ic_ph.append(_ak.subs(u_ph - g_ph, {fs.t: pool.integer(0)}))
+            t_ic = spec["pide"]["T"] if kind == "pide" else pool.integer(0)
+            ic_ph.append(_ak.subs(u_ph - g_ph, {fs.t: t_ic}))
         else:
             lo, hi = _exact_bound(domain[0]), _exact_bound(domain[1])
             for b in (lo, hi):
@@ -1845,7 +2144,9 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
 
     def family_of(mp: dict) -> dict:
         return {
-            key: str(_simp(_ak.subs(val, mp))) for key, val in src_ph.items() if val is not None
+            key: str(_simp(_ak.subs(val, mp)))
+            for key, val in src_ph.items()
+            if val is not None and not key.startswith("__")
         }
 
     tried = 0
@@ -1890,7 +2191,7 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
     report["candidate_constants"] = n_cand
     if has_bc:
         report["boundary"] = (
-            "initial slice t = 0, every x"
+            ("terminal slice t = T" if kind == "pide" else "initial slice t = 0") + ", every x"
             if time is not None
             else f"every face x_j = {domain[0]}, {domain[1]} (j = 1..d), every other coordinate"
         )
@@ -1908,6 +2209,7 @@ def _operator_text(kind: str) -> str:
         "cubic_schrodinger": "-Δu + u³ + V·u = rhs",
         "eigen": "-Δu + V·u = λ·u",
         "transport": "time_coeff·u_t + space_coeff·Σⱼ u_{xⱼ} = rhs",
+        "pide": "u_t + b·∇u + ½Tr(σσᵀ∇²u) + λ∫(u(x+z) − u − z·∇u)φ(z)dz = rhs (exact integral)",
     }[kind]
 
 
