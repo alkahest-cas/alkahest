@@ -803,6 +803,15 @@ from alkahest.experimental._pde_m3 import (
     sturm_liouville,
     transform_solve,
 )
+from alkahest.experimental._pde_second_order import (
+    CanonicalForm,
+    SecondOrderSolution,
+    canonical_form,
+    canonical_forms,
+    laplace_cascade,
+    laplace_invariants,
+    solve_second_order,
+)
 
 # PDE solver (milestone M1): `pdsolve` over method tiers, first order.
 from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
@@ -937,6 +946,7 @@ __all__ = [
     # returned: a table that failed them is withheld (E-CHAR-007), never
     # returned with a caveat.
     "Box",
+    "CanonicalForm",
     "CharacterError",
     "CharacterTable",
     "CodingError",
@@ -1088,6 +1098,7 @@ __all__ = [
     "RiemannRochSpace",
     "RootOfFamily",
     "Scheme",
+    "SecondOrderSolution",
     "SiegelMatrix",
     "SiegelReduction",
     # Sifting an element through a stabilizer chain
@@ -1124,6 +1135,8 @@ __all__ = [
     "bernoulli_number",
     "bessel_j0",
     "bessel_j1",
+    "canonical_form",
+    "canonical_forms",
     "cheb_diff_matrix",
     # M11 — novelty filtering
     "check_novelty",
@@ -1195,6 +1208,8 @@ __all__ = [
     "krawtchouk",
     "krawtchouk_poly",
     "lambert_w",
+    "laplace_cascade",
+    "laplace_invariants",
     "laplace_transform",
     # Vector calculus
     "laplacian",
@@ -1246,6 +1261,7 @@ __all__ = [
     "simplify_sums",
     "singleton_bound",
     "solve",
+    "solve_second_order",
     "stencil",
     "stirling_first",
     "stirling_first_unsigned",

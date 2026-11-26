@@ -40,6 +40,9 @@
 //!   (M1: first-order linear / semilinear / quasilinear equations by
 //!   characteristics, Cauchy problems, complete integrals); every answer is
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
+//! * [`second_order`] — milestone M2: canonical forms, factored
+//!   constant-coefficient operators, d'Alembert, the Laplace cascade
+//!   (codes `E-PDE-100 … E-PDE-149`).
 //! * [`mod@sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
 //!   [`SturmLiouvilleProblem`] → [`Eigensystem`] (closed-form or
 //!   `RootOfFamily` eigenvalues with certified enclosures, eigenfunctions,
@@ -59,6 +62,7 @@ pub mod mol;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
+pub mod second_order;
 pub mod solve;
 pub mod sturm_liouville;
 pub mod sum;
@@ -79,6 +83,11 @@ pub use jet::{
 pub use problem::{ArbitraryFunctions, ConditionKind, PdeCondition, PdeDomain, PdeProblem};
 pub use root_family::{
     member, root_family_enclosure, root_family_parts, root_of_family, ROOT_OF_FAMILY,
+};
+pub use second_order::{
+    canonical_form, canonical_forms, laplace_cascade, laplace_invariants, solve_second_order,
+    solve_second_order_with, CanonicalForm, SecondOrderOptions, SecondOrderSolution,
+    DEFAULT_CASCADE_STEPS,
 };
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
