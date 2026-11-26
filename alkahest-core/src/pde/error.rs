@@ -81,6 +81,12 @@ pub enum PdeError {
     /// variable occurs in an argument other than as a bare slot (`u(t²)`,
     /// `u(x, 2t)`), or in more than one slot.
     TransformUnknown(String),
+    /// `E-PDE-041` — a malformed n-D coordinate chart
+    /// ([`super::coords::CoordinatesN`]): coordinates that are not distinct
+    /// symbols, an embedding of the wrong length, a chart that is not
+    /// orthogonal, or a scale factor that vanishes or cannot be shown
+    /// non-zero; or a vector field whose length is not the dimension.
+    CoordinateChart(String),
     /// `E-PDE-050` — `pdsolve` has no method for this problem: a system, an
     /// equation of order other than one (until later milestones add tiers),
     /// a single independent variable, or an unknown hint name.
@@ -247,6 +253,7 @@ impl fmt::Display for PdeError {
             PdeError::MalformedRootFamily(d) => ("malformed RootOfFamily", d),
             PdeError::RootFamilyNotCertified(d) => ("RootOfFamily root not certified", d),
             PdeError::TransformUnknown(d) => ("transform cannot act on the unknown", d),
+            PdeError::CoordinateChart(d) => ("malformed coordinate chart", d),
             PdeError::PdsolveUnsupported(d) => ("pdsolve has no method for this problem", d),
             PdeError::NoVerifiedSolution(d) => ("no verified solution", d),
             PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
@@ -325,6 +332,7 @@ impl AlkahestError for PdeError {
             PdeError::MalformedRootFamily(_) => "E-PDE-030",
             PdeError::RootFamilyNotCertified(_) => "E-PDE-031",
             PdeError::TransformUnknown(_) => "E-PDE-040",
+            PdeError::CoordinateChart(_) => "E-PDE-041",
             PdeError::PdsolveUnsupported(_) => "E-PDE-050",
             PdeError::NoVerifiedSolution(_) => "E-PDE-051",
             PdeError::CharacteristicData(_) => "E-PDE-052",
@@ -409,6 +417,7 @@ mod tests {
             PdeError::MalformedRootFamily(String::new()),
             PdeError::RootFamilyNotCertified(String::new()),
             PdeError::TransformUnknown(String::new()),
+            PdeError::CoordinateChart(String::new()),
         ];
         for e in all {
             let code = e.code();

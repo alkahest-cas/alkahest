@@ -170,7 +170,7 @@ pub struct PdeInfo {
     pub named: Vec<NamedEquation>,
 }
 
-fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
+pub(crate) fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
     let s = simplify(e, pool).value;
     if s == pool.integer(0) {
         return true;
@@ -302,7 +302,7 @@ pub fn classify_pde(
 
 /// Coarse sign of an expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Sign {
+pub(crate) enum Sign {
     Pos,
     NonNeg,
     Zero,
@@ -354,7 +354,7 @@ fn real_valued(e: ExprId, pool: &ExprPool) -> bool {
 }
 
 /// A sign for `e` provable from its structure and symbol domains, or `None`.
-fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
+pub(crate) fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
     match pool.get(e) {
         ExprData::Integer(n) => Some(match n.0.cmp0() {
             std::cmp::Ordering::Less => Sign::Neg,
@@ -680,7 +680,7 @@ fn classify_by_discriminant(info: &mut PdeInfo, disc: ExprId, pool: &ExprPool) {
     }
 }
 
-fn region(pde_type: PdeType, condition: ExprId) -> TypeRegion {
+pub(crate) fn region(pde_type: PdeType, condition: ExprId) -> TypeRegion {
     TypeRegion {
         pde_type,
         condition,

@@ -190,6 +190,7 @@ pub fn verify_solution(
         let r = super::sum::simplify_sums(r, &[], pool);
         let r = super::sum::alpha_normalize(r, pool);
         let r = super::integral::alpha_normalize_integrals(r, pool);
+        let r = contract_hyper(r, pool);
         let r = crate::simplify::engine::simplify(r, pool).value;
         let r = if super::integral::has_integral(r, pool) {
             // Distribute first so every integral is a term `c·∫…` of one sum.
@@ -253,6 +254,76 @@ pub fn verify_solution(
     })
 }
 
+/// Rewrite every `₂F₁(2, c; c+1; z)` in `e` by the contiguous identity
+///
+/// ```text
+/// ₂F₁(2, c; c+1; z) = c·(1/(1 − z) − ₂F₁(1, c−1; c; z)) / z
+/// ```
+///
+/// (with `b = c − 1` and `F = ₂F₁(1, b; b+1; z)`, compare the coefficients of `zᵐ`: both are
+/// `(m+1)(b+1)/(b+1+m)`).  This is the form the derivative of
+/// `z^b F(1, b; b+1; z)` (an incomplete beta function, the antiderivative of
+/// `tanᵏ`, `tanhᵏ`, `xᵐ/(1 + xⁿ)`) takes after `d/dz F = (b/(b+1))
+/// ₂F₁(2, b+1; b+2; z)`; rewritten, the residual is rational in the one atom
+/// `F` and the zero test can decide it.  An identity on the cut plane, so a
+/// verification that goes through it is exact.
+pub(crate) fn contract_hyper(e: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    use crate::specfun::hyper::{parts, raw_node, HYPER};
+    let mut map = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![e];
+    let two = pool.integer(2);
+    let one = pool.integer(1);
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let ExprData::Func { name, args } = pool.get(n) {
+            if name == HYPER {
+                if let Some((a, b, z)) = parts(&args, pool) {
+                    if a.len() == 2 && b.len() == 1 {
+                        let c = if a[0] == two {
+                            Some(a[1])
+                        } else if a[1] == two {
+                            Some(a[0])
+                        } else {
+                            None
+                        };
+                        if let Some(c) = c {
+                            let gap = pool.add(vec![b[0], pool.mul(vec![pool.integer(-1), c]), pool.integer(-1)]);
+                            if crate::simplify::engine::simplify(gap, pool).value == pool.integer(0) {
+                                let cm1 = crate::simplify::engine::simplify(
+                                    pool.add(vec![c, pool.integer(-1)]),
+                                    pool,
+                                )
+                                .value;
+                                let f = raw_node(&[one, cm1], &[c], z, pool);
+                                let one_minus_z = pool.add(vec![one, pool.mul(vec![pool.integer(-1), z])]);
+                                let rep = pool.mul(vec![
+                                    c,
+                                    pool.pow(z, pool.integer(-1)),
+                                    pool.add(vec![
+                                        pool.pow(one_minus_z, pool.integer(-1)),
+                                        pool.mul(vec![pool.integer(-1), f]),
+                                    ]),
+                                ]);
+                                map.insert(n, rep);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        push_children(n, pool, &mut stack);
+    }
+    if map.is_empty() {
+        return e;
+    }
+    crate::kernel::subs::subs(e, &map, pool)
+}
+
 /// A `proved_nonzero` from the rational normal form is a statement about
 /// *independent atoms*.  A `Sum` or `RootOfFamily` is such an atom to the
 /// normal form, but two different sums can still be equal (`Σ(a+b)` and
@@ -288,7 +359,8 @@ fn has_opaque_head(e: ExprId, pool: &ExprPool) -> bool {
             matches!(d, crate::kernel::ExprData::Func { name, .. }
                 if name == super::sum::SUM
                     || name == super::root_family::ROOT_OF_FAMILY
-                    || name == super::integral::INTEGRAL)
+                    || name == super::integral::INTEGRAL
+                    || name == crate::specfun::hyper::HYPER)
         });
         if opaque {
             return true;

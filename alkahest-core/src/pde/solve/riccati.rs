@@ -19,7 +19,7 @@
 //!    integral `v·e^{∫P} + ∫ q₂ e^{∫P} dx` with `P = q₁ + 2 q₂ y_p`. Unevaluated
 //!    integrals are allowed there.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
@@ -359,8 +359,96 @@ fn particular_solutions(
     out
 }
 
+/// The classical linearisation of a Riccati equation: with
+/// `y = −w′/(q₂ w)`, `y′ = q₀ + q₁ y + q₂ y²` becomes the linear second-order
+/// equation
+///
+/// ```text
+/// w″ − (q₁ + q₂′/q₂) w′ + q₀ q₂ w = 0,
+/// ```
+///
+/// which `dsolve` may solve in Airy, Bessel, Whittaker or elementary
+/// functions.  From `w = C₁w₁ + C₂w₂` the ratio `−C₁/C₂` is constant along
+/// solutions, so
+///
+/// ```text
+/// ξ = (w₂′ + q₂ y w₂) / (w₁′ + q₂ y w₁)
+/// ```
+///
+/// is a first integral.  Candidates only: the caller checks `V ξ ≡ 0`.
+fn linear_reduction_integrals(
+    q: (ExprId, ExprId, ExprId),
+    x: ExprId,
+    y: ExprId,
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    use crate::ode::dsolve::{dsolve_with, OdeInput, SolutionForm};
+    let (q0, q1, q2) = q;
+    let Some(dq2) = d(q2, x, pool) else {
+        return Vec::new();
+    };
+    let mut taken = names_in(&[q0, q1, q2, x, y], pool);
+    let w = fresh_symbol("__pde_w", &mut taken, pool);
+    let (input, wp, wpp) = OdeInput::second_order(x, w, pool);
+    let a1 = simp(pool.add(vec![q1, div(dq2, q2, pool)]), pool);
+    let eq = pool.add(vec![
+        wpp,
+        neg(pool.mul(vec![a1, wp]), pool),
+        pool.mul(vec![q0, q2, w]),
+    ]);
+    let input = input.with_equation(simp(eq, pool));
+    let Ok(rep) = dsolve_with(
+        &input,
+        &crate::simplify::assumptions::AssumptionContext::new(),
+        pool,
+    ) else {
+        return Vec::new();
+    };
+    let zero = pool.integer(0);
+    let mut out = Vec::new();
+    for b in rep.branches {
+        let SolutionForm::Explicit(wx) = b.form else {
+            continue;
+        };
+        if b.constants.len() != 2 || contains(wx, y, pool) {
+            continue;
+        }
+        let (c1, c2) = (b.constants[0], b.constants[1]);
+        // w = C₁ w₁ + C₂ w₂ exactly.
+        let (Some(w1), Some(w2)) = (d(wx, c1, pool), d(wx, c2, pool)) else {
+            continue;
+        };
+        if contains(w1, c1, pool)
+            || contains(w1, c2, pool)
+            || contains(w2, c1, pool)
+            || contains(w2, c2, pool)
+            || has_undefined(w1, pool)
+            || has_undefined(w2, pool)
+        {
+            continue;
+        }
+        let mut m = HashMap::new();
+        m.insert(c1, zero);
+        m.insert(c2, zero);
+        if !is_zero(subs_map(wx, &m, pool), pool) {
+            continue;
+        }
+        let (Some(w1p), Some(w2p)) = (d(w1, x, pool), d(w2, x, pool)) else {
+            continue;
+        };
+        let num = pool.add(vec![w2p, pool.mul(vec![q2, y, w2])]);
+        let den = pool.add(vec![w1p, pool.mul(vec![q2, y, w1])]);
+        out.push(simp(div(num, den, pool), pool));
+        if out.len() >= 2 {
+            break;
+        }
+    }
+    out
+}
+
 /// First-integral candidates of `dy/dx = ratio` when it is a Riccati
-/// equation with a particular solution of the shapes above.
+/// equation with a particular solution of the shapes above, or (when none is
+/// found) through its linearisation ([`linear_reduction_integrals`]).
 pub(crate) fn riccati_integrals(
     ratio: ExprId,
     x: ExprId,
@@ -372,7 +460,11 @@ pub(crate) fn riccati_integrals(
     };
     let (_, q1, q2) = q;
     let mut out = Vec::new();
-    for yp in particular_solutions(q, x, y, pool) {
+    let yps = particular_solutions(q, x, y, pool);
+    if yps.is_empty() {
+        out.extend(linear_reduction_integrals(q, x, y, pool));
+    }
+    for yp in yps {
         let p = simp(
             pool.add(vec![q1, pool.mul(vec![pool.integer(2), q2, yp])]),
             pool,

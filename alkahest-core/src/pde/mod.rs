@@ -66,7 +66,9 @@
 //!   `E-PDE-250 … E-PDE-299` (M5).
 
 pub mod classify;
+pub mod classify_system;
 pub mod conservation;
+pub mod coords;
 pub(crate) mod detsys;
 pub mod error;
 pub mod green;
@@ -89,6 +91,8 @@ pub mod transform_methods;
 pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
+pub use classify_system::{classify_pde_system, PdeSystemInfo, MAX_SYSTEM_TYPE_SIZE};
+pub use coords::{CoordinatesN, SymbolicCartesian};
 pub use conservation::{
     conservation_laws, conservation_multipliers, conserved_flux, euler_operator,
     verify_conservation_law, ConservationLaw, Multipliers,

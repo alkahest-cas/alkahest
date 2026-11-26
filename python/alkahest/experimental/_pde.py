@@ -27,10 +27,13 @@ from __future__ import annotations
 import alkahest as _ak
 from alkahest import alkahest as _native
 from alkahest.alkahest import (
+    CoordinatesN,
     JetSpace,
     PdeError,
+    SymbolicCartesian,
     _pde_check_problem,
     _pde_classify,
+    _pde_classify_system,
     _pde_domain_condition,
     _pde_verify,
     functions_to_jets,
@@ -41,6 +44,7 @@ __all__ = [
     "ArbitraryFunctions",
     "Ball",
     "Box",
+    "CoordinatesN",
     "D",
     "Disk",
     "Function",
@@ -54,9 +58,11 @@ __all__ = [
     "Line",
     "PdeError",
     "PdeInfo",
+    "PdeSystemInfo",
     "Product",
     "RootOfFamily",
     "Sum",
+    "SymbolicCartesian",
     "classify_pde",
     "coefficient",
     "expand_finite_sums",
@@ -518,7 +524,48 @@ class PdeInfo:
         return f"PdeInfo({', '.join(bits)})"
 
 
-def classify_pde(equation, unknown=None) -> PdeInfo:
+class PdeSystemInfo:
+    """Result of :func:`classify_pde` for a system (several equations or
+    unknowns).
+
+    Attributes: ``order`` and ``orders`` (per equation), ``linearity`` (the
+    weakest over the equations), ``homogeneous`` / ``constant_coefficients``
+    (``None`` unless linear), and for a first-order square system ``type``
+    (``"hyperbolic"``, ``"elliptic"``, ``"mixed"``, ``"solution_dependent"``,
+    ``"undetermined"``), ``strictly_hyperbolic``, ``type_conditions`` (e.g.
+    ``g*h(x, t) > 0`` for shallow water), ``regions``, ``evolution_variable``,
+    ``coefficient_matrices`` (``A_k`` per independent variable),
+    ``symbol_variables`` (``ξ``), ``principal_symbol`` (``Σ ξ_k A_k``),
+    ``characteristic_determinant``, ``characteristic_matrix``
+    (``A_t⁻¹ A_x`` in two variables), ``characteristic_speeds`` (exact
+    ``(λ, multiplicity)`` pairs) and ``named`` (``shallow_water``,
+    ``euler_1d``, ``cauchy_riemann``, ``maxwell_1d``).
+    """
+
+    def __init__(self, d: dict):
+        self._d = dict(d)
+        for k, v in d.items():
+            setattr(self, k, v)
+
+    @property
+    def names(self) -> list:
+        """The matched system names, e.g. ``["shallow_water"]``."""
+        return [m["name"] for m in self._d["named"]]
+
+    def to_dict(self) -> dict:
+        """The classification as a plain dict (expressions as ``Expr``)."""
+        return dict(self._d)
+
+    def __repr__(self) -> str:
+        bits = [f"order={self.order}", f"linearity={self.linearity!r}"]
+        if self.type is not None:
+            bits.append(f"type={self.type!r}")
+        if self.named:
+            bits.append(f"named={self.names!r}")
+        return f"PdeSystemInfo({', '.join(bits)})"
+
+
+def classify_pde(equation, unknown=None):
     """Classify a scalar PDE: order, linearity class, homogeneity, constant
     coefficients, elliptic / parabolic / hyperbolic type (with regions when
     the coefficients vary), and named-equation matching (heat, wave, Laplace,
@@ -528,9 +575,27 @@ def classify_pde(equation, unknown=None) -> PdeInfo:
     ``equation`` is an ``Expr`` read as ``= 0`` or an ``(lhs, rhs)`` pair;
     ``unknown`` the applied unknown ``u(x, t)`` (inferred when the equation
     differentiates exactly one function).  Raises :class:`PdeError`.
+
+    A **system** (a list of equations, or a list of unknowns) returns a
+    :class:`PdeSystemInfo`: order and linearity, and for first-order square
+    systems hyperbolicity / ellipticity from the eigenvalues of the principal
+    symbol (exact characteristic speeds) and named systems.
     """
     if isinstance(equation, PDE):
         return equation.classify()
+    # A list of equations or of unknowns is a system; a tuple stays an
+    # ``(lhs, rhs)`` pair.
+    if isinstance(equation, list) or isinstance(unknown, list):
+        eqs = [_residual(e) for e in (equation if isinstance(equation, list) else [equation])]
+        if unknown is None:
+            us = _unknowns_of(eqs)
+        elif isinstance(unknown, (list, tuple)):
+            us = list(unknown)
+        else:
+            us = [unknown]
+        if len(eqs) > 1 or len(us) > 1:
+            return PdeSystemInfo(_pde_classify_system(eqs, us))
+        equation, unknown = eqs[0], us[0]
     eq = _residual(equation)
     if unknown is None:
         us = _unknowns_of([eq])
@@ -620,15 +685,11 @@ class PDE:
             self.independent, self.unknowns, self.order if max_order is None else max_order
         )
 
-    def classify(self) -> PdeInfo:
-        """:func:`classify_pde` of a scalar problem (``E-PDE-012`` for a
-        system)."""
+    def classify(self):
+        """:func:`classify_pde` of the problem: a :class:`PdeInfo` for one
+        equation in one unknown, a :class:`PdeSystemInfo` for a system."""
         if len(self.equations) != 1 or len(self.unknowns) != 1:
-            raise _err(
-                "E-PDE-012",
-                "classification is defined for one equation in one unknown; this system has "
-                f"{len(self.equations)} equations in {len(self.unknowns)} unknowns",
-            )
+            return PdeSystemInfo(_pde_classify_system(self.equations, self.unknowns))
         return PdeInfo(_pde_classify(self.equations[0], self.unknowns[0]))
 
     def verify(self, solution) -> dict:

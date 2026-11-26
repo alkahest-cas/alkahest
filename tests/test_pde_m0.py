@@ -218,13 +218,16 @@ def test_domains(P):
         PDE(D(u, P.x, 2) + D(u, P.y, 2), u).on(akx.Disk((P.x, P.y), -1))
 
 
-def test_system_classification_refused(P):
+def test_system_classification(P):
+    # Systems used to be refused with E-PDE-012; they now classify (the
+    # one-dimensional wave equation as a first-order system).
     u, v = P.u(P.x, P.t), Function("v")(P.x, P.t)
     sys = PDE([D(u, P.t) - D(v, P.x), D(v, P.t) - D(u, P.x)], [u, v])
     assert sys.order == 1
-    with pytest.raises(PdeError) as e:
-        sys.classify()
-    assert code(e) == "E-PDE-012"
+    info = sys.classify()
+    assert isinstance(info, akx.PdeSystemInfo)
+    assert info.type == "hyperbolic"
+    assert info.strictly_hyperbolic
 
 
 def test_arbitrary_functions(P):

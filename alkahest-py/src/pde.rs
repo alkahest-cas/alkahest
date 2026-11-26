@@ -1048,6 +1048,344 @@ fn _pde_laplacian_indexed(
 }
 
 // ---------------------------------------------------------------------------
+// n-D coordinates (D7)
+// ---------------------------------------------------------------------------
+
+/// An orthogonal chart on ℝⁿ: ``CoordinatesN.cartesian(x1, …, xn)``,
+/// ``.polar(r, θ)``, ``.hyperspherical(r, φ1, …)``,
+/// ``.from_embedding(vars, embedding, label)``; methods ``gradient``,
+/// ``divergence``, ``laplacian``.
+#[pyclass(name = "CoordinatesN", module = "alkahest")]
+pub(crate) struct PyCoordinatesN {
+    inner: alkahest_core::pde::CoordinatesN,
+    pool: Py<PyExprPool>,
+}
+
+fn coords_from(
+    py: Python<'_>,
+    pool: Py<PyExprPool>,
+    f: impl FnOnce(
+        &alkahest_core::kernel::ExprPool,
+    ) -> Result<alkahest_core::pde::CoordinatesN, PdeError>,
+) -> PyResult<PyCoordinatesN> {
+    let inner = {
+        let p = pool.borrow(py);
+        f(&p.inner).map_err(pde_err)?
+    };
+    Ok(PyCoordinatesN { inner, pool })
+}
+
+#[pymethods]
+impl PyCoordinatesN {
+    /// Cartesian ``(x1, …, xn)``.
+    #[staticmethod]
+    #[pyo3(signature = (*vars))]
+    fn cartesian(py: Python<'_>, vars: &Bound<'_, PyTuple>) -> PyResult<Self> {
+        let pool = first_pool(vars.as_any())?;
+        let xs = exprs_in(vars.as_any(), &pool, "CoordinatesN.cartesian")?;
+        coords_from(py, pool, |p| {
+            alkahest_core::pde::CoordinatesN::cartesian(&xs, p)
+        })
+    }
+
+    /// Plane polar ``(r, θ)``.
+    #[staticmethod]
+    fn polar(py: Python<'_>, r: &Bound<'_, PyAny>, theta: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let pool = first_pool(r)?;
+        let (rr, th) = (
+            expr_in(r, &pool, "CoordinatesN.polar")?,
+            expr_in(theta, &pool, "CoordinatesN.polar")?,
+        );
+        coords_from(py, pool, |p| {
+            alkahest_core::pde::CoordinatesN::polar(rr, th, p)
+        })
+    }
+
+    /// Hyperspherical ``(r, φ1, …, φ_{n−1})``.
+    #[staticmethod]
+    #[pyo3(signature = (r, *angles))]
+    fn hyperspherical(
+        py: Python<'_>,
+        r: &Bound<'_, PyAny>,
+        angles: &Bound<'_, PyTuple>,
+    ) -> PyResult<Self> {
+        let pool = first_pool(r)?;
+        let rr = expr_in(r, &pool, "CoordinatesN.hyperspherical")?;
+        let ph = exprs_in(angles.as_any(), &pool, "CoordinatesN.hyperspherical")?;
+        coords_from(py, pool, |p| {
+            alkahest_core::pde::CoordinatesN::hyperspherical(rr, &ph, p)
+        })
+    }
+
+    /// The chart ``vars ↦ embedding`` (orthogonality is proved or the call
+    /// raises ``E-PDE-041``).
+    #[staticmethod]
+    #[pyo3(signature = (vars, embedding, label="embedded"))]
+    fn from_embedding(
+        py: Python<'_>,
+        vars: &Bound<'_, PyAny>,
+        embedding: &Bound<'_, PyAny>,
+        label: &str,
+    ) -> PyResult<Self> {
+        let pool = first_pool(vars)?;
+        let xs = exprs_in(vars, &pool, "CoordinatesN.from_embedding")?;
+        let em = exprs_in(embedding, &pool, "CoordinatesN.from_embedding")?;
+        let label = label.to_string();
+        coords_from(py, pool, |p| {
+            alkahest_core::pde::CoordinatesN::from_embedding(&xs, &em, label, p)
+        })
+    }
+
+    #[getter]
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+
+    #[getter]
+    fn vars(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        wrap_list(py, self.inner.vars(), &self.pool)
+    }
+
+    #[getter]
+    fn scale_factors(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        wrap_list(py, self.inner.scale_factors(), &self.pool)
+    }
+
+    #[getter]
+    fn label(&self) -> String {
+        self.inner.label().to_string()
+    }
+
+    /// ``J = Π hᵢ``.
+    fn jacobian_factor(&self, py: Python<'_>) -> Py<PyAny> {
+        let id = {
+            let p = self.pool.borrow(py);
+            self.inner.jacobian_factor(&p.inner)
+        };
+        wrap(py, id, &self.pool)
+    }
+
+    /// Physical components of ``∇f``.
+    fn gradient(&self, py: Python<'_>, f: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let fid = expr_in(f, &self.pool, "CoordinatesN.gradient")?;
+        let ids = {
+            let p = self.pool.borrow(py);
+            self.inner.gradient(fid, &p.inner).map_err(pde_err)?
+        };
+        wrap_list(py, &ids, &self.pool)
+    }
+
+    /// ``∇·F`` of the field with physical components ``F``.
+    fn divergence(&self, py: Python<'_>, field: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let fs = exprs_in(field, &self.pool, "CoordinatesN.divergence")?;
+        one_expr(py, &self.pool, |p| self.inner.divergence(&fs, p))
+    }
+
+    /// ``Δf``.
+    fn laplacian(&self, py: Python<'_>, f: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let fid = expr_in(f, &self.pool, "CoordinatesN.laplacian")?;
+        one_expr(py, &self.pool, |p| self.inner.laplacian(fid, p))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("CoordinatesN({}, dim={})", self.inner.label(), self.inner.dim())
+    }
+}
+
+/// Cartesian ℝᵈ for a symbolic dimension: ``SymbolicCartesian(x, d)`` with
+/// coordinates ``Indexed(x, i)``.
+#[pyclass(name = "SymbolicCartesian", module = "alkahest")]
+pub(crate) struct PySymbolicCartesian {
+    inner: alkahest_core::pde::SymbolicCartesian,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PySymbolicCartesian {
+    #[new]
+    fn new(py: Python<'_>, base: &Bound<'_, PyAny>, dim: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let pool = first_pool(base)?;
+        let b = expr_in(base, &pool, "SymbolicCartesian")?;
+        let dd = if let Ok(n) = dim.extract::<i64>() {
+            pool.borrow(py).inner.integer(n)
+        } else {
+            expr_in(dim, &pool, "SymbolicCartesian")?
+        };
+        let inner = {
+            let p = pool.borrow(py);
+            alkahest_core::pde::SymbolicCartesian::new(b, dd, &p.inner).map_err(pde_err)?
+        };
+        Ok(PySymbolicCartesian { inner, pool })
+    }
+
+    #[getter]
+    fn base(&self, py: Python<'_>) -> Py<PyAny> {
+        wrap(py, self.inner.base(), &self.pool)
+    }
+
+    #[getter]
+    fn dim(&self, py: Python<'_>) -> Py<PyAny> {
+        wrap(py, self.inner.dim(), &self.pool)
+    }
+
+    /// ``xᵢ = Indexed(x, i)``.
+    fn coordinate(&self, py: Python<'_>, i: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let ii = expr_in(i, &self.pool, "SymbolicCartesian.coordinate")?;
+        one_expr(py, &self.pool, |p| self.inner.coordinate(ii, p))
+    }
+
+    /// ``Σᵢ xᵢ²``.
+    fn radius_squared(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        one_expr(py, &self.pool, |p| self.inner.radius_squared(p))
+    }
+
+    /// ``∂f/∂xⱼ`` for the index symbol ``j``.
+    fn gradient(
+        &self,
+        py: Python<'_>,
+        f: &Bound<'_, PyAny>,
+        j: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let (fid, jj) = (
+            expr_in(f, &self.pool, "SymbolicCartesian.gradient")?,
+            expr_in(j, &self.pool, "SymbolicCartesian.gradient")?,
+        );
+        one_expr(py, &self.pool, |p| self.inner.gradient_component(fid, jj, p))
+    }
+
+    /// ``Σⱼ ∂Fⱼ/∂xⱼ`` for the field whose ``j``-th component is ``component``.
+    fn divergence(
+        &self,
+        py: Python<'_>,
+        component: &Bound<'_, PyAny>,
+        j: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let (c, jj) = (
+            expr_in(component, &self.pool, "SymbolicCartesian.divergence")?,
+            expr_in(j, &self.pool, "SymbolicCartesian.divergence")?,
+        );
+        one_expr(py, &self.pool, |p| self.inner.divergence(c, jj, p))
+    }
+
+    /// ``Δf``.
+    fn laplacian(&self, py: Python<'_>, f: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let fid = expr_in(f, &self.pool, "SymbolicCartesian.laplacian")?;
+        one_expr(py, &self.pool, |p| self.inner.laplacian(fid, p))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let p = self.pool.borrow(py);
+        format!(
+            "SymbolicCartesian({}, d={})",
+            p.inner.display(self.inner.base()),
+            p.inner.display(self.inner.dim())
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// System classification
+// ---------------------------------------------------------------------------
+
+/// Private: ``classify_pde_system`` as a dict (``alkahest.experimental``
+/// wraps it in ``PdeSystemInfo``).
+#[pyfunction]
+fn _pde_classify_system<'py>(
+    py: Python<'py>,
+    equations: &Bound<'py, PyAny>,
+    unknowns: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let pool = first_pool(equations)?;
+    let eqs = exprs_in(equations, &pool, "classify_pde")?;
+    let us = exprs_in(unknowns, &pool, "classify_pde")?;
+    let info = {
+        let p = pool.borrow(py);
+        for &e in &eqs {
+            crate::guard_depth(&p.inner, e)?;
+        }
+        alkahest_core::pde::classify_pde_system(&eqs, &us, &p.inner).map_err(pde_err)?
+    };
+    let mat = |m: &Vec<Vec<ExprId>>| -> PyResult<Py<PyAny>> {
+        let l = PyList::empty(py);
+        for r in m {
+            l.append(wrap_list(py, r, &pool)?)?;
+        }
+        l.into_py_any(py)
+    };
+    let d = PyDict::new(py);
+    d.set_item("unknowns", wrap_list(py, &info.unknowns, &pool)?)?;
+    d.set_item("independent", wrap_list(py, &info.independent, &pool)?)?;
+    d.set_item(
+        "equations_in_jets",
+        wrap_list(py, &info.equations_in_jets, &pool)?,
+    )?;
+    d.set_item("order", info.order)?;
+    d.set_item("orders", info.orders.clone())?;
+    d.set_item("linearity", info.linearity.as_str())?;
+    d.set_item("homogeneous", info.homogeneous)?;
+    d.set_item("constant_coefficients", info.constant_coefficients)?;
+    d.set_item("type", info.pde_type.map(|t| t.as_str()))?;
+    d.set_item("strictly_hyperbolic", info.strictly_hyperbolic)?;
+    d.set_item(
+        "type_conditions",
+        wrap_list(py, &info.type_conditions, &pool)?,
+    )?;
+    let regions = PyList::empty(py);
+    for r in &info.regions {
+        let rd = PyDict::new(py);
+        rd.set_item("type", r.pde_type.as_str())?;
+        rd.set_item("condition", wrap(py, r.condition, &pool))?;
+        regions.append(rd)?;
+    }
+    d.set_item("regions", regions)?;
+    d.set_item(
+        "evolution_variable",
+        info.evolution_variable.map(|e| wrap(py, e, &pool)),
+    )?;
+    let cms = PyList::empty(py);
+    for m in &info.coefficient_matrices {
+        cms.append(mat(m)?)?;
+    }
+    d.set_item("coefficient_matrices", cms)?;
+    d.set_item(
+        "symbol_variables",
+        wrap_list(py, &info.symbol_variables, &pool)?,
+    )?;
+    match &info.principal_symbol {
+        Some(m) => d.set_item("principal_symbol", mat(m)?)?,
+        None => d.set_item("principal_symbol", py.None())?,
+    }
+    d.set_item(
+        "characteristic_determinant",
+        info.characteristic_determinant.map(|e| wrap(py, e, &pool)),
+    )?;
+    match &info.characteristic_matrix {
+        Some(m) => d.set_item("characteristic_matrix", mat(m)?)?,
+        None => d.set_item("characteristic_matrix", py.None())?,
+    }
+    let speeds = PyList::empty(py);
+    for &(e, m) in &info.characteristic_speeds {
+        speeds.append((wrap(py, e, &pool), m))?;
+    }
+    d.set_item("characteristic_speeds", speeds)?;
+    let named = PyList::empty(py);
+    for m in &info.named {
+        let md = PyDict::new(py);
+        md.set_item("name", &m.name)?;
+        let params = PyDict::new(py);
+        for (k, v) in &m.parameters {
+            params.set_item(k, wrap(py, *v, &pool))?;
+        }
+        md.set_item("parameters", params)?;
+        md.set_item("conditions", wrap_list(py, &m.conditions, &pool)?)?;
+        md.set_item("time", m.time.map(|e| wrap(py, e, &pool)))?;
+        named.append(md)?;
+    }
+    d.set_item("named", named)?;
+    Ok(d)
+}
+
+// ---------------------------------------------------------------------------
 // pdsolve
 // ---------------------------------------------------------------------------
 
@@ -1173,6 +1511,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJetSpace>()?;
     m.add_function(wrap_pyfunction!(py_functions_to_jets, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_classify, m)?)?;
+    m.add_function(wrap_pyfunction!(_pde_classify_system, m)?)?;
+    m.add_class::<PyCoordinatesN>()?;
+    m.add_class::<PySymbolicCartesian>()?;
     m.add_function(wrap_pyfunction!(_pde_domain_condition, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_check_problem, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_verify, m)?)?;
