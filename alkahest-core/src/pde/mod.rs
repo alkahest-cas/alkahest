@@ -55,6 +55,7 @@ pub mod classify;
 pub mod error;
 pub mod integral;
 pub mod jet;
+pub mod mol;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;

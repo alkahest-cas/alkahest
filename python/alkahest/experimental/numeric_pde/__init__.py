@@ -18,9 +18,17 @@ from sampled floating-point values.
   consistency order.
 * :meth:`Stencil.kernel` / :meth:`Stencil.emit_c` — compiled kernels via the
   JIT, or C99 source via :func:`alkahest.emit_c_expr`.
+* :func:`method_of_lines` → :class:`MolSystem` (milestone M7b) — a symbolic
+  ``PDE`` problem discretised in space (stencils of any order, upwind /
+  WENO-5, Chebyshev / Fourier collocation; Dirichlet, Neumann, Robin and
+  periodic boundaries, eliminated or as DAE constraints) and compiled to
+  stencil kernels applied over index ranges, with an exact sparse Jacobian,
+  native RK45 / BDF integrators, JAX / StableHLO export and a von Neumann
+  stability hook.
 
 Errors are :class:`alkahest.exceptions.NumericPdeError` with codes
-``E-PDE-350 … E-PDE-358``.
+``E-PDE-350 … E-PDE-358`` (analysis) and ``E-PDE-359 … E-PDE-372``
+(method of lines).
 """
 
 from ...exceptions import NumericPdeError
@@ -33,6 +41,7 @@ from ._fd import (
     stencil,
     truncation_error,
 )
+from ._mol import MolResult, MolStabilityWarning, MolSystem, method_of_lines
 from ._scheme import (
     ConsistencyResult,
     ModifiedEquation,
@@ -48,6 +57,9 @@ __all__ = [
     "ConsistencyResult",
     "FDStencil",
     "ModifiedEquation",
+    "MolResult",
+    "MolStabilityWarning",
+    "MolSystem",
     "NumericPdeError",
     "Scheme",
     "Stencil",
@@ -60,6 +72,7 @@ __all__ = [
     "fourier_diff_matrix",
     "fourier_nodes",
     "laplacian_stencil",
+    "method_of_lines",
     "modified_equation",
     "stencil",
     "truncation_error",
