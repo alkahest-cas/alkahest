@@ -15,6 +15,7 @@ compiled in one file (Mathlib loads once).
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import shutil
@@ -105,9 +106,30 @@ def test_integrand_is_stated_verbatim():
     assert close(py_eval(deriv, {"x": 0.5}), 1 / 1.25)
 
 
-def test_special_function_answer_is_withheld_with_reason():
+def test_erf_and_si_answers_certify_by_their_defining_integrals():
+    """Mathlib has no `erf` / `Si`; the certificate defines them by their
+    integrals and proves the derivative lemma from the FTC."""
     x = ak.symbol("x")
     r = ak.integrate(ak.exp(-(x**2)), x)
+    cert = r.certificate
+    assert cert is not None, r.certificate_status
+    assert "noncomputable def alkahestErf (x : ℝ) : ℝ :=" in cert
+    assert "∫ t in (0 : ℝ)..x, Real.exp (-t ^ 2)" in cert
+    _, body, deriv, _ = parse_hasderiv(statements(cert)[0][1])
+    assert close(py_eval(deriv, {"x": 0.7}), math.exp(-0.49))
+    r = ak.integrate(ak.sin(x) / x, x)
+    cert = r.certificate
+    assert cert is not None, r.certificate_status
+    assert "Real.sinc_of_ne_zero" in cert
+    binders, goal = statements(cert)[0]
+    assert "≠ 0" in binders
+    _, body, deriv, _ = parse_hasderiv(goal)
+    assert close(py_eval(body, {"x": 1.3}), 1.18395800907)  # Si(1.3)
+
+
+def test_special_function_answer_is_withheld_with_reason():
+    x = ak.symbol("x")
+    r = ak.integrate(ak.exp(x) / x, x)
     st = r.certificate_status
     assert st["certifiable"] is False
     assert st["reason"] == "withheld_integration_shape"

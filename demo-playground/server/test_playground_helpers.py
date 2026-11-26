@@ -5,7 +5,7 @@ from playground_helpers import fix_legacy_diff_lean
 _LEGACY_DIFF_X3 = """import Mathlib.Tactic
 import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import Mathlib.MeasureTheory.Integral.IntervalIntegral
+import Mathlib.MeasureTheory.Integral.IntervalIntegral.Basic
 
 open Real MeasureTheory
 

@@ -68,11 +68,11 @@ impl Cond {
     /// neighbourhood facts in context.
     fn rewrite(&self, taken: bool) -> String {
         if taken {
-            format!("if_pos (show {} by linarith)", self.text)
+            format!("ite_eq_left (show {} by linarith)", self.text)
         } else {
             let lemma = if self.strict { "not_lt" } else { "not_le" };
             format!(
-                "if_neg (show ¬({}) from {lemma}.mpr (by linarith))",
+                "ite_eq_right (show ¬({}) from {lemma}.mpr (by linarith))",
                 self.text
             )
         }

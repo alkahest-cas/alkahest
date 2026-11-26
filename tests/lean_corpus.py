@@ -581,7 +581,7 @@ STRICT_CASES = [
         "diff_primitive_registry",
         lambda pool: alkahest.diff(alkahest.asin(pool.symbol("x")), pool.symbol("x")),
     ),
-    # `tanh` has no Mathlib v4.9.0 `hasDerivAt_tanh`; constructed from
+    # `tanh` has no Mathlib `hasDerivAt_tanh`; constructed from
     # `hasDerivAt_sinh` / `hasDerivAt_cosh` via `HasDerivAt.div`, with
     # `cosh_sq_sub_sinh_sq` reconciling `1 - tanh²` and `1/cosh²`.
     (

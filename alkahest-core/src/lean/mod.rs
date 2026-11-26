@@ -324,7 +324,7 @@ fn power_chain_certificate(
         let tactic = format!(
             "by\n    \
              have hf := {lemma} {var}\n    \
-             rw [(hf.pow {exp_n}).deriv]\n    \
+             rw [(hf.fun_pow {exp_n}).deriv]\n    \
              push_cast\n    \
              ring"
         );
@@ -335,7 +335,7 @@ fn power_chain_certificate(
         let tactic = format!(
             "by\n    \
              have hf := {lemma} {var}\n    \
-             rw [(hf.inv hne).deriv]\n    \
+             rw [(hf.fun_inv hne).deriv]\n    \
              ring"
         );
         return Some((Some(binder), tactic));
@@ -391,14 +391,18 @@ fn quotient_chain_certificate(
     let glemma = pointwise_hasderivat_lemma(&gname)?;
     let var = wrt_name(wrt, pool);
     let binder = format!("({var} : ℝ) (hne : Real.{gname} {var} ≠ 0)");
-    let product = if inv_first { "hg.mul hf" } else { "hf.mul hg" };
+    let product = if inv_first {
+        "hg.fun_mul hf"
+    } else {
+        "hf.fun_mul hg"
+    };
     // `field_simp` alone leaves a pure commutative rearrangement on some
     // shapes (`rexp x * cos x = cos x * rexp x`); `try ring` finishes those
     // without tripping `unreachableTactic` on the ones it already closed.
     let tactic = format!(
         "by\n    \
          have hf := {flemma} {var}\n    \
-         have hg := ({glemma} {var}).inv hne\n    \
+         have hg := ({glemma} {var}).fun_inv hne\n    \
          rw [({product}).deriv]\n    \
          field_simp [hne]\n    \
          try ring"
@@ -457,9 +461,9 @@ fn neg_pow_of_var_certificate(
         format!(
             "by\n    \
              have hinv := hasDerivAt_inv hx\n    \
-             rw [(hinv.pow {k}).deriv]\n    \
-             field_simp [hx]\n    \
-             try ring"
+             rw [(hinv.fun_pow {k}).deriv]\n    \
+             push_cast\n    \
+             ring"
         )
     };
     Some((Some(binder), tactic))
@@ -487,7 +491,7 @@ fn neg_pow_of_var_certificate(
 ///   `x ≠ -1` and `x ≠ 1`; the stricter open-interval binder implies those
 ///   and matches the domain where `1/√(1-x²)` is the genuine (non-junk)
 ///   derivative.
-/// * `tanh` — Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
+/// * `tanh` — Mathlib has no `hasDerivAt_tanh` and no
 ///   `1 - tanh² = 1/cosh²` analogue of `inv_one_add_tan_sq`. Construct the
 ///   derivative from `Real.hasDerivAt_sinh` / `Real.hasDerivAt_cosh` via
 ///   `HasDerivAt.div`, using `Real.cosh_pos` (so `cosh x ≠ 0` is free on `ℝ`,
@@ -551,7 +555,7 @@ fn registry_diff_certificate(
                 "by\n    \
                  have hne : Real.cosh {var} ≠ 0 := (Real.cosh_pos {var}).ne'\n    \
                  simp only [Real.tanh_eq_sinh_div_cosh]\n    \
-                 have hderiv := ((Real.hasDerivAt_sinh {var}).div \
+                 have hderiv := ((Real.hasDerivAt_sinh {var}).fun_div \
                  (Real.hasDerivAt_cosh {var}) hne).deriv\n    \
                  rw [hderiv]\n    \
                  field_simp [hne]\n    \
@@ -843,13 +847,13 @@ fn chain_diff_tactic(
 /// Mathlib derivative; it is a no-op (not a linter error) on the rare step
 /// simp closes outright.
 const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
-     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, deriv_fun_add, deriv_fun_mul, deriv_fun_pow, \
      deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
      Real.deriv_sinh, Real.deriv_cosh, \
-     differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+     differentiableAt_pow, differentiableAt_id, differentiableAt_fun_id, differentiableAt_const, \
      Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
      Real.differentiableAt_sinh, Real.differentiableAt_cosh, \
-     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
+     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, DifferentiableAt.fun_add, DifferentiableAt.fun_mul, DifferentiableAt.fun_pow]\n    \
      try ring";
 
 /// Combine tactic for bodies in the [`diff_body_unconditional`] fragment plus
@@ -871,15 +875,15 @@ const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
 /// close — so `d/dx (x² log x)` emitted a certificate that failed to
 /// typecheck while `d/dx (x log x)` passed.
 const LOG_SQRT_DIFF_TACTIC: &str = "by\n    \
-     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, deriv_fun_add, deriv_fun_mul, deriv_fun_pow, \
      deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
      Real.deriv_sinh, Real.deriv_cosh, \
      (Real.hasDerivAt_log hx.ne').deriv, (Real.hasDerivAt_sqrt hx.ne').deriv, \
-     differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+     differentiableAt_pow, differentiableAt_id, differentiableAt_fun_id, differentiableAt_const, \
      Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
      Real.differentiableAt_sinh, Real.differentiableAt_cosh, \
      Real.differentiableAt_log hx.ne', (Real.hasDerivAt_sqrt hx.ne').differentiableAt, \
-     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
+     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, DifferentiableAt.fun_add, DifferentiableAt.fun_mul, DifferentiableAt.fun_pow]\n    \
      try field_simp [hx.ne']\n    \
      try ring\n    \
      try tauto";
@@ -995,11 +999,11 @@ fn neg_pow_combine_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>,
     let var = wrt_name(wrt, pool);
     let binder = format!("({var} : ℝ) (hx : {var} ≠ 0)");
     let tactic = "by\n    \
-         simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
-         deriv_pow'', deriv_const, deriv_id'', deriv_inv, \
-         differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
-         DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, \
-         differentiableAt_inv.mpr hx]\n    \
+         simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, deriv_fun_add, deriv_fun_mul, deriv_fun_pow, \
+         deriv_fun_pow, deriv_const, deriv_id'', deriv_inv, \
+         differentiableAt_pow, differentiableAt_id, differentiableAt_fun_id, differentiableAt_const, \
+         DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, DifferentiableAt.fun_add, DifferentiableAt.fun_mul, DifferentiableAt.fun_pow, \
+         differentiableAt_inv hx]\n    \
          field_simp [hx]\n    \
          try ring"
         .to_string();
@@ -1294,7 +1298,7 @@ fn inv_cancel_certificate(
     let tactic = if net == 0 {
         "by field_simp [hne]".to_string()
     } else {
-        "by\n    field_simp [hne]\n    ring".to_string()
+        "by\n    field_simp [hne]\n    try ring".to_string()
     };
     if let Some(sym) = symbol_name(base, pool) {
         let binder = format!("({sym} : ℝ) (hne : {sym} ≠ 0)");
@@ -1567,6 +1571,10 @@ pub fn emit_header() -> String {
      import Mathlib.Analysis.SpecialFunctions.Gamma.Basic\n\
      import Mathlib.Algebra.Order.Group.Abs\n\
      \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
+     \n\
      open Real\n\n"
         .to_string()
 }
@@ -1580,11 +1588,16 @@ pub fn emit_diff_header() -> String {
      import Mathlib.Analysis.Calculus.Deriv.Mul\n\
      import Mathlib.Analysis.Calculus.Deriv.Inv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.DerivHyp\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.InverseDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n\
      import Mathlib.Analysis.SpecialFunctions.Sqrt\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -1599,6 +1612,11 @@ pub fn emit_limit_header() -> String {
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
      import Mathlib.Analysis.Calculus.Deriv.Slope\n\
      import Mathlib.Topology.Algebra.Order.LiminfLimsup\n\
+     import Mathlib.Analysis.SpecialFunctions.Complex.LogBounds\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n\
      open Real Filter Topology\n\n"
         .to_string()
@@ -1719,7 +1737,7 @@ fn tendsto_plan(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> Opti
     if let Some(t) = matches_one_plus_t_over_var_pow_var(expr, var, pool) {
         if matches_exp_int(lim, pool) == Some(t) {
             return Some(at_top_plan(format!(
-                "by\n    simpa [div_eq_mul_inv, one_div, mul_comm] using tendsto_one_plus_div_rpow_exp ({t} : ℝ)"
+                "by\n    simpa [div_eq_mul_inv, one_div, mul_comm] using Real.tendsto_one_add_div_rpow_exp ({t} : ℝ)"
             )));
         }
     }
@@ -2401,8 +2419,12 @@ fn emit_definite_integral_header() -> String {
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.Calculus.Deriv.Pow\n\
-     import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
-     import Mathlib.MeasureTheory.Integral.FundThmCalculus\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral.Basic\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral.FundThmCalculus\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -2710,7 +2732,7 @@ fn base_pieces(
         ),
         DefiniteIntegrandClass::Sin => (
             Box::new(|t: &str| format!("-Real.cos ({t})")),
-            format!("(Real.hasDerivAt_cos {var_name}).neg"),
+            format!("(Real.hasDerivAt_cos {var_name}).fun_neg"),
             "Real.continuous_sin.intervalIntegrable _ _".to_string(),
         ),
         DefiniteIntegrandClass::Exp => (
@@ -2802,7 +2824,7 @@ fn chain_linear_pieces(
     let var_name_owned = var_name.to_string();
     let (anti_head, deriv_core) = match outer {
         ChainLinearOuter::Cos => ("Real.sin", format!("({hg}).sin")),
-        ChainLinearOuter::Sin => ("-Real.cos", format!("(({hg}).cos).neg")),
+        ChainLinearOuter::Sin => ("-Real.cos", format!("(({hg}).cos).fun_neg")),
         ChainLinearOuter::Exp => ("Real.exp", format!("({hg}).exp")),
     };
     let hderiv = if skip_div {
@@ -2886,7 +2908,7 @@ fn combine_definite_add(
         Box::new(move |t: &str| format!("({}) + ({})", a_anti(t), b_anti(t)));
     (
         anti,
-        format!("({a_hderiv}).add ({b_hderiv})"),
+        format!("({a_hderiv}).fun_add ({b_hderiv})"),
         format!("({a_int}).add ({b_int})"),
     )
 }
@@ -3002,7 +3024,7 @@ fn is_pointwise_log(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 }
 
 /// Lean import header for the definite-`∫ log` arm. Adds Mathlib's
-/// `intervalIntegrable_log` ([`Mathlib.Analysis.SpecialFunctions.Integrals`])
+/// `intervalIntegrable_log` ([`Mathlib.Analysis.SpecialFunctions.Integrals.Basic`])
 /// and `hasDerivAt_mul_log` ([`Mathlib.Analysis.SpecialFunctions.Log.NegMulLog`])
 /// on top of the interval-FTC imports the shared definite header already has.
 fn emit_definite_log_header() -> String {
@@ -3010,10 +3032,14 @@ fn emit_definite_log_header() -> String {
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.Calculus.Deriv.Pow\n\
-     import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
-     import Mathlib.MeasureTheory.Integral.FundThmCalculus\n\
-     import Mathlib.Analysis.SpecialFunctions.Integrals\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral.Basic\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral.FundThmCalculus\n\
+     import Mathlib.Analysis.SpecialFunctions.Integrals.Basic\n\
      import Mathlib.Analysis.SpecialFunctions.Log.NegMulLog\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -3022,7 +3048,7 @@ fn emit_definite_log_header() -> String {
 /// Emit `∫ x in a..b, log x = (b log b − b) − (a log a − a)` via
 /// `intervalIntegral.integral_eq_sub_of_hasDerivAt`, with `HasDerivAt` of
 /// `F = x log x − x` from `hasDerivAt_mul_log.sub hasDerivAt_id` and
-/// `IntervalIntegrable` from `intervalIntegrable_log` + `Set.not_mem_uIcc_of_lt`.
+/// `IntervalIntegrable` from `intervalIntegrable_log` + `Set.notMem_uIcc_of_lt`.
 ///
 /// Requires [`classify_log_endpoints`] to succeed. Returns `""` otherwise.
 fn emit_definite_log_cert(
@@ -3073,7 +3099,7 @@ fn emit_definite_log_cert(
         "-- ∫ {var_name} in {a_lean}..{b_lean}, {f_lean} = F {b_lean} - F {a_lean}   (F = fun {var_name} => {f_body})\n\
          -- certified via the second FTC for interval integrals, under 0 < a and 0 < b:\n\
          --   intervalIntegral.integral_eq_sub_of_hasDerivAt (deriv F = f on uIcc) (IntervalIntegrable f)\n\
-         -- IntervalIntegrable log needs 0 ∉ uIcc a b (intervalIntegrable_log + Set.not_mem_uIcc_of_lt).\n"
+         -- IntervalIntegrable log needs 0 ∉ uIcc a b (intervalIntegrable_log + Set.notMem_uIcc_of_lt).\n"
     ));
     out.push_str(&format!(
         "example{example_binders}: ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
@@ -3082,9 +3108,9 @@ fn emit_definite_log_cert(
          \x20     HasDerivAt (fun ({var_name} : ℝ) => {f_body}) ({f_lean}) {var_name} := by\n\
          \x20   intro {var_name} hx\n\
          \x20   have hxpos : (0 : ℝ) < {var_name} := lt_of_lt_of_le (lt_min ha {hb_ident}) hx.1\n\
-         \x20   simpa using (hasDerivAt_mul_log hxpos.ne').sub (hasDerivAt_id {var_name})\n\
+         \x20   simpa using (hasDerivAt_mul_log hxpos.ne').fun_sub (hasDerivAt_id {var_name})\n\
          \x20 have hint : IntervalIntegrable (fun ({var_name} : ℝ) => {f_lean}) MeasureTheory.volume ({a_lean}) ({b_lean}) :=\n\
-         \x20   intervalIntegral.intervalIntegrable_log (Set.not_mem_uIcc_of_lt ha {hb_ident})\n\
+         \x20   intervalIntegral.intervalIntegrable_log (Set.notMem_uIcc_of_lt ha {hb_ident})\n\
          \x20 exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint\n"
     ));
 
@@ -3141,7 +3167,7 @@ fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
 /// (`x² + sin x`, `3 * cos x + exp x`, …). Pointwise `log` of the integration
 /// variable is a separate arm: it needs `0 < a` and `0 < b` so
 /// `IntervalIntegrable log` is discharged by `intervalIntegrable_log` +
-/// `Set.not_mem_uIcc_of_lt`, and does **not** join the linear-combination
+/// `Set.notMem_uIcc_of_lt`, and does **not** join the linear-combination
 /// fragment (a sum with one log addend still withholds). Every other
 /// integrand — `∫_0^1 log` (singular at 0), negative endpoints, and any
 /// improper (`±∞`) endpoint — is **withheld** (returns `""`). Never emits
@@ -3228,7 +3254,11 @@ pub fn emit_definite_integration_cert(
 fn emit_gosper_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Algebra.BigOperators.Intervals\n\
-     import Mathlib.Algebra.BigOperators.Group.Finset\n\
+     import Mathlib.Algebra.BigOperators.Group.Finset.Basic\n\
+     \n\
+     set_option linter.unusedSimpArgs false\n\
+     set_option linter.unusedTactic false\n\
+     set_option linter.unreachableTactic false\n\
      \n\
      open Finset\n\n"
         .to_string()
@@ -3457,7 +3487,7 @@ fn expr_to_lean_nat_index(
 
 fn gosper_delta_tactic(has_inv: bool, has_geom: bool) -> &'static str {
     if has_inv {
-        "intro k hk\n    have hk0 : k ≠ 0 := by\n      rw [mem_Icc] at hk\n      omega\n    simp [G]\n    field_simp [hk0]\n    ring"
+        "intro k hk\n    have hk0 : k ≠ 0 := by\n      rw [mem_Icc] at hk\n      omega\n    simp [G]\n    field_simp [hk0]\n    try ring"
     } else if has_geom {
         "intro k\n    simp [G, pow_succ]\n    ring"
     } else {
@@ -3662,13 +3692,13 @@ fn gosper_telescope_proof(lo: &NatBound, hi: &NatBound, has_inv: bool) -> (Strin
         NatBound::Lit(0) => {
             let hi_succ = hi.succ_lean();
             format!(
-                "    rw [← Nat.Ico_succ_right, Nat.Ico_zero_eq_range]\n    exact sum_range_sub G ({hi_succ})\n"
+                "    rw [← Finset.Ico_add_one_right_eq_Icc, Nat.Ico_zero_eq_range]\n    exact sum_range_sub G ({hi_succ})\n"
             )
         }
         NatBound::Lit(1) => {
             let hi_s = hi.lean();
             format!(
-                "    rw [← Nat.Ico_succ_right, sum_Ico_eq_sum_range]\n    try simp only [Nat.succ_sub_one]\n    convert sum_range_sub (fun i => G (i + 1)) {hi_s} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
+                "    rw [← Finset.Ico_add_one_right_eq_Icc, sum_Ico_eq_sum_range]\n    try simp only [Nat.succ_sub_one]\n    convert sum_range_sub (fun i => G (i + 1)) {hi_s} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
             )
         }
         NatBound::Lit(a) => {
@@ -3678,7 +3708,7 @@ fn gosper_telescope_proof(lo: &NatBound, hi: &NatBound, has_inv: bool) -> (Strin
             };
             let len = b + 1 - a;
             format!(
-                "    rw [← Nat.Ico_succ_right, sum_Ico_eq_sum_range]\n    convert sum_range_sub (fun i => G ({a} + i)) {len} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
+                "    rw [← Finset.Ico_add_one_right_eq_Icc, sum_Ico_eq_sum_range]\n    convert sum_range_sub (fun i => G ({a} + i)) {len} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
             )
         }
         NatBound::Sym(_) => String::new(),
@@ -3686,7 +3716,7 @@ fn gosper_telescope_proof(lo: &NatBound, hi: &NatBound, has_inv: bool) -> (Strin
     (htel, sum_congr)
 }
 
-/// `∏_{k=1}^{n} k = n!`, via Mathlib 4.9.0 `Finset.prod_Ico_id_eq_factorial`
+/// `∏_{k=1}^{n} k = n!`, via Mathlib `Finset.prod_Ico_id_eq_factorial`
 /// (there is no `prod_Icc_id` in this pin; `Icc 1 n = Ico 1 (n+1)`).
 ///
 /// Only the identity product of the index from 1 is certified. Gamma encodings
@@ -3730,7 +3760,7 @@ pub fn emit_product_cert(
     let mut out = emit_gosper_header();
     out.push_str("-- ∏_{k=1}^{n} k = n!  (Mathlib Finset.prod_Ico_id_eq_factorial)\n");
     out.push_str(&format!(
-        "{binders} : ∏ k ∈ {icc}, k = Nat.factorial {n_lean} := by\n  rw [← Nat.Ico_succ_right]\n  exact prod_Ico_id_eq_factorial {n_lean}\n"
+        "{binders} : ∏ k ∈ {icc}, k = Nat.factorial {n_lean} := by\n  rw [← Finset.Ico_add_one_right_eq_Icc]\n  exact prod_Ico_id_eq_factorial {n_lean}\n"
     ));
     if contains_admission(&out) {
         return String::new();
@@ -4136,7 +4166,7 @@ fn det_proof(
 
 /// Generate a Lean 4 certificate for `Res_var(p, q) = result`.
 ///
-/// Mathlib (at the pinned `v4.9.0`) has no `Polynomial.resultant`, so the
+/// The statement does not go through `Polynomial.resultant` (absent at the old v4.9.0 pin), so the
 /// statement is the definition itself: the determinant of the Sylvester matrix
 /// of `p` and `q` with respect to `var`, written out entry by entry, equals the
 /// computed resultant. Rows `1..deg q` hold the coefficients of `p` (leading
@@ -4254,7 +4284,10 @@ pub fn emit_resultant_cert(
     let literal = format!("!![{}]", rows.join("; "));
     let mut out = String::from(
         "import Mathlib.Tactic\n\
-         import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n",
+         import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n\
+         set_option linter.unusedSimpArgs false\n\
+         set_option linter.unusedTactic false\n\
+         set_option linter.unreachableTactic false\n\n",
     );
     out.push_str(&format!(
         "-- Resultant: Res_{var_name}(p, q) = {}\n\
@@ -5000,7 +5033,7 @@ mod tests {
             "IntervalIntegrable log via intervalIntegrable_log: {lean}"
         );
         assert!(
-            lean.contains("Set.not_mem_uIcc_of_lt"),
+            lean.contains("Set.notMem_uIcc_of_lt"),
             "0 ∉ uIcc via not_mem_uIcc_of_lt: {lean}"
         );
         assert!(!lean.contains("sorry") && !lean.contains("admit"));
@@ -5371,7 +5404,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean}"
         );
         assert!(
-            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv hx"),
             "expected the neg-pow combine tactic: {lean}"
         );
         assert!(
@@ -6128,7 +6161,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean_neg2}"
         );
         assert!(
-            lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.pow 2"),
+            lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.fun_pow 2"),
             "expected hasDerivAt_inv then HasDerivAt.pow 2: {lean_neg2}"
         );
     }
@@ -6161,7 +6194,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean}"
         );
         assert!(
-            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv hx"),
             "expected the neg-pow product_rule tactic: {lean}"
         );
     }
@@ -6189,7 +6222,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean}"
         );
         assert!(
-            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv hx"),
             "expected the neg-pow sum_rule tactic: {lean}"
         );
     }
@@ -6257,7 +6290,7 @@ mod tests {
             "sin(x)² certificate must not use sorry: {lean}"
         );
         assert!(
-            lean.contains("hf.pow 2"),
+            lean.contains("hf.fun_pow 2"),
             "expected HasDerivAt.pow composition: {lean}"
         );
     }
@@ -6287,7 +6320,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean}"
         );
         assert!(
-            lean.contains("hf.inv hne"),
+            lean.contains("hf.fun_inv hne"),
             "expected HasDerivAt.inv composition: {lean}"
         );
     }
@@ -6317,7 +6350,7 @@ mod tests {
             "sin/cos certificate must not use sorry: {lean}"
         );
         assert!(
-            lean.contains("hf.mul hg"),
+            lean.contains("hf.fun_mul hg"),
             "expected the quotient-chain HasDerivAt composition: {lean}"
         );
         assert!(
@@ -6742,7 +6775,7 @@ mod tests {
 
     #[test]
     fn diff_tanh_certifies_via_sinh_cosh_quotient() {
-        // Mathlib v4.9.0 has no `hasDerivAt_tanh`; construct d/dx tanh from
+        // Mathlib has no `hasDerivAt_tanh`; construct d/dx tanh from
         // `hasDerivAt_sinh` / `hasDerivAt_cosh` and reconcile `1 - tanh²`
         // with `1/cosh²` via `cosh_sq_sub_sinh_sq`. `cosh ≠ 0` is free
         // (`Real.cosh_pos`), so there is no extra binder.
@@ -7178,7 +7211,7 @@ mod tests {
         let e = pool.func("exp", vec![one]);
         let lean = emit_tendsto_cert(expr, x, e, &pool);
         assert!(
-            lean.contains("tendsto_one_plus_div_rpow_exp"),
+            lean.contains("Real.tendsto_one_add_div_rpow_exp"),
             "expected rpow compound-interest lemma: {lean}"
         );
         assert!(
@@ -7459,9 +7492,9 @@ mod tests {
             let inv_printed_first = printed.find('⁻').expect("an inverse factor")
                 < printed.find("Real.exp").expect("the numerator");
             let expected = if inv_printed_first {
-                "hg.mul hf"
+                "hg.fun_mul hf"
             } else {
-                "hf.mul hg"
+                "hf.fun_mul hg"
             };
             assert!(
                 tactic.contains(expected),

@@ -754,7 +754,12 @@ fn emit_zeilberger_cert_opt(
         .iter()
         .map(|&a| pool.display(a).to_string())
         .collect();
-    let mut out = String::from("import Mathlib.Tactic\n\n");
+    let mut out = String::from(
+        "import Mathlib.Tactic\n\n\
+         set_option linter.unusedSimpArgs false\n\
+         set_option linter.unusedTactic false\n\
+         set_option linter.unreachableTactic false\n\n",
+    );
     out.push_str(&format!(
         "-- Zeilberger certificate (creative telescoping), order {order}:\n\
          --   F({n_s}, {k_s}) = {}\n\

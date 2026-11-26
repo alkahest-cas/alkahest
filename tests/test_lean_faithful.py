@@ -37,6 +37,13 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _FUNCS = {
+    # Integration certificates define these by their integrals (Mathlib has
+    # no erf / Si); `alkahestErfi` before its prefix `alkahestErf`.
+    "alkahestErfi": "_erfi",
+    "alkahestErf": "math.erf",
+    "alkahestSi": "_si",
+    "Real.arsinh": "math.asinh",
+    "Real.arcosh": "math.acosh",
     "Real.sinh": "math.sinh",
     "Real.cosh": "math.cosh",
     "Real.tanh": "math.tanh",
@@ -99,8 +106,25 @@ def _real_log(v: float) -> float:
     return math.log(abs(v)) if v != 0 else 0.0
 
 
+def _simpson(f, b: float, n: int = 2000) -> float:
+    """``∫₀ᵇ f`` by composite Simpson (smooth integrands only)."""
+    h = b / n
+    acc = f(0.0) + f(b)
+    for k in range(1, n):
+        acc += (4 if k % 2 else 2) * f(k * h)
+    return acc * h / 3
+
+
+def _si(v: float) -> float:
+    return _simpson(lambda t: math.sin(t) / t if t != 0 else 1.0, v)
+
+
+def _erfi(v: float) -> float:
+    return 2 / math.sqrt(math.pi) * _simpson(lambda t: math.exp(t * t), v)
+
+
 def py_eval(term: str, env: dict[str, float]) -> float:
-    ns = {"math": math, "pi": math.pi, "_real_log": _real_log}
+    ns = {"math": math, "pi": math.pi, "_real_log": _real_log, "_si": _si, "_erfi": _erfi}
     ns.update(env)
     return float(eval(lean_to_py(term), ns))  # test-only: evaluates emitted text
 
@@ -136,7 +160,13 @@ def split_top(s: str, sep: str) -> list[str]:
 def statements(src: str) -> list[tuple[str, str]]:
     """``(binders, goal)`` for every ``example`` in ``src``."""
     out = []
-    for m in re.finditer(r"^(?:example|theorem \w+)(.*?):=", src, flags=re.M | re.S):
+    # Helper lemmas for in-file definitions (`alkahestErf_hasDerivAt`, …) are
+    # not statements about the result.
+    for m in re.finditer(
+        r"^(?:example|theorem (?!alkahest[A-Z]\w*_hasDerivAt\b)\w+)(.*?):=",
+        src,
+        flags=re.M | re.S,
+    ):
         header = " " + " ".join(m.group(1).split()) + " "
         # Binders are leading `( … )` groups; the goal follows the first
         # depth-0 ` : `.
@@ -513,7 +543,7 @@ def test_withheld_results_raise_never_empty():
     x = pool.symbol("x")
     for obj in (
         ak.simplify(x**2),  # nothing derived
-        ak.integrate(ak.exp(-(x**2)), x),  # erf answer: no Mathlib derivative lemma
+        ak.integrate(ak.exp(x) / x, x),  # Ei answer: Mathlib has no Ei
         ak.limit(ak.sin(pool.symbol("y") * x) / x, x, pool.integer(0)),
     ):
         assert obj.certificate is None
