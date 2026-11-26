@@ -86,16 +86,22 @@ __all__ = [
     "Problem",
     "SearchResult",
     "Template",
+    "TorchEvaluator",  # noqa: F822 (module __getattr__: torch is imported on first use)
+    "analyze",
     "canonical_key",
     "family_symbols",
     "finalize",
     "fit",
+    "lift_candidate",
     "recovery_metric",
+    "reduce_problem",
     "sample_box",
     "sample_box_boundary",
     "sample_initial_slice",
     "search",
     "snap_candidates",
+    "solve",
+    "transform_problem",
 ]
 
 #: The FEX paper's unary table, in the reference implementation's order.
@@ -722,7 +728,7 @@ def fit(
 def _local_method(ev: Evaluator) -> str:
     """Levenberg–Marquardt for a residual loss, BFGS otherwise (a Rayleigh
     quotient or a normalised loss has no residual vector)."""
-    return "lm" if ev.problem.loss == "least_squares" else "bfgs"
+    return "lm" if ev.problem.loss in ("least_squares", "centered") else "bfgs"
 
 
 def _prune(
@@ -758,7 +764,7 @@ def _prune(
 
 @dataclass
 class SearchResult:
-    """Outcome of :func:`search`."""
+    """Outcome of :func:`search` (and of :func:`solve`)."""
 
     e: list[int]
     theta: np.ndarray
@@ -773,6 +779,151 @@ class SearchResult:
     template: Template | None = None
     points: np.ndarray | None = None
     boundary: np.ndarray | None = None
+    #: Epochs run, and the wall time (s) at which the best loss first reached
+    #: ``target_loss`` (``None`` if it never did).
+    epochs: int = 0
+    seconds_to_target: float | None = None
+    #: :func:`solve` only: the proposal that produced the result, the
+    #: analysis, the search in the transformed / reduced variables, and a
+    #: log of every proposal tried.
+    proposal: Any = None
+    analysis: Any = None
+    sub_result: Any = None
+    attempts: list[dict] = field(default_factory=list)
+
+
+_SEARCH_REMEDIATION = (
+    "give slot_ops as {'leaf' | 'unary' | 'binary': [operator names]} or one list of "
+    "names per slot, naming operators of the template's tables and leaving every slot at "
+    "least one; baseline is 'quantile', 'ewma' or 'mean'; population, pqt_size and "
+    "curriculum are non-negative integers"
+)
+
+
+def _search_error(message: str) -> FexError:
+    exc = FexError(f"[E-FEX-013] {message}\nRemediation: {_SEARCH_REMEDIATION}")
+    exc.code = "E-FEX-013"
+    exc.remediation = _SEARCH_REMEDIATION
+    exc.span = None
+    return exc
+
+
+def _slot_masks(template: Template, slot_ops: Any) -> list[np.ndarray] | None:
+    """Boolean allowed-opcode masks per slot (``None`` = everything)."""
+    if slot_ops is None:
+        return None
+    kinds = template.slot_kinds
+    tables = {"leaf": template.unary, "unary": template.unary, "binary": template.binary}
+    if isinstance(slot_ops, dict):
+        bad = set(slot_ops) - set(tables)
+        if bad:
+            raise _search_error(f"unknown slot kinds {sorted(bad)} in slot_ops")
+        per_slot = [slot_ops.get(k) for k in kinds]
+    else:
+        per_slot = list(slot_ops)
+        if len(per_slot) != len(kinds):
+            raise _search_error(f"slot_ops has {len(per_slot)} entries for {len(kinds)} slots")
+    masks = []
+    for k, ops in zip(kinds, per_slot):
+        table = tables[k]
+        if ops is None:
+            masks.append(np.ones(len(table), dtype=bool))
+            continue
+        unknown = [o for o in ops if o not in table]
+        if unknown:
+            raise _search_error(f"operators {unknown} are not in the {k} table {table}")
+        m = np.array([o in ops for o in table])
+        if not m.any():
+            raise _search_error(f"no operator allowed in a {k} slot")
+        masks.append(m)
+    return masks
+
+
+def _shape_tree(shape: str) -> list[dict]:
+    """Per slot (in-order): kind, depth from the root, children slots."""
+    out: list[dict] = []
+    pos = 0
+
+    def parse(depth: int) -> int:
+        nonlocal pos
+        c = shape[pos]
+        if c == "L":
+            pos += 1
+            out.append({"kind": "leaf", "depth": depth, "children": []})
+            return len(out) - 1
+        pos += 2  # "U(" or "B("
+        if c == "U":
+            ch = parse(depth + 1)
+            pos += 1
+            out.append({"kind": "unary", "depth": depth, "children": [ch]})
+            return len(out) - 1
+        left = parse(depth + 1)
+        pos += 1  # ","
+        out.append({"kind": "binary", "depth": depth, "children": []})
+        me = len(out) - 1
+        right = parse(depth + 1)
+        pos += 1  # ")"
+        out[me]["children"] = [left, right]
+        return me
+
+    parse(0)
+    return out
+
+
+def _curriculum_masks(template: Template) -> list[list[np.ndarray] | None]:
+    """Depth curriculum: stage ``k`` lets the ``k`` innermost layers of inner
+    unary slots take any operator and pins the rest to ``id`` (stage 0 is a
+    combination of leaves). The last stage is unrestricted (``None``)."""
+    tree = _shape_tree(template.shape)
+    unary_depths = sorted({n["depth"] for n in tree if n["kind"] == "unary"}, reverse=True)
+    if "id" not in template.unary or not unary_depths:
+        return [None]
+    idx = template.unary.index("id")
+    stages: list[list[np.ndarray] | None] = []
+    for k in range(len(unary_depths)):
+        free = set(unary_depths[:k])
+        masks = []
+        for n, ar in zip(tree, template.slot_arities):
+            m = np.ones(ar, dtype=bool)
+            if n["kind"] == "unary" and n["depth"] not in free:
+                m[:] = False
+                m[idx] = True
+            masks.append(m)
+        stages.append(masks)
+    stages.append(None)
+    return stages
+
+
+def _combine(a: list[np.ndarray] | None, b: list[np.ndarray] | None) -> list[np.ndarray] | None:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    out = []
+    for x, y in zip(a, b):
+        z = x & y
+        out.append(z if z.any() else x)
+    return out
+
+
+def _prior_logits(template: Template, prior: Any) -> list[np.ndarray]:
+    """Initial logits: zero, plus ``prior`` given as per-slot arrays or as
+    ``{kind: {operator: logit}}``."""
+    ar = template.slot_arities
+    z = [np.zeros(k) for k in ar]
+    if prior is None:
+        return z
+    if isinstance(prior, dict):
+        tables = {"leaf": template.unary, "unary": template.unary, "binary": template.binary}
+        for s, k in enumerate(template.slot_kinds):
+            for name, w in (prior.get(k) or {}).items():
+                if name in tables[k]:
+                    z[s][tables[k].index(name)] += float(w)
+        return z
+    pr = list(prior)
+    if len(pr) != len(ar):
+        raise _search_error(f"prior has {len(pr)} entries for {len(ar)} slots")
+    return [zi + np.asarray(p, dtype=float).reshape(-1) for zi, p in zip(z, pr)]
 
 
 def search(
@@ -798,17 +949,31 @@ def search(
     prune: bool = True,
     rng: np.random.Generator | None = None,
     verbose: bool = False,
+    slot_ops: Any = None,
+    prior: Any = None,
+    entropy_weight: float = 0.0,
+    baseline: str = "quantile",
+    baseline_decay: float = 0.9,
+    pqt_size: int = 0,
+    pqt_weight: float = 1.0,
+    population: int = 1,
+    restart_patience: int | None = None,
+    curriculum: int | None = None,
+    seeds: Sequence[Sequence[int]] | None = None,
+    scorer: Any = None,
+    stall_epochs: int | None = None,
 ) -> SearchResult:
-    """Run a FEX search end to end with the paper's controller.
+    """Run a FEX search end to end.
 
-    Each slot has a categorical distribution (softmax of learned logits —
-    the reference controller's network has a constant input, so it is exactly
-    this). Every epoch samples ``batch`` skeletons (uniformly for the first
+    **Reference controller** (the defaults; #582's behaviour). Each slot has
+    a categorical distribution (softmax of learned logits — the reference
+    controller's network has a constant input, so it is exactly this).
+    Every epoch samples ``batch`` skeletons (uniformly for the first
     ``random_steps`` epochs, with ``greedy``-probability uniform resampling of
     each slot afterwards), scores each by a short fit, and applies the
     risk-seeking policy gradient: only the top ``percentile`` of the batch
-    contributes, with advantage ``reward − reward at the quantile``. The reward
-    is ``1/(1 + sqrt(loss))``.
+    contributes, with advantage ``reward − reward at the quantile``. The
+    reward is ``1/(1 + sqrt(loss))``.
 
     Skeletons are deduplicated by :func:`canonical_key`: a family already
     scored reuses its score. New skeletons in a batch are fitted together, in
@@ -820,79 +985,246 @@ def search(
     the loss stays within that cutoff), so a superset family such as
     ``L[sq] + L[cos]`` that fits with zero ``cos`` weights reduces to
     ``L[sq]``.
+
+    **Controller options** (F4; each off by default):
+
+    * ``slot_ops`` — restrict slots to operator subsets, as
+      ``{"leaf": [...], "unary": [...], "binary": [...]}`` or one list per
+      slot (e.g. a :class:`~alkahest._fex_analyze.Proposal`'s ``slot_ops``).
+      Sampling, the greedy resampling and the uniform warm-up all respect it.
+    * ``prior`` — initial logits, per slot or as ``{kind: {op: logit}}``
+      (a soft operator-subset prior instead of a hard restriction).
+    * ``entropy_weight`` — entropy bonus ``λ_H·H(π)`` in the policy gradient
+      (Petersen et al., DSO, ICLR 2021).
+    * ``baseline`` — ``"quantile"`` (risk-seeking: advantage over the
+      batch's ``percentile`` reward; the reference), ``"ewma"`` (risk-seeking
+      over an exponential moving average of that quantile, decay
+      ``baseline_decay``) or ``"mean"`` (plain REINFORCE over the whole
+      batch with an EWMA mean-reward baseline).
+    * ``pqt_size`` / ``pqt_weight`` — priority-queue training: the best
+      ``pqt_size`` families seen so far are kept and their log-likelihood,
+      weighted by ``pqt_weight``, is added to every update (DSO's PQT).
+    * ``population`` / ``restart_patience`` — ``population`` independent
+      controllers sample ``batch`` skeletons each per epoch and share one
+      score cache; a controller whose best reward has not improved for
+      ``restart_patience`` epochs is restarted from the best controller's
+      logits plus noise (from the prior, with a single controller).
+    * ``curriculum`` — depth curriculum: ``curriculum`` epochs with every
+      inner unary slot pinned to ``id``, then one more layer of inner unary
+      slots freed every ``curriculum`` epochs until the full tree is open.
+    * ``seeds`` — skeletons scored before the first epoch (e.g. ansätze from
+      :func:`analyze`); they enter the cache and the priority queue.
+    * ``scorer`` — an object with ``fit(es, theta0, method=, max_iter=)``
+      returning :class:`FitResult` lists (e.g. :class:`TorchEvaluator` on a
+      GPU) used for the coarse scoring; fine-tuning stays on the CPU
+      evaluator.
+    * ``stall_epochs`` — stop early once no new skeleton family has been
+      scored for that many epochs (a restricted search space is exhausted
+      long before ``epochs``).
+
+    Raises :class:`FexError` ``E-FEX-013`` for malformed controller options.
     """
     rng = rng if rng is not None else np.random.default_rng()
     t0 = time.perf_counter()
     ev = Evaluator(template, problem, points, boundary)
     if score_method is None:
         score_method = _local_method(ev)
+    if baseline not in ("quantile", "ewma", "mean"):
+        raise _search_error(f"unknown baseline {baseline!r}")
+    if population < 1 or pqt_size < 0 or (curriculum is not None and curriculum < 1):
+        raise _search_error("population must be >= 1, pqt_size >= 0 and curriculum >= 1")
     arities = template.slot_arities
-    logits = [np.zeros(k) for k in arities]
-    m1 = [np.zeros(k) for k in arities]
-    m2 = [np.zeros(k) for k in arities]
-    adam_t = 0
+    hard = _slot_masks(template, slot_ops)
+    stages = _curriculum_masks(template) if curriculum else [None]
+    init = _prior_logits(template, prior)
+    members: list[dict[str, Any]] = []
+    for _ in range(population):
+        members.append(
+            {
+                "logits": [z.copy() for z in init],
+                "m1": [np.zeros(k) for k in arities],
+                "m2": [np.zeros(k) for k in arities],
+                "t": 0,
+                "best": 0.0,
+                "since": 0,
+            }
+        )
+    scorer = scorer if scorer is not None else ev
     cache: dict[str, FitResult] = {}
+    pq: dict[str, tuple[float, np.ndarray]] = {}
     scored = 0
     history: list[float] = []
+    ewma: float | None = None
+    t_target: float | None = None
+    plain = (
+        hard is None
+        and prior is None
+        and curriculum is None
+        and population == 1
+        and pqt_size == 0
+        and entropy_weight == 0.0
+        and baseline == "quantile"
+        and restart_patience is None
+        and not seeds
+    )
 
     def softmax(z: np.ndarray) -> np.ndarray:
         z = z - z.max()
         p = np.exp(z)
         return p / p.sum()
 
-    for step in range(epochs):
-        probs = [softmax(z) for z in logits]
-        es = np.empty((batch, len(arities)), dtype=np.int64)
-        for s, k in enumerate(arities):
-            if step < random_steps:
-                es[:, s] = rng.integers(0, k, size=batch)
-            else:
-                es[:, s] = rng.choice(k, size=batch, p=probs[s])
-                flip = rng.random(batch) < greedy
-                es[flip, s] = rng.integers(0, k, size=int(flip.sum()))
+    def score(es: np.ndarray) -> list[str]:
+        nonlocal scored
         keys = [template.canonical_key(e) for e in es]
-        new = [i for i, k in enumerate(keys) if k not in cache]
-        # Deduplicate within the batch too.
         first: dict[str, int] = {}
-        for i in new:
-            first.setdefault(keys[i], i)
+        for i, k in enumerate(keys):
+            if k not in cache:
+                first.setdefault(k, i)
         todo = list(first.values())
         if todo:
             ee = np.repeat(es[todo], score_restarts, axis=0)
             th0 = template.init_params(len(ee), rng)
-            res = ev.fit(ee, th0, method=score_method, max_iter=score_iters)
+            res = scorer.fit(ee, th0, method=score_method, max_iter=score_iters)
             scored += len(ee)
             for j, i in enumerate(todo):
                 best = min(res[j * score_restarts : (j + 1) * score_restarts], key=lambda r: r.loss)
                 cache[keys[i]] = best
-        losses = np.array([cache[k].loss for k in keys])
-        rewards = np.where(np.isfinite(losses), 1.0 / (1.0 + np.sqrt(np.abs(losses))), 0.0)
+        return keys
+
+    def reward_of(loss: float) -> float:
+        return 1.0 / (1.0 + math.sqrt(abs(loss))) if math.isfinite(loss) else 0.0
+
+    def push_pq(keys: list[str], es: np.ndarray) -> None:
+        if pqt_size <= 0:
+            return
+        for k, e in zip(keys, es):
+            pq[k] = (reward_of(cache[k].loss), np.array(e))
+        if len(pq) > pqt_size:
+            for k, _ in sorted(pq.items(), key=lambda kv: kv[1][0])[: len(pq) - pqt_size]:
+                del pq[k]
+
+    if seeds:
+        es0 = np.asarray([list(e) for e in seeds], dtype=np.int64).reshape(-1, len(arities))
+        push_pq(score(es0), es0)
+
+    step = 0
+    stall, n_seen = 0, len(cache)
+    for step in range(epochs):
+        stage = stages[min(step // curriculum, len(stages) - 1)] if curriculum else None
+        masks = _combine(hard, stage)
+        if plain:
+            # #582's controller, unchanged (same random stream).
+            mem = members[0]
+            probs = [softmax(z) for z in mem["logits"]]
+            es = np.empty((batch, len(arities)), dtype=np.int64)
+            for s, k in enumerate(arities):
+                if step < random_steps:
+                    es[:, s] = rng.integers(0, k, size=batch)
+                else:
+                    es[:, s] = rng.choice(k, size=batch, p=probs[s])
+                    flip = rng.random(batch) < greedy
+                    es[flip, s] = rng.integers(0, k, size=int(flip.sum()))
+            samples = [(mem, probs, es)]
+        else:
+            samples = []
+            for mem in members:
+                probs = []
+                for s, z in enumerate(mem["logits"]):
+                    zz = z.copy()
+                    if masks is not None:
+                        zz[~masks[s]] = -np.inf
+                    probs.append(softmax(zz))
+                es = np.empty((batch, len(arities)), dtype=np.int64)
+                for s, k in enumerate(arities):
+                    allowed = np.arange(k) if masks is None else np.flatnonzero(masks[s])
+                    if step < random_steps:
+                        es[:, s] = rng.choice(allowed, size=batch)
+                    else:
+                        es[:, s] = rng.choice(k, size=batch, p=probs[s])
+                        flip = rng.random(batch) < greedy
+                        es[flip, s] = rng.choice(allowed, size=int(flip.sum()))
+                samples.append((mem, probs, es))
+        all_es = np.concatenate([x[2] for x in samples])
+        keys_all = score(all_es)
+        push_pq(keys_all, all_es)
         best_loss = min(r.loss for r in cache.values())
         history.append(best_loss)
+        if target_loss is not None and best_loss <= target_loss and t_target is None:
+            t_target = time.perf_counter() - t0
         if verbose:
             print(f"step {step}: best loss {best_loss:.3e}, unique {len(cache)}")
-        # Risk-seeking policy gradient over the top quantile.
-        order = np.argsort(-rewards)
-        nq = max(1, int(batch * percentile))
-        base = rewards[order[min(nq, batch - 1)]]
-        grads = [np.zeros(k) for k in arities]
-        for idx in order[:nq]:
-            adv = rewards[idx] - base
-            if adv == 0.0:
-                continue
+        off = 0
+        for mem, probs, es in samples:
+            keys = keys_all[off : off + len(es)]
+            off += len(es)
+            losses = np.array([cache[k].loss for k in keys])
+            rewards = np.where(np.isfinite(losses), 1.0 / (1.0 + np.sqrt(np.abs(losses))), 0.0)
+            order = np.argsort(-rewards)
+            nb = len(es)
+            nq = max(1, int(nb * percentile))
+            q = rewards[order[min(nq, nb - 1)]]
+            if baseline == "quantile":
+                base, chosen, norm = q, order[:nq], nq
+            elif baseline == "ewma":
+                ewma = q if ewma is None else baseline_decay * ewma + (1 - baseline_decay) * q
+                base, chosen, norm = ewma, order[:nq], nq
+            else:
+                mean = float(rewards.mean())
+                ewma = mean if ewma is None else baseline_decay * ewma + (1 - baseline_decay) * mean
+                base, chosen, norm = ewma, order, nb
+            grads = [np.zeros(k) for k in arities]
+            for idx in chosen:
+                adv = rewards[idx] - base
+                if adv == 0.0:
+                    continue
+                for s in range(len(arities)):
+                    g = -probs[s].copy()
+                    g[es[idx, s]] += 1.0
+                    grads[s] += adv * g / norm
+            if pqt_size and pq:
+                for _r, e in pq.values():
+                    for s in range(len(arities)):
+                        g = -probs[s].copy()
+                        g[e[s]] += 1.0
+                        grads[s] += pqt_weight * g / len(pq)
+            if entropy_weight:
+                for s in range(len(arities)):
+                    p = probs[s]
+                    lp = np.log(np.where(p > 0, p, 1.0))
+                    h = -float((p * lp).sum())
+                    grads[s] += entropy_weight * (-p * (lp + h))
+            mem["t"] += 1
+            t = mem["t"]
             for s in range(len(arities)):
-                g = -probs[s]
-                g[es[idx, s]] += 1.0
-                grads[s] += adv * g / nq
-        adam_t += 1
-        for s in range(len(arities)):
-            m1[s] = 0.9 * m1[s] + 0.1 * grads[s]
-            m2[s] = 0.999 * m2[s] + 0.001 * grads[s] ** 2
-            mh = m1[s] / (1 - 0.9**adam_t)
-            vh = m2[s] / (1 - 0.999**adam_t)
-            logits[s] += lr * mh / (np.sqrt(vh) + 1e-8)
+                mem["m1"][s] = 0.9 * mem["m1"][s] + 0.1 * grads[s]
+                mem["m2"][s] = 0.999 * mem["m2"][s] + 0.001 * grads[s] ** 2
+                mh = mem["m1"][s] / (1 - 0.9**t)
+                vh = mem["m2"][s] / (1 - 0.999**t)
+                mem["logits"][s] += lr * mh / (np.sqrt(vh) + 1e-8)
+            top = float(rewards.max()) if len(rewards) else 0.0
+            if top > mem["best"] + 1e-12:
+                mem["best"], mem["since"] = top, 0
+            else:
+                mem["since"] += 1
+        if restart_patience is not None:
+            lead = max(members, key=lambda m: m["best"])
+            for mem in members:
+                if mem["since"] < restart_patience:
+                    continue
+                if population > 1 and mem is not lead:
+                    mem["logits"] = [z + rng.normal(0.0, 0.5, z.shape) for z in lead["logits"]]
+                else:
+                    mem["logits"] = [z.copy() for z in init]
+                mem["m1"] = [np.zeros(k) for k in arities]
+                mem["m2"] = [np.zeros(k) for k in arities]
+                mem["t"], mem["since"], mem["best"] = 0, 0, 0.0
         if target_loss is not None and best_loss <= target_loss:
             break
+        if stall_epochs is not None:
+            stall = 0 if len(cache) > n_seen else stall + 1
+            n_seen = len(cache)
+            if stall >= stall_epochs:
+                break
 
     top = sorted(cache.items(), key=lambda kv: kv[1].loss)[:pool_size]
     finals: list[tuple[str, FitResult]] = []
@@ -930,12 +1262,604 @@ def search(
         template=template,
         points=ev.points,
         boundary=ev.boundary,
+        epochs=step + 1,
+        seconds_to_target=t_target,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Symbolic pruning and ansätze (F4, R9)
+# ---------------------------------------------------------------------------
+
+
+def analyze(
+    problem: Problem,
+    *,
+    seed: int = 0,
+    unary: Sequence[str] | None = None,
+    binary: Sequence[str] | None = None,
+    shape: str = "depth2_sub",
+) -> Any:
+    """Analyse ``problem`` symbolically before a search and propose
+    restricted searches (operator subsets, ``u = e^v`` / ``log``
+    substitutions, variable reductions, radial, separable, plane-wave and
+    scaling ansätze). Returns an :class:`~alkahest._fex_analyze.Analysis`;
+    see :mod:`alkahest._fex_analyze` for each test."""
+    from ._fex_analyze import analyze as _analyze
+
+    return _analyze(
+        problem,
+        seed=seed,
+        unary=None if unary is None else list(unary),
+        binary=None if binary is None else list(binary),
+        shape=shape,
+    )
+
+
+def transform_problem(problem: Problem, kind: str = "exp", *, loss: str | None = None) -> Problem:
+    """The problem for ``v`` under ``u = e^v`` (``"exp"``) or ``u = log v``
+    (``"log"``), derived through the jet layer. Raises ``E-FEX-012`` when it
+    does not apply."""
+    from ._fex_analyze import transform_problem as _tp
+
+    return _tp(problem, kind, loss=loss)
+
+
+def reduce_problem(problem: Problem, variables: Sequence[int]) -> Problem:
+    """The problem for solutions depending only on ``variables``. Raises
+    ``E-FEX-012`` when the operator or data still mention a dropped
+    coordinate."""
+    from ._fex_analyze import reduce_problem as _rp
+
+    return _rp(problem, list(variables))
+
+
+def _scale_output(tpl: Template, e: list[int], theta: np.ndarray, slot: int, c: float) -> bool:
+    tree = _shape_tree(tpl.shape)
+    offs = list(tpl.param_offsets)
+    n = tree[slot]
+    if n["kind"] == "leaf":
+        theta[offs[slot] : offs[slot] + tpl.dim + 1] *= c
+        return True
+    if n["kind"] == "unary":
+        theta[offs[slot] : offs[slot] + 2] *= c
+        return True
+    op = tpl.binary[e[slot]]
+    left, right = n["children"]
+    if op in ("+", "-"):
+        return _scale_output(tpl, e, theta, left, c) and _scale_output(tpl, e, theta, right, c)
+    if op in ("*", "/"):
+        return _scale_output(tpl, e, theta, left, c)
+    return False
+
+
+def lift_candidate(
+    template: Template,
+    e: Sequence[int],
+    theta: Any,
+    *,
+    transform: str | None = None,
+    variables: Sequence[int] | None = None,
+    dim: int | None = None,
+) -> tuple[Template, list[int], np.ndarray]:
+    """Map a candidate found for a transformed and / or reduced problem back
+    to the original unknown and coordinates.
+
+    ``variables`` places the reduced template's leaf weights at those
+    coordinates of a ``dim``-dimensional template (zero elsewhere).
+    ``transform="exp"`` turns ``v`` into ``u = e^v``: when the root slot is
+    ``id`` its affine map is folded into the subtree and the root becomes
+    ``exp`` (same shape); otherwise the tree is wrapped in a new ``exp``
+    root ``U(…)``. ``"log"`` wraps in ``log``.
+    """
+    e = [int(v) for v in e]
+    theta = np.asarray(theta, dtype=np.float64).copy()
+    tpl = template
+    if variables is not None:
+        variables = [int(v) for v in variables]
+        d = int(dim) if dim is not None else max(variables) + 1
+        new = Template(tpl.shape, tpl.unary, tpl.binary, d)
+        th = np.zeros(new.n_params)
+        o_old, o_new = list(tpl.param_offsets), list(new.param_offsets)
+        for s, k in enumerate(tpl.slot_kinds):
+            a, b = o_old[s], o_new[s]
+            if k == "leaf":
+                for j, v in enumerate(variables):
+                    th[b + v] = theta[a + j]
+                th[b + d] = theta[a + tpl.dim]
+            elif k == "unary":
+                th[b : b + 2] = theta[a : a + 2]
+        tpl, theta = new, th
+    if transform is None:
+        return tpl, e, theta
+    outer = {"exp": "exp", "log": "log"}[transform]
+    unary = list(tpl.unary)
+    if outer not in unary:
+        unary.append(outer)
+    remap = Template(tpl.shape, unary, tpl.binary, tpl.dim)
+    root = len(e) - 1
+    kinds = tpl.slot_kinds
+    if transform == "exp" and kinds[root] == "unary" and tpl.unary[e[root]] == "id":
+        child = _shape_tree(tpl.shape)[root]["children"][0]
+        o = tpl.param_offsets[root]
+        a_r, b_r = float(theta[o]), float(theta[o + 1])
+        th = theta.copy()
+        if _scale_output(tpl, e, th, child, a_r):
+            th[o], th[o + 1] = math.exp(b_r), 0.0
+            e2 = [unary.index(tpl.unary[v]) if k != "binary" else v for v, k in zip(e, kinds)]
+            e2[root] = unary.index("exp")
+            return remap, e2, th
+    wrapped = Template(f"U({tpl.shape})", unary, tpl.binary, tpl.dim)
+    e2 = [unary.index(tpl.unary[v]) if k != "binary" else v for v, k in zip(e, kinds)]
+    e2.append(unary.index(outer))
+    return wrapped, e2, np.concatenate([theta, [1.0, 0.0]])
+
+
+def _saturated(
+    tpl: Template, e: Sequence[int], theta: Any, coords: list[Any], pts: np.ndarray
+) -> bool:
+    """Whether a ``tanh`` slot's argument exceeds 18 in magnitude at some
+    sample point (``tanh`` is then ±1 to double precision there): such a
+    candidate can fit a jump with an exactly zero collocation residual."""
+    if "tanh" not in tpl.unary or not any(
+        tpl.unary[v] == "tanh" for v, k in zip(e, tpl.slot_kinds) if k != "binary"
+    ):
+        return False
+    import alkahest as _alk
+
+    expr = tpl.instantiate(e, theta, coords)
+    stack, seen = [expr], set()
+    cols = [np.ascontiguousarray(pts[:, i]) for i in range(pts.shape[1])]
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        nd = n.node()
+        if nd[0] == "func" and nd[1] == "tanh":
+            f = _alk.compile_expr(nd[2][0], list(coords))
+            v = np.asarray(_alk.numpy_eval(f, *cols))
+            if not np.all(np.isfinite(v)) or float(np.max(np.abs(v))) > 18.0:
+                return True
+        for a in nd[1:]:
+            if isinstance(a, list):
+                stack.extend(c for c in a if hasattr(c, "node"))
+            elif hasattr(a, "node"):
+                stack.append(a)
+    return False
+
+
+def _accepts(loss: float, accept_loss: float, theta: Any = None, max_param: float = 1e4) -> bool:
+    """Exact in floating point, with parameters below ``max_param``: a
+    saturated ``tanh`` / ``exp`` with huge weights is a step function whose
+    collocation residual can be exactly zero at every sample point."""
+    if not (math.isfinite(loss) and loss <= accept_loss):
+        return False
+    return theta is None or float(np.max(np.abs(theta), initial=0.0)) <= max_param
+
+
+def _flip_leaf_signs(
+    tpl: Template, e: list[int], theta: np.ndarray, rng, p: float = 0.5
+) -> np.ndarray:
+    """``theta`` with each leaf weight set to minus its magnitude with
+    probability ``p`` — starts for discrete solution sets (a sign per
+    coordinate); ``p = 1`` is the all-decaying start."""
+    th = np.array(theta, dtype=np.float64)
+    for s, k in enumerate(tpl.slot_kinds):
+        if k == "leaf":
+            o = tpl.param_offsets[s]
+            w = th[o : o + tpl.dim]
+            flip = rng.random(tpl.dim) < p
+            w[flip] = -np.abs(w[flip])
+    return th
+
+
+def _e_back(
+    tpl_v: Template, tpl_u: Template, e_u: Sequence[int], transform: str | None
+) -> list[int]:
+    """Opcodes of a lifted skeleton in the searched template's tables (a
+    folded ``exp`` root goes back to ``id``)."""
+    folded = transform == "exp" and tpl_u.n_slots == tpl_v.n_slots
+    out = []
+    for s, k in enumerate(tpl_v.slot_kinds):
+        if k == "binary":
+            out.append(tpl_v.binary.index(tpl_u.binary[e_u[s]]))
+        else:
+            name = "id" if (folded and s == tpl_v.n_slots - 1) else tpl_u.unary[e_u[s]]
+            out.append(tpl_v.unary.index(name))
+    return out
+
+
+def _unlift(
+    tpl_v: Template,
+    tpl_u: Template,
+    theta_u: np.ndarray,
+    transform: str | None,
+    variables: Sequence[int] | None,
+) -> np.ndarray | None:
+    """Inverse of :func:`lift_candidate` on parameters (the skeleton is the
+    searched one). ``None`` when the lifted root scale is not positive."""
+    th = np.asarray(theta_u, dtype=np.float64).copy()
+    if transform is not None:
+        if tpl_u.n_slots == tpl_v.n_slots:  # folded: root exp with (α, 0)
+            o = tpl_u.param_offsets[-1]
+            if not th[o] > 0:
+                return None
+            th[o], th[o + 1] = 1.0, math.log(th[o])
+        else:  # wrapped in U(…)
+            th = th[:-2]
+    if variables is None:
+        return th
+    out = np.zeros(tpl_v.n_params)
+    d_full = tpl_u.dim
+    for s, k in enumerate(tpl_v.slot_kinds):
+        a, b = tpl_v.param_offsets[s], tpl_u.param_offsets[s]
+        if k == "leaf":
+            for j, v in enumerate(variables):
+                out[a + j] = th[b + v]
+            out[a + tpl_v.dim] = th[b + d_full]
+        elif k == "unary":
+            out[a : a + 2] = th[b : b + 2]
+    return out
+
+
+def _fold_constant_products(
+    tpl: Template, e: Sequence[int], theta: Any
+) -> tuple[list[int], np.ndarray]:
+    """``c · X`` with ``c`` a constant leaf (``L[0]`` / ``L[1]``) becomes
+    ``X·c + 0`` (``X`` rescaled, the product turned into a sum with the
+    constant leaf zeroed): the same function, with the coefficients where
+    :func:`finalize` can snap and lift them."""
+    e = [int(v) for v in e]
+    th = np.asarray(theta, dtype=np.float64).copy()
+    if "+" not in tpl.binary:
+        return e, th
+    tree = _shape_tree(tpl.shape)
+    offs = list(tpl.param_offsets)
+    d = tpl.dim
+    for s, node in enumerate(tree):
+        if node["kind"] != "binary" or tpl.binary[e[s]] != "*":
+            continue
+        left, right = node["children"]
+        for c_slot, other in ((left, right), (right, left)):
+            if tree[c_slot]["kind"] != "leaf" or tpl.unary[e[c_slot]] not in ("0", "1"):
+                continue
+            o = offs[c_slot]
+            val = th[o + d] + (th[o : o + d].sum() if tpl.unary[e[c_slot]] == "1" else 0.0)
+            trial = th.copy()
+            if _scale_output(tpl, e, trial, other, float(val)):
+                trial[o : o + d + 1] = 0.0
+                th = trial
+                e[s] = tpl.binary.index("+")
+                break
+    return e, th
+
+
+def solve(
+    problem: Problem,
+    points: Any,
+    boundary: Any = None,
+    *,
+    shape: str = "depth2_sub",
+    unary: Sequence[str] = PAPER_UNARY,
+    binary: Sequence[str] = PAPER_BINARY,
+    analysis: Any = True,
+    proposals: Sequence[Any] | None = None,
+    max_proposals: int | None = None,
+    accept_loss: float = 1e-20,
+    alternatives: int = 8,
+    select: str = "auto",
+    max_param: float = 1e4,
+    restrict: str = "hard",
+    prior_strength: float = 2.0,
+    rng: np.random.Generator | None = None,
+    verbose: bool = False,
+    **search_kw: Any,
+) -> SearchResult:
+    """FEX with symbolic pruning: :func:`analyze` the problem, then
+    :func:`search` each proposal in turn — the transformed and / or reduced
+    problem, with the proposal's operator tables and slot restrictions —
+    map the result back with :func:`lift_candidate`, and stop at the first
+    proposal whose search loss is at most ``accept_loss``.
+
+    The returned :class:`SearchResult` is in the original unknown and
+    coordinates (so :func:`finalize` takes it with the original problem).
+    Within a proposal, candidates exact in the searched variables come
+    first and the *original* loss decides among them. For a substitution,
+    each exact family is also refitted on the original loss (from the lifted
+    parameters and ``alternatives − 1`` sign-flipped starts) and re-solved
+    in the searched variables from there: ``u = e^v`` turns
+    ``−Δu + Vu = λu`` into an equation that growing solutions such as
+    ``e^{+|x|²/2}`` solve too, and the original loss (the Rayleigh quotient
+    with the boundary penalty) picks the ground state. When no proposal is
+    exact, ``select="original"`` returns the smallest original loss and
+    ``select="first"`` the first (most specific) proposal's result;
+    A candidate counts as exact only with every parameter below
+    ``max_param`` in magnitude and no ``tanh`` argument above 18 at the
+    sample points: a saturated ``tanh`` is a step whose collocation residual
+    vanishes at every sample point.
+    ``"auto"`` (default) is ``"first"`` for a Rayleigh-quotient problem —
+    a Monte Carlo Rayleigh quotient in high dimension can be driven below
+    the true eigenvalue, so it cannot rank proposals — and ``"original"``
+    otherwise.
+
+    ``restrict="hard"`` (default) searches each proposal's operator tables
+    and slot restrictions only; ``restrict="soft"`` searches the full tables
+    with the proposal as a prior instead (the proposed operators' initial
+    logits raised by ``prior_strength``), the LLM-free counterpart of the
+    operator-set prediction of Bhatnagar et al. (arXiv 2503.09986).
+
+    ``unary`` / ``binary`` are the full operator tables (the last proposal
+    searches them unrestricted) and ``shape`` the tree of that search.
+    ``analysis=False`` runs the unrestricted search only; ``proposals``
+    overrides the analysis' list. ``search_kw`` goes to :func:`search`
+    (e.g. ``epochs``, controller options).
+    """
+    from ._fex_analyze import Proposal
+    from ._fex_analyze import analyze as _analyze
+
+    rng = rng if rng is not None else np.random.default_rng()
+    t0 = time.perf_counter()
+    if select == "auto":
+        select = "first" if problem.loss == "rayleigh" else "original"
+    if restrict not in ("hard", "soft"):
+        raise _search_error(f"unknown restrict {restrict!r}; use 'hard' or 'soft'")
+    if select not in ("first", "original"):
+        raise _search_error(f"unknown select {select!r}; use 'auto', 'first' or 'original'")
+    pts = _f64(points)
+    bd = None if boundary is None else _f64(boundary)
+    ana = None
+    if proposals is None:
+        if analysis is True:
+            ana = _analyze(problem, unary=list(unary), binary=list(binary), shape=shape)
+            proposals = ana.proposals
+        elif analysis:
+            ana = analysis
+            proposals = ana.proposals
+        else:
+            proposals = [
+                Proposal(
+                    "paper",
+                    "no analysis",
+                    list(unary),
+                    list(binary),
+                    shape=shape,
+                )
+            ]
+    proposals = list(proposals)
+    if max_proposals is not None:
+        proposals = proposals[:max_proposals]
+    ev_cache: dict[tuple, Evaluator] = {}
+
+    def ev_for(tpl: Template) -> Evaluator:
+        k = (tpl.shape, tuple(tpl.unary), tuple(tpl.binary))
+        if k not in ev_cache:
+            ev_cache[k] = Evaluator(tpl, problem, pts, bd)
+        return ev_cache[k]
+
+    def original_loss(tpl: Template, e: list[int], th: np.ndarray) -> float:
+        return float(ev_for(tpl).loss(e, th))
+
+    attempts: list[dict] = []
+    best: tuple | None = None
+    scored = 0
+    unique = 0
+    for prop in proposals:
+        ta = time.perf_counter()
+        sub = problem
+        try:
+            if prop.transform:
+                sub = transform_problem(sub, prop.transform, loss=prop.loss)
+            if prop.variables is not None:
+                sub = reduce_problem(sub, prop.variables)
+        except FexError as exc:
+            attempts.append({"proposal": prop.name, "skipped": str(exc)})
+            continue
+        sp = pts if prop.variables is None else pts[:, prop.variables]
+        sb = None
+        if bd is not None and (sub.spec.get("bc") is not None):
+            sb = bd if prop.variables is None else bd[:, prop.variables]
+        kw = dict(search_kw)
+        kw.setdefault("target_loss", accept_loss)
+        if restrict == "soft" and prop.slot_ops:
+            # The proposal as a prior: the full tables, with the proposed
+            # operators' logits raised by `prior_strength`.
+            table = list(dict.fromkeys([*unary, *prop.unary]))
+            tpl = Template(prop.shape, table, list(binary), sub.dim)
+            kw.setdefault(
+                "prior",
+                {k: dict.fromkeys(v, prior_strength) for k, v in prop.slot_ops.items()},
+            )
+            slot_ops = None
+        else:
+            tpl = Template(prop.shape, prop.unary, prop.binary, sub.dim)
+            slot_ops = prop.slot_ops or None
+        t_search = time.perf_counter()
+        res = search(tpl, sub, sp, sb, slot_ops=slot_ops, rng=rng, **kw)
+        scored += res.candidates_scored
+        unique += res.unique_skeletons
+        cands = [(res.e, res.theta, res.loss)]
+        cands += [(r.e, r.theta, r.loss) for r in res.pool]
+        scored_here = []
+
+        def consider(e_v, th_v, l_v, tpl=tpl, prop=prop, scored_here=scored_here):
+            if not math.isfinite(l_v):
+                return None
+            tu, eu, thu = lift_candidate(
+                tpl,
+                e_v,
+                th_v,
+                transform=prop.transform,
+                variables=prop.variables,
+                dim=problem.dim,
+            )
+            if _saturated(tu, eu, thu, problem.x, pts):
+                return None
+            lo = original_loss(tu, eu, thu)
+            item = (lo, l_v, tu, eu, thu)
+            scored_here.append(item)
+            return item
+
+        for c in cands:
+            consider(*c)
+        if prop.transform and alternatives:
+            # A substitution can admit solutions the original problem rules
+            # out (u = e^v: every zero-free eigenfunction-like solution, the
+            # growing ones included). For each family that solves the
+            # searched problem: refit its lifted form on the original loss,
+            # map back, and re-solve the searched problem from there — the
+            # local solution nearest to what the original loss prefers.
+            ev_sub = Evaluator(tpl, sub, sp, sb)
+            cut = max(accept_loss, res.loss) * 100
+            seen = set()
+            for lo, l_v, tu, eu, thu in list(scored_here):
+                k = tuple(eu)
+                if l_v > cut or k in seen or _accepts(lo, accept_loss):
+                    # Already a solution of the original problem: nothing
+                    # to choose between.
+                    continue
+                seen.add(k)
+                ev_o = ev_for(tu)
+                starts = [thu, _flip_leaf_signs(tu, eu, thu, rng, p=1.0)] + [
+                    _flip_leaf_signs(tu, eu, thu, rng) for _ in range(max(0, alternatives - 2))
+                ]
+                es_o = np.tile(np.asarray(eu, dtype=np.int64), (len(starts), 1))
+                fits_o = ev_o.fit(
+                    es_o, np.asarray(starts), method=_local_method(ev_o), max_iter=100
+                )
+                e_back = np.asarray(_e_back(tpl, tu, eu, prop.transform), dtype=np.int64)
+                back = [_unlift(tpl, tu, th, prop.transform, prop.variables) for th in starts[1:]]
+                back += [_unlift(tpl, tu, f.theta, prop.transform, prop.variables) for f in fits_o]
+                back = [b for b in back if b is not None]
+                if not back:
+                    continue
+                refits = ev_sub.fit(
+                    np.tile(e_back, (len(back), 1)),
+                    np.asarray(back),
+                    method=_local_method(ev_sub),
+                    max_iter=200,
+                )
+                for r2 in refits:
+                    consider(r2.e, r2.theta, r2.loss)
+        # Exact in the searched variables first, then the original loss.
+        exact = [c for c in scored_here if _accepts(c[1], accept_loss, c[4], max_param)]
+
+        def n_free(c) -> int:
+            return sum(1 for v in c[2].redundant_params(c[3]) if v is None)
+
+        def rank(c) -> float:
+            # For an eigenproblem the Monte Carlo Rayleigh quotient cannot
+            # rank exact solutions of the substituted equation in high
+            # dimension (it is dominated by the few samples where u is
+            # large); the boundary condition u = 0 can. The ground state
+            # decays towards every face: compare |u| at the face centres of
+            # the box spanned by the boundary points with |u| at its centre.
+            if problem.loss == "rayleigh" and bd is not None and len(bd):
+                lo_b, hi_b = bd.min(axis=0), bd.max(axis=0)
+                mid = 0.5 * (lo_b + hi_b)
+                probe = [mid]
+                for i in range(len(mid)):
+                    for v in (lo_b[i], hi_b[i]):
+                        q = mid.copy()
+                        q[i] = v
+                        probe.append(q)
+                u = np.abs(ev_for(c[2]).jets(c[3], c[4], np.asarray(probe))[0])
+                return float(u[1:].max() / u[0]) if u[0] > 0 else math.inf
+            return c[0]
+
+        if exact:
+            # Simplest family first (fewest free parameters), then the
+            # original loss (which separates e.g. decaying from growing).
+            pick = min(exact, key=lambda c: (n_free(c), rank(c), c[1]))
+        elif problem.loss == "rayleigh":
+            # No exact candidate: among the near-best fits of the searched
+            # problem, the one that decays (see `rank`).
+            best_v = min(c[1] for c in scored_here)
+            near = [c for c in scored_here if c[1] <= 10 * best_v + 1e-300]
+            pick = min(near, key=lambda c: (rank(c), c[1]))
+        else:
+            pick = min(scored_here, key=lambda c: (c[0], c[1]))
+        lo, l_v, tu, eu, thu = pick
+        attempts.append(
+            {
+                "proposal": prop.name,
+                "reason": prop.reason,
+                "transform": prop.transform,
+                "variables": prop.variables,
+                "unary": prop.unary,
+                "slot_ops": prop.slot_ops,
+                "search_loss": l_v,
+                "original_loss": lo,
+                "key": tu.canonical_key(eu),
+                "epochs": res.epochs,
+                "candidates_scored": res.candidates_scored,
+                "seconds": time.perf_counter() - ta,
+            }
+        )
+        if verbose:
+            print(attempts[-1])
+        ok_here = _accepts(l_v, accept_loss, thu, max_param)
+        hit = None
+        if ok_here:
+            # When the coarse search hit the target, that moment; otherwise
+            # (exact only after fine-tuning) now.
+            hit = (
+                (t_search - t0) + res.seconds_to_target
+                if res.seconds_to_target is not None
+                else time.perf_counter() - t0
+            )
+        cand = (ok_here, lo, prop, res, tu, eu, thu, l_v, hit)
+        if (
+            best is None
+            or (cand[0] and not best[0])
+            or (select == "original" and cand[0] == best[0] and cand[1] < best[1])
+        ):
+            best = cand
+        if ok_here:
+            break
+    if best is None:
+        raise _search_error("no proposal could be searched")
+    _ok, lo, prop, res, tu, eu, thu, l_v, hit = best
+    e2, th2 = _fold_constant_products(tu, eu, thu)
+    if e2 != list(eu):
+        lo2 = original_loss(tu, e2, th2)
+        if math.isfinite(lo2) and lo2 <= max(lo * (1 + 1e-6), lo + 1e-28):
+            eu, thu, lo = e2, th2, lo2
+    return SearchResult(
+        e=eu,
+        theta=thu,
+        loss=lo,
+        key=tu.canonical_key(eu),
+        expression=tu.instantiate(eu, thu, problem.x),
+        pool=res.pool,
+        candidates_scored=scored,
+        unique_skeletons=unique,
+        seconds=time.perf_counter() - t0,
+        history=res.history,
+        template=tu,
+        points=pts,
+        boundary=bd,
+        epochs=res.epochs,
+        seconds_to_target=hit,
+        proposal=prop,
+        analysis=ana,
+        sub_result=res,
+        attempts=attempts,
     )
 
 
 # ---------------------------------------------------------------------------
 # Finalising a solution (F3)
 # ---------------------------------------------------------------------------
+
+
+def __getattr__(name: str) -> Any:
+    # The torch evaluator is imported on first use (torch is optional).
+    if name == "TorchEvaluator":
+        from ._fex_torch import TorchEvaluator
+
+        return TorchEvaluator
+    raise AttributeError(f"module 'alkahest.fex' has no attribute {name!r}")
 
 
 def finalize(result: Any, problem: Problem, **kw: Any) -> dict:

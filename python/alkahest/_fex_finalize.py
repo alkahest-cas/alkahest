@@ -493,6 +493,8 @@ def _unary(op: str, a: Any, pool: Any) -> Any:
         return _ak.log(a)
     if op == "abs":
         return _ak.abs(a)
+    if op == "tanh":
+        return _ak.tanh(a)
     raise ValueError(op)
 
 

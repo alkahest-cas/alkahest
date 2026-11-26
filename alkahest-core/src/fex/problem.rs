@@ -383,6 +383,24 @@ pub enum LossKind {
     /// The Rayleigh quotient `mean(|∇u|² + V u²) / mean(u²) + λ·mean(r_bd²)`
     /// for the eigenproblem `−Δu + V u = λ u`.
     Rayleigh,
+    /// `mean((r_int − mean r_int)²) + λ·mean(r_bd²)`: least squares with the
+    /// interior residual's mean removed, i.e. minimised over an unknown
+    /// additive constant in the equation. This is the loss for `F(u) = c`
+    /// with `c` unknown — after the substitution `u = e^v`, the eigenproblem
+    /// `−Δu + V u = λ u` becomes `−Δv − |∇v|² + V = λ`, and the fitted mean
+    /// of the residual is the eigenvalue. Levenberg–Marquardt applies.
+    CenteredLeastSquares,
+}
+
+impl LossKind {
+    /// Whether the loss is a sum of squared residuals (so a residual vector
+    /// and Jacobian exist and Levenberg–Marquardt applies).
+    pub fn is_least_squares(self) -> bool {
+        matches!(
+            self,
+            LossKind::LeastSquares | LossKind::CenteredLeastSquares
+        )
+    }
 }
 
 /// A PDE problem: operator, source, boundary data, loss.

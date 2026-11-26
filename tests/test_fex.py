@@ -267,7 +267,7 @@ def test_error_codes():
         fex.Template("U(B(L,L)", dim=2)
     assert ei.value.code == "E-FEX-001"
     with pytest.raises(fex.FexError) as ei:
-        fex.Template("L", unary=["tanh"], dim=2)
+        fex.Template("L", unary=["sinh"], dim=2)
     assert ei.value.code == "E-FEX-002"
     tpl = fex.Template("depth2_sub", dim=2)
     with pytest.raises(fex.FexError) as ei:

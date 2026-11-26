@@ -934,7 +934,7 @@ fn error_codes() {
         "E-FEX-001"
     );
     assert_eq!(
-        Template::from_names("L", &["tanh"], &[], 2)
+        Template::from_names("L", &["sinh"], &[], 2)
             .unwrap_err()
             .code(),
         "E-FEX-002"
@@ -1009,5 +1009,124 @@ fn error_codes() {
                 .any(|s| s.code == code),
             "{code}"
         );
+    }
+}
+
+#[test]
+fn tanh_derivatives_match_symbolic_diff() {
+    // tanh in leaves and inner slots: the fused jets and their Jacobian rows
+    // against symbolic diff of the instantiated candidate.
+    let u = [UnaryOp::Id, UnaryOp::Tanh, UnaryOp::Sq, UnaryOp::Sin];
+    let t = Template::new("U(B(L,L))", &u, &PAPER_BINARY, 3).unwrap();
+    let mut rng = Rng(0x7a11);
+    for e in [[1, 0, 0, 1], [1, 1, 2, 1], [0, 2, 1, 1], [1, 0, 3, 1]] {
+        let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.9, 0.9)).collect();
+        let x: Vec<f64> = (0..3).map(|_| rng.unif(-0.9, 0.9)).collect();
+        check_candidate_derivatives(&t, &e, &th, &x, None);
+    }
+    // eval4 against finite differences of tanh itself.
+    for s in [-2.5, -0.3, 0.0, 0.7, 3.1] {
+        let [f, f1, f2, f3] = UnaryOp::Tanh.eval4(s);
+        let h = 1e-5;
+        let [fp, f1p, f2p, _] = UnaryOp::Tanh.eval4(s + h);
+        let [fm, f1m, f2m, _] = UnaryOp::Tanh.eval4(s - h);
+        assert!(close(f, f64::tanh(s), 1e-15));
+        assert!(close(f1, (fp - fm) / (2.0 * h), 1e-8));
+        assert!(close(f2, (f1p - f1m) / (2.0 * h), 1e-8));
+        assert!(close(f3, (f2p - f2m) / (2.0 * h), 1e-8));
+    }
+    assert_eq!(UnaryOp::parse("tanh").unwrap(), UnaryOp::Tanh);
+    assert_eq!(UnaryOp::Tanh.name(), "tanh");
+}
+
+#[test]
+fn centered_least_squares_removes_the_interior_mean() {
+    // −Δu = c with c unknown: every u = a·Σx² + b solves it for c = −2ad, so
+    // the centred loss is zero there while the plain one is not; and the
+    // centred Jacobian matches finite differences of the centred residual.
+    let d = 3;
+    let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let mut rng = Rng(77);
+    let xi = grid(&mut rng, 60, d, -1.0, 1.0);
+    let mk = |loss: LossKind| {
+        Problem::new(
+            d,
+            PdeOperator::poisson(),
+            ScalarField::Zero,
+            ScalarField::Zero,
+        )
+        .unwrap()
+        .with_loss(loss)
+        .with_bc_weight(0.0)
+    };
+    let centred = mk(LossKind::CenteredLeastSquares);
+    assert!(centred.loss().is_least_squares());
+    let plain = mk(LossKind::LeastSquares);
+    let e = [3, 0, 0, 2]; // id(L[sq] + L[0])
+    let mut th = vec![0.0; t.n_params()];
+    for w in &mut th[0..d] {
+        *w = 0.37;
+    }
+    th[d] = 0.2;
+    th[t.n_params() - 2] = 1.0;
+    let evc = Evaluator::new(&t, &centred, &xi, &[]).unwrap();
+    let evp = Evaluator::new(&t, &plain, &xi, &[]).unwrap();
+    assert!(evc.loss(&e, &th).unwrap() < 1e-28);
+    assert!(evp.loss(&e, &th).unwrap() > 1.0);
+    // A generic candidate: Jacobian rows against finite differences, mean
+    // zero, and the gradient is 2Jᵀr.
+    let e2 = [7, 1, 3, 8];
+    let th2: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.5, 0.5)).collect();
+    let m = evc.n_residuals();
+    let np = t.n_params();
+    let mut r = vec![0.0; m];
+    let mut j = vec![0.0; m * np];
+    assert!(evc
+        .residual_and_jacobian(&e2, &th2, &mut r, Some(&mut j))
+        .unwrap());
+    assert!(r.iter().sum::<f64>().abs() < 1e-12);
+    let h = 1e-6;
+    for k in 0..np {
+        let (mut a, mut b) = (th2.clone(), th2.clone());
+        a[k] += h;
+        b[k] -= h;
+        let (mut ra, mut rb) = (vec![0.0; m], vec![0.0; m]);
+        evc.residual_and_jacobian(&e2, &a, &mut ra, None).unwrap();
+        evc.residual_and_jacobian(&e2, &b, &mut rb, None).unwrap();
+        for row in 0..m {
+            let fd = (ra[row] - rb[row]) / (2.0 * h);
+            assert!((fd - j[row * np + k]).abs() < 1e-6 * (1.0 + fd.abs()));
+        }
+    }
+    let mut g = vec![0.0; np];
+    let l = evc.loss_and_grad(&e2, &th2, &mut g).unwrap();
+    assert!(close(l, r.iter().map(|v| v * v).sum(), 1e-12));
+    for k in 0..np {
+        let want: f64 = (0..m).map(|row| 2.0 * r[row] * j[row * np + k]).sum();
+        assert!(close(g[k], want, 1e-10));
+    }
+    // Levenberg–Marquardt applies and fits the family.
+    let th0: Vec<f64> = (0..np).map(|_| rng.unif(-0.3, 0.3)).collect();
+    let res = fit(&evc, &e, &th0, &FitOptions::default()).unwrap();
+    assert!(res.loss < 1e-20, "centred LM loss {}", res.loss);
+}
+
+#[test]
+fn search_layer_error_codes_match_the_registry() {
+    // E-FEX-012 … 014 are raised from Python (alkahest.fex.transform_problem /
+    // reduce_problem, search / solve options, TorchEvaluator); the Rust
+    // variants carry the code and remediation the Python side uses.
+    for (e, code) in [
+        (FexError::Transform { detail: "x".into() }, "E-FEX-012"),
+        (FexError::SearchOptions { detail: "x".into() }, "E-FEX-013"),
+        (FexError::Backend { detail: "x".into() }, "E-FEX-014"),
+    ] {
+        assert_eq!(e.code(), code);
+        let spec = crate::errors::codes::REGISTRY
+            .iter()
+            .find(|s| s.code == code)
+            .expect("registered");
+        assert_eq!(spec.remediation, e.remediation());
+        assert!(!e.to_string().is_empty());
     }
 }
