@@ -1989,10 +1989,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
