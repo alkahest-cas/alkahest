@@ -317,7 +317,8 @@ Exception subclasses
      that vanishes or cannot be shown non-zero; also a vector field whose
      length is not the dimension.
    - ``E-PDE-050`` — ``pdsolve`` has no method for the problem: a system, an
-     equation of order other than one (milestone M1 covers first order), a
+     equation no tier covers (M1: first order; M2: linear second order in two
+     variables; M6: nonlinear reductions in two variables), a
      single independent variable (use ``dsolve``), or an unknown ``hint``.
    - ``E-PDE-051`` — every applicable method ran and **no candidate verified**;
      the message names each discarded candidate and why. Never an unverified
