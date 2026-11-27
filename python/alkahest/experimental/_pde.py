@@ -544,8 +544,26 @@ class PdeSystemInfo:
 
     def __init__(self, d: dict):
         self._d = dict(d)
-        for k, v in d.items():
-            setattr(self, k, v)
+        self.unknowns = d["unknowns"]
+        self.independent = d["independent"]
+        self.equations_in_jets = d["equations_in_jets"]
+        self.order = d["order"]
+        self.orders = d["orders"]
+        self.linearity = d["linearity"]
+        self.homogeneous = d["homogeneous"]
+        self.constant_coefficients = d["constant_coefficients"]
+        self.type = d["type"]
+        self.strictly_hyperbolic = d["strictly_hyperbolic"]
+        self.type_conditions = d["type_conditions"]
+        self.regions = d["regions"]
+        self.evolution_variable = d["evolution_variable"]
+        self.coefficient_matrices = d["coefficient_matrices"]
+        self.symbol_variables = d["symbol_variables"]
+        self.principal_symbol = d["principal_symbol"]
+        self.characteristic_determinant = d["characteristic_determinant"]
+        self.characteristic_matrix = d["characteristic_matrix"]
+        self.characteristic_speeds = d["characteristic_speeds"]
+        self.named = d["named"]
 
     @property
     def names(self) -> list:
