@@ -545,6 +545,8 @@ fn bvp(
     let mu = if ratio == pool.integer(0) {
         pool.integer(1)
     } else {
+        // `e^{∫dx/x}` is `x`, not `|x|`: a constant factor of μ is free.
+        let _principal = crate::integrate::real_log::PrincipalLogs::enter();
         let anti = crate::integrate::integrate(ratio, x, pool)
             .map_err(|e| {
                 PdeError::GreenProblemUnsupported(format!(
