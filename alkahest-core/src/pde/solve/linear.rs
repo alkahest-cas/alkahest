@@ -153,6 +153,16 @@ pub(crate) fn solve_linear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         let zk = ctx.indep[k];
         // du/dz_k = c / a_k along a characteristic.
         let rhs = simp(subs_map(div(c, a[k], pool), &inv, pool), pool);
+        // A `₂F₁` first integral substituted into the reduced ODE nests the
+        // special function inside the source term, which makes the answer
+        // slow to verify and rarely closes: give the tier up so the
+        // dispatcher re-runs it with unevaluated quadratures instead.
+        if contains_head(rhs, crate::specfun::hyper::HYPER, pool) {
+            ctx.fail(
+                "first_order_linear: a hypergeometric first integral enters the source term".into(),
+            );
+            return Vec::new();
+        }
         if ctx
             .indep
             .iter()
