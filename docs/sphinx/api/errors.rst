@@ -432,15 +432,15 @@ Exception subclasses
 
    Milestone M5 (Green's functions) owns ``250``–``299``:
 
-   - ``E-PDE-250`` — no fundamental solution / Green's function here: a
-     Klein–Gordon or telegraph kernel in more than one dimension, a symbolic
+   - ``E-PDE-250`` — no fundamental solution / Green's function here: a symbolic
      dimension for an operator other than Laplace and heat, or ``dsolve`` does
      not solve the homogeneous two-point equation.
    - ``E-PDE-251`` — malformed input: the wrong number of space variables, a
      non-symbol coordinate, a source point of the wrong length, a missing time
      variable.
    - ``E-PDE-252`` — the method of images does not apply to the region,
-     operator and wall conditions (Neumann disk, a strip for Helmholtz, …).
+     operator and wall conditions (a Neumann ball, a Neumann-walled Laplace
+     strip, …).
    - ``E-PDE-253`` — the eigenfunction series cannot be assembled (a norm did
      not close, eigenvalues below the threshold are present or conditional).
    - ``E-PDE-254`` — **no Green's function exists**: the homogeneous problem
@@ -449,6 +449,16 @@ Exception subclasses
    - ``E-PDE-255`` — a constructed Green's function or representation was
      **refuted** by its exact check and withheld.
    - ``E-PDE-256`` — ``green_solve`` does not recognise the problem.
+   - ``E-PDE-257`` — the Neumann problem has **no solution**: the
+     compatibility condition ``∫_D f dA = ∮ g ds`` is proved to fail.
+   - ``E-PDE-258`` — Neumann-disk data outside the closed-form class (a
+     non-polynomial source, data that are not a trigonometric polynomial), or a
+     compatibility condition that cannot be decided.
+   - ``E-PDE-259`` — the count of eigenvalues below the threshold could not be
+     certified (symbolic parameters, a non-constant coefficient, a root the
+     interval cover cannot separate).
+   - ``E-PDE-260`` — a Helmholtz waveguide at a cutoff (``k²`` is a transverse
+     eigenvalue): no Green's function exists.
 
 .. exception:: ProbabilityError
 

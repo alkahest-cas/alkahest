@@ -195,7 +195,7 @@ pub enum PdeError {
     /// symbol, a source point of the wrong length, a missing time variable.
     GreenInvalidInput(String),
     /// `E-PDE-252` — the method of images does not apply to this region and
-    /// boundary condition (Neumann on a disk, a strip for an operator whose
+    /// boundary condition (Neumann on a ball, a strip for an operator whose
     /// image series is not implemented, a wall axis out of range).
     GreenRegionUnsupported(String),
     /// `E-PDE-253` — the eigenfunction series cannot be assembled: a squared
@@ -228,6 +228,24 @@ pub enum PdeError {
     ConservationUnsupported(String),
     /// `E-PDE-306` — a multiplier was found but the density/flux pair `D_t T + D_x X = Λ·F` could not be recovered (or failed the exact divergence check).
     FluxNotRecovered(String),
+    /// `E-PDE-257` — the Neumann problem has no solution: the compatibility
+    /// condition `∫_D f dA = ∮ g ds` (the divergence theorem) is proved to
+    /// fail.
+    GreenCompatibility(String),
+    /// `E-PDE-258` — Neumann-problem data outside the closed-form class (a
+    /// source that is not a polynomial, boundary data that are not a
+    /// trigonometric polynomial), or a compatibility condition that cannot be
+    /// decided.
+    GreenDataUnsupported(String),
+    /// `E-PDE-259` — the count of eigenvalues below the threshold could not be
+    /// certified: a symbolic parameter, an unsupported problem class, or a
+    /// root the interval arithmetic cannot separate (a tangency, a root at the
+    /// threshold).  Never a guess.
+    SlCountNotCertified(String),
+    /// `E-PDE-260` — the Helmholtz waveguide is at a cutoff: `k²` equals a
+    /// transverse eigenvalue, so the mode has zero longitudinal wavenumber and
+    /// no Green's function exists.
+    GreenResonance(String),
 }
 
 impl fmt::Display for PdeError {
@@ -302,6 +320,10 @@ impl fmt::Display for PdeError {
             PdeError::TransformNotApplicable(d) => ("transformation not applicable", d),
             PdeError::ConservationUnsupported(d) => ("conservation-law analysis unsupported", d),
             PdeError::FluxNotRecovered(d) => ("flux not recovered", d),
+            PdeError::GreenCompatibility(d) => ("compatibility condition fails", d),
+            PdeError::GreenDataUnsupported(d) => ("Neumann data unsupported", d),
+            PdeError::SlCountNotCertified(d) => ("eigenvalue count not certified", d),
+            PdeError::GreenResonance(d) => ("waveguide at a cutoff", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -379,6 +401,10 @@ impl AlkahestError for PdeError {
             PdeError::TransformNotApplicable(_) => "E-PDE-304",
             PdeError::ConservationUnsupported(_) => "E-PDE-305",
             PdeError::FluxNotRecovered(_) => "E-PDE-306",
+            PdeError::GreenCompatibility(_) => "E-PDE-257",
+            PdeError::GreenDataUnsupported(_) => "E-PDE-258",
+            PdeError::SlCountNotCertified(_) => "E-PDE-259",
+            PdeError::GreenResonance(_) => "E-PDE-260",
         }
     }
 

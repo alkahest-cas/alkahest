@@ -141,9 +141,19 @@ fn wall_check(
 ///   Dirichlet walls (the series, and in the plane the closed form
 ///   `(1/4π) log[(cosh(πX/L) − cos(π(y−η)/L)) / (cosh(πX/L) − cos(π(y+η)/L))]`
 ///   from the conformal map `w = e^{πz/L}`).
+///   The Helmholtz operator on a strip (2 variables) or slab (3 variables)
+///   with Dirichlet / Neumann walls: the transverse mode series
+///   `Σ φₙ(y)φₙ(η)/‖φₙ‖² gₙ` with outgoing longitudinal kernels of wavenumber
+///   `κₙ = √(k² − λₙ)` (principal branch: the radiation condition), method
+///   `"mode_series"`; `E-PDE-260` at a cutoff `k² = λₙ`.
 /// * `Disk { radius }` / `Ball { radius }` with one Dirichlet condition: the
 ///   Laplacian, by Kelvin inversion, with the Poisson kernel
 ///   `(R² − |x|²) / (|S^{n−1}| R |x − ξ|ⁿ)`.
+/// * `Disk { radius }` with a Neumann condition: the Neumann function
+///   `N = (1/4π) log(|x − ξ|² Q/R²) − (|x|² + |ξ|²)/(4πR²)`
+///   (`ΔN = δ − 1/(πR²)`, `∂N/∂n = 0`; method `"neumann_function"`), whose
+///   `poisson_kernel` is the boundary kernel `−N(x, ξ)`, `|ξ| = R`, of the
+///   Neumann data — see [`neumann_disk_solve`](super::neumann_disk_solve).
 ///
 /// `space` are the field variables, `source` the source point (symbols), and
 /// `time` the time variable of an evolution operator (the source time is 0).
@@ -234,10 +244,18 @@ pub fn image_green_function(
             } else {
                 3
             };
+            if op == GreenOperator::Laplace
+                && walls[0] == WallCondition::Neumann
+                && n == 2
+                && want == 2
+            {
+                return super::neumann_disk::neumann_function_disk(space, source, radius, pool);
+            }
             if op != GreenOperator::Laplace || walls[0] != WallCondition::Dirichlet || n != want {
                 return Err(PdeError::GreenRegionUnsupported(format!(
                     "Kelvin inversion is implemented for the Dirichlet Laplacian on the disk \
-                     (2 variables) and the ball (3 variables), not {} / {} / {n} variables",
+                     (2 variables) and the ball (3 variables), and the Neumann function for the \
+                     Laplacian on the disk, not {} / {} / {n} variables",
                     op.name(),
                     walls[0].as_str()
                 )));
@@ -425,6 +443,9 @@ fn strip(
     pool: &ExprPool,
 ) -> Result<GreenFunction, PdeError> {
     let n = space.len();
+    if let GreenOperator::Helmholtz { k } = op {
+        return super::waveguide::helmholtz_waveguide(k, space, source, axis, width, walls, pool);
+    }
     let heat = matches!(op, GreenOperator::Heat { .. });
     let laplace_dd = op == GreenOperator::Laplace
         && (n == 2 || n == 3)

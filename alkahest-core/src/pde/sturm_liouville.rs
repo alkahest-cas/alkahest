@@ -1304,8 +1304,11 @@ fn bessel_recurrence_normal(e: ExprId, pool: &ExprPool) -> Option<ExprId> {
     changed.then_some(out)
 }
 
+mod count;
 mod regular;
 mod singular;
+
+pub use count::{count_lower_eigenvalues, LowerCount};
 
 #[cfg(test)]
 mod tests;

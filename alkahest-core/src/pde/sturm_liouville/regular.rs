@@ -606,6 +606,11 @@ fn separated(
             }
         }
     };
+    let lower = if constant {
+        certify_lower(problem, lower, &mut notes, pool)
+    } else {
+        lower
+    };
     Ok(Eigensystem {
         kind: basis.kind,
         var: problem.var,
@@ -618,6 +623,62 @@ fn separated(
         side_conditions: side,
         notes,
     })
+}
+
+/// Sharpen an undecided lower spectrum of a numeric constant-coefficient
+/// problem with the certified count ([`super::count_lower_eigenvalues`]):
+/// a count of 0 proves `None`, a positive count fills `Present::count`.  A
+/// refusal (symbolic data, an inseparable root) leaves it as it was, and so
+/// does a count that disagrees with a member M3 certified.
+fn certify_lower(
+    problem: &SturmLiouvilleProblem,
+    lower: LowerSpectrum,
+    notes: &mut Vec<String>,
+    pool: &ExprPool,
+) -> LowerSpectrum {
+    let needs = matches!(
+        lower,
+        LowerSpectrum::Conditional { .. } | LowerSpectrum::Present { count: None, .. }
+    );
+    if !needs {
+        return lower;
+    }
+    let Ok(c) = super::count_lower_eigenvalues(problem, &HashMap::new(), pool) else {
+        return lower;
+    };
+    match lower {
+        LowerSpectrum::Conditional { family, condition } => {
+            if c.count == 0 {
+                notes.push(format!(
+                    "certified: no eigenvalue below the threshold ({}, {} cells)",
+                    c.method, c.cells
+                ));
+                LowerSpectrum::None
+            } else if let Some(f) = family {
+                notes.push(format!(
+                    "certified: {} eigenvalue(s) below the threshold ({})",
+                    c.count, c.method
+                ));
+                LowerSpectrum::Present {
+                    family: f,
+                    count: Some(c.count),
+                }
+            } else {
+                LowerSpectrum::Conditional { family, condition }
+            }
+        }
+        LowerSpectrum::Present { family, .. } if c.count >= 1 => {
+            notes.push(format!(
+                "certified: {} eigenvalue(s) below the threshold ({})",
+                c.count, c.method
+            ));
+            LowerSpectrum::Present {
+                family,
+                count: Some(c.count),
+            }
+        }
+        other => other,
+    }
 }
 
 /// The Rayleigh-quotient case analysis for eigenvalues below the threshold.
