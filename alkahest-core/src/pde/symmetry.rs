@@ -731,9 +731,9 @@ fn verify_components(
     }
     let q = simp(pool.add(q), pool);
     let mut terms = Vec::new();
-    for i in 0..p {
-        if let Some(fx) = d(f, jets.indep[i], pool) {
-            terms.push(pool.mul(vec![comps[i], fx]));
+    for (&ci, &xi) in comps.iter().zip(&jets.indep).take(p) {
+        if let Some(fx) = d(f, xi, pool) {
+            terms.push(pool.mul(vec![ci, fx]));
         }
     }
     for (j, s) in jets.jets_in(f, pool) {
