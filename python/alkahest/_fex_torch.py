@@ -19,9 +19,23 @@ otherwise), in float64 by default or float32.
 
 It covers the built-in problems — Poisson (and the eigenproblem's Rayleigh
 quotient), the linear conservation law, the cubic Schrödinger equation —
-with their least-squares, normalised and Rayleigh losses, matching
-:class:`alkahest.fex.Evaluator`'s loss to rounding. Operators given as
-expressions (``Problem.from_operator``) stay on the CPU evaluator.
+with their least-squares, normalised and Rayleigh losses, and operators
+given as expressions (``Problem.from_operator``, the problems
+:func:`alkahest.fex.transform_problem` and :func:`~alkahest.fex.reduce_problem`
+derive, and PIDEs from ``Problem.pide`` with their nonlocal terms) with the
+least-squares, centred and normalised losses, matching
+:class:`alkahest.fex.Evaluator`'s loss to rounding.
+
+An expression operator is split, symbolically and once, as
+``F = F₀(u, Δu, x) + Σᵢ aᵢ(x) ∂ᵢu + b(u, Δu, x)·Σ_{i∈S} (∂ᵢu)²`` (``S`` the
+spatial coordinates); the split is checked to be exact (``F`` minus the
+three parts simplifies to ``0``), and an operator of any other form — a
+gradient inside a non-polynomial function, a gradient coefficient that
+depends on ``u`` — is refused with ``E-FEX-014``. ``F₀``, ``aᵢ`` and ``b`` are
+translated to ``torch`` operations; the gradient terms use the same leaf
+Gram contractions as the built-in operators, so no ``(batch, points, d)``
+tensor is formed. Problems with a non-diagonal second-order form
+(``Problem.pide`` with a matrix diffusion) stay on the CPU evaluator.
 :meth:`TorchEvaluator.fit` is batched Adam, the GPU counterpart of the
 coarse scoring step; pass the evaluator as ``scorer=`` to
 :func:`alkahest.fex.search`.
@@ -37,9 +51,10 @@ import numpy as np
 __all__ = ["TorchEvaluator"]
 
 _REMEDIATION = (
-    "install PyTorch (with CUDA for device='cuda'), and use the GPU evaluator for the built-in "
-    "problems (poisson, transport, cubic_schrodinger, eigen); operators written as expressions "
-    "and the centred loss run on alkahest.fex.Evaluator"
+    "install PyTorch (with CUDA for device='cuda'); the GPU evaluator covers the built-in "
+    "problems and expression operators of the form F0(u, lap, x) + sum a_i(x) u_i + "
+    "b(u, lap, x) |grad u|^2 (least-squares, centred, normalised and Rayleigh losses, without "
+    "a non-diagonal second-order form); anything else runs on alkahest.fex.Evaluator"
 )
 
 
@@ -104,10 +119,12 @@ class TorchEvaluator:
             raise _err("CUDA is not available to PyTorch")
         spec = problem.spec or {}
         kind = spec.get("kind")
-        if kind not in ("poisson", "transport", "cubic_schrodinger"):
+        if kind not in ("poisson", "transport", "cubic_schrodinger", "expr"):
             raise _err(f"problem kind {kind!r} is not supported on the torch evaluator")
-        if problem.loss not in ("least_squares", "normalized", "rayleigh"):
+        if problem.loss not in ("least_squares", "normalized", "rayleigh", "centered", "dirichlet"):
             raise _err(f"loss {problem.loss!r} is not supported on the torch evaluator")
+        if spec.get("second_order") is not None:
+            raise _err("a non-diagonal second-order form is not supported on the torch evaluator")
         self.template = template
         self.problem = problem
         self.device = torch.device(device)
@@ -128,6 +145,13 @@ class TorchEvaluator:
         T = lambda a: torch.as_tensor(np.asarray(a), dtype=self.dtype, device=self.device)  # noqa: E731
         self.x = T(pts)
         self.xb = None if bd is None or len(bd) == 0 else T(bd)
+        self._blocks: dict[str, Any] = {"int": self.x, "bd": self.xb}
+        self.nonlocal_terms: list[tuple[str, float, float]] = []
+        for k, (scale, shift, cu, clap) in enumerate(spec.get("nonlocal_terms") or []):
+            y = pts * (np.asarray(scale, dtype=np.float64) if len(scale) else 1.0)
+            y = y + np.asarray(shift, dtype=np.float64)
+            self._blocks[f"nl{k}"] = T(y)
+            self.nonlocal_terms.append((f"nl{k}", float(cu), float(clap)))
         self.rhs = T(_source_values(spec.get("rhs"), coords, pts))
         pot = spec.get("potential")
         self.pot = None if pot is None else T(_source_values(pot, coords, pts))
@@ -140,6 +164,9 @@ class TorchEvaluator:
         self.mask = T(mask)
         gc = spec.get("grad_coeffs")
         self.grad_coeffs = None if gc is None else T(gc)
+        self.expr_op: dict[str, Any] = {}
+        if kind == "expr" and problem.loss != "dirichlet":
+            self.expr_op = _split_operator(problem, pts, T, mask)
         from .fex import _shape_tree
 
         self.tree = _shape_tree(template.shape)
@@ -164,11 +191,19 @@ class TorchEvaluator:
 
     # -- point tables -------------------------------------------------------
 
-    def _table(self, k: int, boundary: bool) -> tuple[Any, Any, Any]:
-        key = (k, boundary)
+    def _table(self, k: int, boundary: Any) -> tuple[Any, Any, Any]:
+        block = _block_name(boundary)
+        key = (k, block)
         if key not in self._tables:
-            x = self.xb if boundary else self.x
-            self._tables[key] = _UNARY[self.unary[k]](x)
+            self._tables[key] = _UNARY[self.unary[k]](self._blocks[block])
+        return self._tables[key]
+
+    def _coeff_table(self, k: int) -> Any:
+        """``aᵢ(x_p) · φ'_k(x_pi)`` for an expression operator's gradient
+        coefficients (interior points)."""
+        key = ("coeff", k)
+        if key not in self._tables:
+            self._tables[key] = self.expr_op["a"] * self._table(k, "int")[1]
         return self._tables[key]
 
     # -- forward ------------------------------------------------------------
@@ -214,15 +249,15 @@ class TorchEvaluator:
             self._group_cache[ck] = hit
         return hit[1]
 
-    def _pair_table(self, k: int, k2: int, boundary: bool) -> Any:
-        key = ("pair", min(k, k2), max(k, k2), boundary)
+    def _pair_table(self, k: int, k2: int, boundary: Any) -> Any:
+        key = ("pair", min(k, k2), max(k, k2), _block_name(boundary))
         if key not in self._tables:
             t1 = self._table(k, boundary)[1]
             t2 = self._table(k2, boundary)[1]
             self._tables[key] = t1 * t2 * self.mask
         return self._tables[key]
 
-    def _forward(self, e: Any, th: Any, boundary: bool, order: int):
+    def _forward(self, e: Any, th: Any, boundary: Any, order: int):
         """Root ``(u, lap, grads)`` for the batch.
 
         The gradient of a node is never formed as a ``(batch, points, d)``
@@ -232,7 +267,7 @@ class TorchEvaluator:
         ``G_ℓm = Σᵢ maskᵢ w_ℓᵢ w_mᵢ φ'_ℓ(xᵢ) φ'_m(xᵢ)``, each a matrix product
         of a point table with the candidates' weights."""
         torch = self.torch
-        x: Any = self.xb if boundary else self.x
+        x: Any = self._blocks[_block_name(boundary)]
         d = x.shape[1]
         vals: dict[int, Any] = {}
         W: dict[int, Any] = {}
@@ -336,13 +371,22 @@ class TorchEvaluator:
         return u, lap, c, dot, W
 
     def _loss(self, e: Any, th: Any) -> Any:
-        order = 1 if (self.loss_kind == "rayleigh" or self.kind == "transport") else 2
+        if self.loss_kind == "dirichlet":
+            order = 1
+        elif self.expr_op:
+            order = 2 if self.expr_op["uses_lap"] else 1
+        else:
+            order = 1 if (self.loss_kind == "rayleigh" or self.kind == "transport") else 2
+        self._th_cur = th
         u, lap, c, dot, W = self._forward(e, th, False, order)
         if self.loss_kind == "rayleigh":
             pot = self.pot if self.pot is not None else 0.0
             num = (dot(c, c) + pot * u * u).mean(-1)
             den = (u * u).mean(-1)
             loss = num / den
+        elif self.loss_kind == "dirichlet":
+            w = self.pot if self.pot is not None else 1.0
+            loss = (w * dot(c, c)).mean(-1)
         else:
             if self.kind == "poisson":
                 r = -lap
@@ -357,11 +401,15 @@ class TorchEvaluator:
                         W[leaf] * self.grad_coeffs,
                         lambda k: self._table(k, False)[1],
                     )
-            else:
+            elif self.kind == "cubic_schrodinger":
                 r = -lap + u**3
                 if self.pot is not None:
                     r = r + self.pot * u
+            else:
+                r = self._expr_residual(e, u, lap, c, dot, W)
             r = r - self.rhs
+            if self.loss_kind == "centered":
+                r = r - r.mean(-1, keepdim=True)
             loss = (r * r).mean(-1)
             if self.loss_kind == "normalized":
                 loss = loss / (u.abs() ** self.power).mean(-1)
@@ -369,6 +417,23 @@ class TorchEvaluator:
             ub = self._forward(e, th, True, 0)[0]
             loss = loss + self.bc_weight * ((ub - self.target) ** 2).mean(-1)
         return loss
+
+    def _expr_residual(self, e: Any, u: Any, lap: Any, c: dict, dot: Any, W: dict) -> Any:
+        """``F₀(u, Δu, x) + Σᵢ aᵢ(x) ∂ᵢu + b·|∇u|² (+ nonlocal terms)``."""
+        op = self.expr_op
+        env = {"u": u, "lap": lap}
+        r = op["F0"](env)
+        if op["a"] is not None:
+            for leaf, cl in c.items():
+                r = r + cl * self._grouped_mm(self._column(e, leaf), W[leaf], self._coeff_table)
+        if op["b"] is not None:
+            r = r + op["b"](env) * dot(c, c)
+        for block, cu, clap in self.nonlocal_terms:
+            uy, ly, _cy, _d, _w = self._forward(e, self._th_cur, block, 2 if clap else 0)
+            r = r + cu * uy
+            if clap:
+                r = r + clap * ly
+        return r
 
     # -- public -------------------------------------------------------------
 
@@ -459,6 +524,170 @@ class TorchEvaluator:
                     FitResult([int(v) for v in en[j]], bt[j], float(bl[j]), max_iter, max_iter + 1)
                 )
         return results
+
+
+def _block_name(b: Any) -> str:
+    if isinstance(b, str):
+        return b
+    return "bd" if b else "int"
+
+
+def _torch_fn(expr: Any, names: dict) -> Any:
+    """Translate an Expr in the symbols of ``names`` (symbol → key of the
+    environment dict, or a fixed tensor) into a function of that dict."""
+    from ._fex_finalize import _children, _number_value
+
+    memo: dict = {}
+
+    def go(e: Any):
+        if e in memo:
+            return memo[e]
+        nv = _number_value(e)
+        if nv is not None:
+            c = float(nv)
+            f = lambda env, c=c: c  # noqa: E731
+        else:
+            nd = e.node()
+            k = nd[0]
+            if k == "symbol":
+                if e not in names:
+                    raise _err(f"symbol {e} has no torch value")
+                v = names[e]
+                f = (lambda env, v=v: env[v]) if isinstance(v, str) else (lambda env, v=v: v)
+            elif k == "add":
+                fs = [go(c) for c in _children(e)]
+
+                def f(env, fs=fs):
+                    out = fs[0](env)
+                    for g in fs[1:]:
+                        out = out + g(env)
+                    return out
+            elif k == "mul":
+                fs = [go(c) for c in _children(e)]
+
+                def f(env, fs=fs):
+                    out = fs[0](env)
+                    for g in fs[1:]:
+                        out = out * g(env)
+                    return out
+            elif k == "pow":
+                b, x = _children(e)
+                fb, fx = go(b), go(x)
+                xv = _number_value(x)
+                if xv is not None and float(xv) == int(xv):
+                    n = int(xv)
+                    f = lambda env, fb=fb, n=n: fb(env) ** n  # noqa: E731
+                else:
+                    f = lambda env, fb=fb, fx=fx: fb(env) ** fx(env)  # noqa: E731
+            elif k == "func" and nd[1] in _TORCH_FUNCS:
+                (a,) = _children(e)
+                fa = go(a)
+                name = nd[1]
+                f = lambda env, fa=fa, name=name: _TORCH_FUNCS[name](fa(env))  # noqa: E731
+            else:
+                raise _err(f"no torch kernel for {k} {nd[1] if len(nd) > 1 else ''}")
+        memo[e] = f
+        return f
+
+    return go(expr)
+
+
+def _tf(name: str):
+    def f(x):
+        import torch
+
+        if not isinstance(x, torch.Tensor):
+            return getattr(math, name)(x)
+        return getattr(torch, name)(x)
+
+    return f
+
+
+_TORCH_FUNCS = {n: _tf(n) for n in ("exp", "log", "sin", "cos", "tanh", "sqrt", "abs")}
+
+
+def _split_operator(problem: Any, pts: np.ndarray, T: Any, mask: np.ndarray) -> dict:
+    """``F = F₀(u, Δu, x) + Σᵢ aᵢ(x) gᵢ + b(u, Δu, x)·Σ_{i∈S} gᵢ²``, checked."""
+    import alkahest as ak
+
+    spec = problem.spec
+    jet = problem.jet
+    op = spec["operator"]
+    if jet.ut is not None and problem.time is not None:
+        op = ak.subs(op, {jet.ut: jet.grad[problem.time]})
+    grads = list(jet.grad)
+    zero = jet.pool.integer(0)
+    g0 = dict.fromkeys(grads, zero)
+    F0 = ak.subs(op, g0)
+    a = [ak.simplify(ak.subs(ak.diff(op, g).value, g0)).value for g in grads]
+    lin = None
+    for ai, g in zip(a, grads):
+        if ak.is_zero(ai) is True:
+            continue
+        lin = ai * g if lin is None else lin + ai * g
+    R = op - F0 - (lin if lin is not None else zero)
+    from ._fex_finalize import _symbols_in
+
+    spatial = [i for i in range(len(grads)) if mask[i] != 0.0]
+    b = None
+    q = zero
+    if spatial:
+        g = grads[spatial[0]]
+        b = ak.subs(ak.diff(ak.diff(R, g).value, g).value / 2, g0)
+        for i in spatial:
+            q = q + grads[i] ** 2
+    # The split is checked numerically at random jets and points (it only
+    # decides how the GPU evaluates F; the result is compared with the CPU
+    # evaluator, and nothing is certified from it).
+    syms = [jet.u, jet.lap, *grads, *jet.x]
+    full = ak.compile_expr(op, syms)
+    parts = [ak.compile_expr(F0, syms)] + [ak.compile_expr(ai, syms) for ai in a]
+    bq = None if b is None else ak.compile_expr(b, syms)
+    rs = np.random.default_rng(12345)
+    vals = rs.uniform(0.3, 1.2, size=(len(syms), 8))
+    cols = [vals[k].copy() for k in range(len(syms))]
+    want = np.asarray(ak.numpy_eval(full, *cols), dtype=np.float64)
+    got = np.asarray(ak.numpy_eval(parts[0], *cols), dtype=np.float64)
+    for k, f in enumerate(parts[1:]):
+        got = got + np.asarray(ak.numpy_eval(f, *cols), dtype=np.float64) * vals[2 + k]
+    if bq is not None:
+        bv = np.asarray(ak.numpy_eval(bq, *cols), dtype=np.float64)
+        if np.all(np.abs(bv) == 0.0):
+            b = None
+        else:
+            got = got + bv * sum(vals[2 + i] ** 2 for i in spatial)
+    if not np.allclose(got, want, rtol=1e-10, atol=1e-12):
+        raise _err("the operator's gradient terms are not linear plus b·|∇u|²")
+    if b is not None and _symbols_in(b) & set(grads):
+        raise _err("the operator is not quadratic in the gradient in the supported way")
+    coords = list(jet.x)
+    for ai in a:
+        if _symbols_in(ai) & ({jet.u, jet.lap} | set(grads)):
+            raise _err("a gradient coefficient depends on u or Δu")
+    names: dict = {jet.u: "u", jet.lap: "lap"}
+    for k, xk in enumerate(coords):
+        names[xk] = T(pts[:, k])[None, :]
+    if _symbols_in(F0) & set(grads):
+        raise _err("a gradient sits inside a non-polynomial function of the operator")
+    uses_lap = jet.lap in _symbols_in(op)
+    A = None
+    if any(ak.is_zero(ai) is not True for ai in a):
+        xenv = {xk: T(pts[:, k]) for k, xk in enumerate(coords)}
+        cols = []
+        for ai in a:
+            v: Any = 0.0 if ak.is_zero(ai) is True else _torch_fn(ai, xenv)({})
+            if not hasattr(v, "shape") or v.dim() == 0:
+                v = T(np.full(len(pts), float(v)))
+            cols.append(v)
+        import torch
+
+        A = torch.stack(cols, dim=1)
+    return {
+        "F0": _torch_fn(F0, names),
+        "a": A,
+        "b": None if b is None else _torch_fn(b, names),
+        "uses_lap": uses_lap,
+    }
 
 
 # Point tables φ, φ', φ'' of leaf operators, and the same for inner slots.

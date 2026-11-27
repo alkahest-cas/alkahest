@@ -1955,6 +1955,185 @@ pub fn emit_ode_solution_kernel_cert(
     ))
 }
 
+/// `AExpr.bind`: substitute `σ[j]` (or `0` past the end) for `var j`.
+fn bind(e: &R, sigma: &[R]) -> R {
+    match &**e {
+        AE::Var(j) => sigma
+            .get(*j as usize)
+            .cloned()
+            .unwrap_or_else(|| rc(AE::Zero)),
+        AE::Zero | AE::One | AE::Lit(_) | AE::Pi => e.clone(),
+        AE::Add(a, b) => rc(AE::Add(bind(a, sigma), bind(b, sigma))),
+        AE::Sub(a, b) => rc(AE::Sub(bind(a, sigma), bind(b, sigma))),
+        AE::Mul(a, b) => rc(AE::Mul(bind(a, sigma), bind(b, sigma))),
+        AE::Div(a, b) => rc(AE::Div(bind(a, sigma), bind(b, sigma))),
+        AE::Neg(a) => rc(AE::Neg(bind(a, sigma))),
+        AE::Inv(a) => rc(AE::Inv(bind(a, sigma))),
+        AE::Pow(a, n) => rc(AE::Pow(bind(a, sigma), *n)),
+        AE::App(f, a) => rc(AE::App(*f, bind(a, sigma))),
+    }
+}
+
+fn max_var(e: &R) -> Option<u32> {
+    match &**e {
+        AE::Var(j) => Some(*j),
+        AE::Zero | AE::One | AE::Lit(_) | AE::Pi => None,
+        AE::Add(a, b) | AE::Sub(a, b) | AE::Mul(a, b) | AE::Div(a, b) => {
+            match (max_var(a), max_var(b)) {
+                (Some(x), Some(y)) => Some(x.max(y)),
+                (x, None) => x,
+                (None, y) => y,
+            }
+        }
+        AE::Neg(a) | AE::Inv(a) | AE::Pow(a, _) | AE::App(_, a) => max_var(a),
+    }
+}
+
+/// Emit a reflective-kernel certificate that the PDE operator `operator`
+/// vanishes on the jet of `solution` at every point of `ℝ^d`.
+///
+/// `operator` is written in the coordinates `coords` (`d` of them) and the
+/// jet symbols `u`, `lap` (the Laplacian over all of `coords`) and `grad`
+/// (one per coordinate, or empty when the operator reads no gradient). The
+/// theorem is stated with Mathlib's `deriv` along the coordinate lines of a
+/// definition `fexU` of the solution, and proved by
+/// `pde_sound _ (by decide +kernel)` (`Alkahest.Kernel.Pde`): the kernel
+/// computes the jet with its own derivative, substitutes it and checks the
+/// residual is zero. Differentiability conditions must hold everywhere
+/// without hypotheses; otherwise the certificate is withheld.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_pde_kernel_cert(
+    operator: ExprId,
+    solution: ExprId,
+    coords: &[ExprId],
+    u: ExprId,
+    lap: ExprId,
+    grad: &[ExprId],
+    pool: &ExprPool,
+    mode: KernelCheckMode,
+) -> Result<String, IntegrationCertWithheld> {
+    let d = coords.len();
+    if d == 0 || d > 200 || !(grad.is_empty() || grad.len() == d) {
+        return Err(WITHHELD_UNSUPPORTED_NODE);
+    }
+    let mut cv = conv_for(coords[0], pool)?;
+    // Coordinates are var 0 … d-1, then u = d, Δu = d+1, ∂ᵢu = d+2+i.
+    for (k, &c) in coords.iter().enumerate().skip(1) {
+        if *cv.conv(c)? != AE::Var(k as u32) {
+            return Err(WITHHELD_UNSUPPORTED_NODE);
+        }
+    }
+    let mut jets = vec![u, lap];
+    jets.extend_from_slice(grad);
+    for (k, &j) in jets.iter().enumerate() {
+        if *cv.conv(j)? != AE::Var((d + k) as u32) {
+            return Err(WITHHELD_UNSUPPORTED_NODE);
+        }
+    }
+    let mut memo = HashMap::new();
+    let sol = respell_rational_powers(solution, pool, &mut memo)?;
+    let op = respell_rational_powers(operator, pool, &mut memo)?;
+    let u_ae = cv.conv(sol)?;
+    if cv.names.len() != d + jets.len() || max_var(&u_ae).is_some_and(|m| m as usize >= d) {
+        // a free constant or a jet symbol in the solution
+        return Err(WITHHELD_UNSUPPORTED_NODE);
+    }
+    let op_ae = cv.conv(op)?;
+    if cv.names.len() != d + jets.len() {
+        return Err(WITHHELD_UNSUPPORTED_NODE);
+    }
+    // The jet, exactly as `lapE` / `gradE` build it.
+    let mut lap_e = rc(AE::Zero);
+    let mut grads = Vec::with_capacity(d);
+    for i in 0..d as u32 {
+        let g = deriv(&u_ae, i);
+        lap_e = rc(AE::Add(lap_e, deriv(&g, i)));
+        grads.push(g);
+    }
+    let mut sigma: Vec<R> = (0..d as u32).map(|i| rc(AE::Var(i))).collect();
+    sigma.push(u_ae.clone());
+    sigma.push(lap_e);
+    sigma.extend(grads.iter().cloned());
+    let resid = bind(&op_ae, &sigma);
+    // Conditions: every one must follow from no hypotheses.
+    let mut needed = Vec::new();
+    dconds(&u_ae, &mut needed);
+    for g in &grads {
+        dconds(g, &mut needed);
+    }
+    let proof = prove_identity(&resid, &rc(AE::Zero))?;
+    needed.extend(proof.conds());
+    if needed.iter().any(|c| !implied(&[], c)) {
+        return Err(WITHHELD_CONSTANT_SIGN);
+    }
+    // The statement: `fexU` is the solution; the jet in Mathlib's `deriv`.
+    let coord_names: Vec<String> = cv.names[..d].to_vec();
+    let binders = coord_names.join(" ");
+    let call = |slot: Option<(usize, &str)>| -> String {
+        let args: Vec<String> = coord_names
+            .iter()
+            .enumerate()
+            .map(|(k, n)| match slot {
+                Some((i, y)) if i == k => y.to_string(),
+                _ => n.clone(),
+            })
+            .collect();
+        format!("fexU {}", args.join(" "))
+    };
+    let mut lap_s = String::from("(0 : ℝ)");
+    let mut grad_s = Vec::with_capacity(d);
+    for (i, n) in coord_names.iter().enumerate() {
+        lap_s = format!(
+            "({lap_s} + deriv (deriv (fun (y : ℝ) => {})) {n})",
+            call(Some((i, "y")))
+        );
+        grad_s.push(format!(
+            "deriv (fun (y : ℝ) => {}) {n}",
+            call(Some((i, "y")))
+        ));
+    }
+    let mut names: Vec<String> = coord_names.clone();
+    names.push(call(None));
+    names.push(lap_s);
+    names.extend(grad_s);
+    if grad.is_empty() {
+        names.truncate(d + 2);
+    }
+    let fr = frame(&coord_names, &[], mode);
+    let stmt = op_ae.lean_string(&names);
+    let rec_depth = 512 + 400 * d;
+    let heartbeats = 400_000 * d.max(1);
+    finish(format!(
+        "{}-- PDE: {} = 0 for u = {} at every point of ℝ^{d}\n\
+         -- Certified by the Alkahest reflective kernel: `pde_sound` (proved in\n\
+         -- `Alkahest.Kernel.Pde`) turns `checkPde u op n w = true` into the\n\
+         -- statement; {}.\n\
+         noncomputable def fexU ({binders} : ℝ) : ℝ :=\n  {}\n\n\
+         -- The statement unfolds `d` nested sums and list lookups: give the\n\
+         -- elaborator room proportional to `d`.\n\
+         set_option maxRecDepth {rec_depth} in\n\
+         set_option maxHeartbeats {heartbeats} in\n\
+         open Alkahest.Kernel in\n\
+         theorem fex_pde ({binders} : ℝ) :\n    \
+         {stmt} = 0 :=\n  \
+         pde_sound (u := {})\n    \
+         (op := {})\n    \
+         (n := {d})\n    \
+         (w := {})\n    \
+         ({}) [{}] rfl\n",
+        kernel_header(),
+        pool.display(operator),
+        pool.display(solution),
+        fr.trust,
+        u_ae.lean_string(&names),
+        u_ae.data_string(),
+        op_ae.data_string(),
+        proof.data(),
+        fr.decide,
+        coord_names.join(", "),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1988,6 +2167,95 @@ mod tests {
         assert!(src.contains("by decide +kernel"), "{src}");
         assert!(src.contains("(H := [])"), "{src}");
         assert!(!src.contains("sorry"), "{src}");
+    }
+
+    fn pde_syms(p: &ExprPool, d: usize) -> (Vec<ExprId>, ExprId, ExprId, Vec<ExprId>) {
+        let xs: Vec<ExprId> = (0..d)
+            .map(|i| p.symbol(format!("x{i}"), Domain::Real))
+            .collect();
+        let u = p.symbol("u", Domain::Real);
+        let lap = p.symbol("lap_u", Domain::Real);
+        let g: Vec<ExprId> = (0..d)
+            .map(|i| p.symbol(format!("u_x{i}"), Domain::Real))
+            .collect();
+        (xs, u, lap, g)
+    }
+
+    #[test]
+    fn pde_certificate_for_an_eigenfunction() {
+        // −Δu + |x|² u − d u = 0 for u = exp(−|x|²/2), d = 3.
+        let p = ExprPool::new();
+        let (xs, u, lap, _g) = pde_syms(&p, 3);
+        let r2 = p.add(xs.iter().map(|&x| p.pow(x, p.integer(2))).collect());
+        let sol = p.func("exp", vec![p.mul(vec![p.rational(-1, 2), r2])]);
+        let op = p.add(vec![
+            p.mul(vec![p.integer(-1), lap]),
+            p.mul(vec![r2, u]),
+            p.mul(vec![p.integer(-3), u]),
+        ]);
+        let src = emit_pde_kernel_cert(op, sol, &xs, u, lap, &[], &p, KernelCheckMode::Kernel)
+            .expect("certificate");
+        assert!(src.contains("pde_sound"), "{src}");
+        assert!(src.contains("by decide +kernel"), "{src}");
+        assert!(
+            src.contains("noncomputable def fexU (x0 x1 x2 : ℝ)"),
+            "{src}"
+        );
+        assert!(
+            src.contains("deriv (deriv (fun (y : ℝ) => fexU y x1 x2)) x0"),
+            "{src}"
+        );
+        assert!(!src.contains("sorry"), "{src}");
+        // A wrong eigenvalue is not certified.
+        let bad = p.add(vec![
+            p.mul(vec![p.integer(-1), lap]),
+            p.mul(vec![r2, u]),
+            p.mul(vec![p.integer(-2), u]),
+        ]);
+        assert!(
+            emit_pde_kernel_cert(bad, sol, &xs, u, lap, &[], &p, KernelCheckMode::Kernel).is_err()
+        );
+    }
+
+    #[test]
+    fn pde_certificate_uses_exp_relations_and_refuses_domains() {
+        // Cubic Schrödinger with u = exp(S/2)/3, S = cos x0 + cos x1, and
+        // V = −exp(S)/9 + (sin² x0 + sin² x1)/4 − S/2 (the FEX benchmark at
+        // d = 2): needs exp(S) = exp(S/2)².
+        let p = ExprPool::new();
+        let (xs, u, lap, g) = pde_syms(&p, 2);
+        let s_ = p.add(xs.iter().map(|&x| p.func("cos", vec![x])).collect());
+        let half = p.rational(1, 2);
+        let sol = p.mul(vec![
+            p.rational(1, 3),
+            p.func("exp", vec![p.mul(vec![half, s_])]),
+        ]);
+        let sin2 = p.add(
+            xs.iter()
+                .map(|&x| p.pow(p.func("sin", vec![x]), p.integer(2)))
+                .collect(),
+        );
+        let v = p.add(vec![
+            p.mul(vec![p.rational(-1, 9), p.func("exp", vec![s_])]),
+            p.mul(vec![p.rational(1, 4), sin2]),
+            p.mul(vec![p.rational(-1, 2), s_]),
+        ]);
+        let op = p.add(vec![
+            p.mul(vec![p.integer(-1), lap]),
+            p.pow(u, p.integer(3)),
+            p.mul(vec![v, u]),
+        ]);
+        let src = emit_pde_kernel_cert(op, sol, &xs, u, lap, &[], &p, KernelCheckMode::Kernel)
+            .expect("certificate");
+        assert!(src.contains("expAdd"), "{src}");
+        // log x0 is not differentiable everywhere: withheld, not assumed.
+        let sol2 = p.func("log", vec![xs[0]]);
+        let op2 = p.add(vec![p.mul(vec![xs[0], g[0]]), p.integer(-1)]);
+        assert_eq!(
+            emit_pde_kernel_cert(op2, sol2, &xs, u, lap, &g, &p, KernelCheckMode::Kernel)
+                .unwrap_err(),
+            WITHHELD_CONSTANT_SIGN
+        );
     }
 
     #[test]

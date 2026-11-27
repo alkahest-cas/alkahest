@@ -129,13 +129,56 @@ lake build Alkahest       # the kernel (about a minute)
 lake env lean my_certificate.lean
 ```
 
+## PDE residuals (FEX solutions)
+
+`Alkahest.Kernel.Pde` adds one more checker. `checkPde u op n w` takes an
+explicit function `u` of `n` coordinates and an operator `op` written over
+the variables `0 … n-1` (the coordinates), `n` (`u`), `n+1` (`Δu`) and
+`n+2+i` (`∂u/∂xᵢ`). It builds the jet itself with the kernel's derivative
+`D` (`Σᵢ D i (D i u)` and `D i u`), substitutes it into `op`
+(`AExpr.bind`), and decides that the result is zero with `checkEq`. The
+differentiability conditions of `u` and of every first partial must follow
+from no hypotheses at all, so they hold on the whole of `ℝⁿ` and in
+particular along every coordinate line. `pde_sound` turns acceptance into a
+statement about Mathlib's `deriv`:
+
+```lean
+theorem pde_sound {u op : AExpr} {n : Nat} {w : Witness} (h : checkPde u op n w = true)
+    (ρ : List ℝ) (hn : ρ.length = n) : op.eval (jetR u ρ n) = 0
+```
+
+where `jetR u ρ n` is `ρ ++ u(ρ) :: Σᵢ deriv (deriv (y ↦ u(ρ[i ↦ y]))) ρᵢ
+:: [deriv (y ↦ u(ρ[i ↦ y])) ρᵢ, …]`. A certificate states the theorem in
+ordinary notation about a definition `fexU` of the solution, for example
+(cubic Schrödinger, `d = 2`)
+
+```text
+theorem fex_pde (x0 x1 : ℝ) :
+    ((-((0 : ℝ) + deriv (deriv (fun (y : ℝ) => fexU y x1)) x0
+         + deriv (deriv (fun (y : ℝ) => fexU x0 y)) x1)) + (fexU x0 x1) ^ 3 + V * fexU x0 x1) = 0
+```
+
+and proves it with `pde_sound _ (by decide +kernel) [x0, x1] rfl`. The
+statement matches the kernel's conclusion by definitional unfolding, so the
+reader never has to trust Alkahest's derivatives.
+
+`alkahest.fex.finalize` emits these certificates for Poisson, the cubic
+Schrödinger equation, the eigenproblem and linear transport whenever the
+fitted closed form is exact and its interior PDE is proved, falling back to
+the `HasDerivAt` tactic proof for Poisson and transport. The exponential
+relations the NLS solutions need (`exp(2a) = exp(a)²`) are the kernel's
+`expAdd` family; a constant `exp(−log 3 + a)` is first written `⅓·exp(a)`
+(the certificate's `solution_form`). The theorem covers the PDE residual
+at every point of `ℝ^d`; boundary conditions are not part of it.
+
 ## Next steps
 
 * ODE solutions: `deriv_sound` already states `(d/dx) F = G` from the same
   checker. A residual certificate for `dsolve` composes it with `checkEq` on
   the ODE's left-hand side.
-* PDE (`verify_pde_solution`) via the partial derivative `D i` and
-  `D_hasDerivAt`, and FEX symbolic sums.
+* PDE certificates for `verify_pde_solution` through `checkPde`, and for
+  symbolic `d` (FEX's `Sum` forms), which needs a kernel notion of an
+  `n`-fold sum.
 * Polynomial-algebra witnesses (factorisation, Bézout cofactors, Gröbner
   membership) through `checkEq`, and SOS witnesses for domain conditions the
   structural sign checker cannot decide.

@@ -1130,3 +1130,246 @@ fn search_layer_error_codes_match_the_registry() {
         assert!(!e.to_string().is_empty());
     }
 }
+
+/// Residual rows and Jacobian against central finite differences.
+fn check_jacobian_fd(ev: &Evaluator, e: &[usize], th: &[f64], tol: f64) {
+    let m = ev.n_residuals();
+    let np = th.len();
+    let mut r = vec![0.0; m];
+    let mut j = vec![0.0; m * np];
+    assert!(ev
+        .residual_and_jacobian(e, th, &mut r, Some(&mut j))
+        .unwrap());
+    let h = 1e-6;
+    for k in 0..np {
+        let mut tp = th.to_vec();
+        let mut tm = th.to_vec();
+        tp[k] += h;
+        tm[k] -= h;
+        let mut rp = vec![0.0; m];
+        let mut rm = vec![0.0; m];
+        ev.residual_and_jacobian(e, &tp, &mut rp, None).unwrap();
+        ev.residual_and_jacobian(e, &tm, &mut rm, None).unwrap();
+        for row in 0..m {
+            let fd = (rp[row] - rm[row]) / (2.0 * h);
+            assert!(
+                (fd - j[row * np + k]).abs() < tol * (1.0 + fd.abs()),
+                "row {row} param {k}: fd {fd} vs J {}",
+                j[row * np + k]
+            );
+        }
+    }
+    let loss = ev.loss(e, th).unwrap();
+    assert!(close(loss, r.iter().map(|v| v * v).sum(), 1e-12));
+    let mut g = vec![0.0; np];
+    ev.loss_and_grad(e, th, &mut g).unwrap();
+    for k in 0..np {
+        let want: f64 = (0..m).map(|row| 2.0 * r[row] * j[row * np + k]).sum();
+        assert!(close(g[k], want, 1e-10), "grad {k}: {} vs {want}", g[k]);
+    }
+}
+
+#[test]
+fn nonlocal_terms_match_direct_evaluation_and_their_jacobian() {
+    // residual = −Δu(x) + 0.7·u(x + m) + 0.2·Δu(x + m) − f, against u and Δu
+    // of the same candidate evaluated directly at the shifted points.
+    let mut rng = Rng(7);
+    let d = 3;
+    let n = 20;
+    let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let shift = vec![0.3, -0.2, 0.1];
+    let mk = || {
+        Problem::new(
+            d,
+            PdeOperator::poisson(),
+            ScalarField::Const(0.5),
+            ScalarField::Zero,
+        )
+        .unwrap()
+    };
+    let prob = mk()
+        .with_nonlocal(vec![NonlocalTerm::shifted(shift.clone(), 0.7, 0.2)])
+        .unwrap();
+    let local = mk();
+    let xi = grid(&mut rng, n, d, -1.0, 1.0);
+    let xb = grid(&mut rng, 6, d, -1.0, 1.0);
+    let ev = Evaluator::new(&t, &prob, &xi, &xb).unwrap();
+    let ev0 = Evaluator::new(&t, &local, &xi, &xb).unwrap();
+    let ys: Vec<f64> = (0..n * d).map(|k| xi[k] + shift[k % d]).collect();
+    for e in [[7usize, 1, 3, 8], [6, 0, 6, 3], [3, 0, 7, 2]] {
+        let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.5, 0.5)).collect();
+        let m = ev.n_residuals();
+        let mut r = vec![0.0; m];
+        let mut r0 = vec![0.0; m];
+        ev.residual_and_jacobian(&e, &th, &mut r, None).unwrap();
+        ev0.residual_and_jacobian(&e, &th, &mut r0, None).unwrap();
+        let jets = ev.jets_at(&e, &th, &ys).unwrap();
+        let w = 1.0 / (n as f64).sqrt();
+        for p in 0..n {
+            let want = r0[p] + w * (0.7 * jets.u[p] + 0.2 * jets.lap[p]);
+            assert!(close(r[p], want, 1e-12), "row {p}: {} vs {want}", r[p]);
+        }
+        for p in n..m {
+            assert_eq!(r[p], r0[p], "boundary rows are local");
+        }
+        check_jacobian_fd(&ev, &e, &th, 1e-6);
+    }
+}
+
+#[test]
+fn second_order_form_is_the_trace_against_the_hessian() {
+    // Tr(A ∇²u) with a banded A, against finite differences of u.
+    let mut rng = Rng(11);
+    let d = 3;
+    let n = 12;
+    let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let form = SecondOrderForm {
+        diag: vec![0.5, 1.0, 1.5],
+        off: vec![(0, 1, 0.25), (1, 2, -0.4)],
+    };
+    let prob = Problem::new(
+        d,
+        PdeOperator::Linear(LinearOperator {
+            lap: 1.0,
+            grad: vec![],
+            u: 0.0,
+            cubic: 0.0,
+            potential: false,
+        }),
+        ScalarField::Zero,
+        ScalarField::Zero,
+    )
+    .unwrap()
+    .with_second_order(form.clone())
+    .unwrap();
+    let xi = grid(&mut rng, n, d, -1.0, 1.0);
+    let ev = Evaluator::new(&t, &prob, &xi, &[]).unwrap();
+    let e = [7usize, 1, 3, 8];
+    let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.5, 0.5)).collect();
+    let mut r = vec![0.0; n];
+    ev.residual_and_jacobian(&e, &th, &mut r, None).unwrap();
+    let a_at = |i: usize, j: usize| -> f64 {
+        if i == j {
+            return form.diag[i];
+        }
+        form.off
+            .iter()
+            .find(|&&(a, b, _)| (a, b) == (i.min(j), i.max(j)))
+            .map(|&(_, _, c)| c)
+            .unwrap_or(0.0)
+    };
+    let h = 1e-4;
+    let u = |x: &[f64]| ev.jets_at(&e, &th, x).unwrap().u[0];
+    for p in 0..n {
+        let x = &xi[p * d..(p + 1) * d];
+        let mut tr = 0.0;
+        for i in 0..d {
+            for j in 0..d {
+                let a = a_at(i, j);
+                if a == 0.0 {
+                    continue;
+                }
+                let at = |si: f64, sj: f64| {
+                    let mut y = x.to_vec();
+                    y[i] += si * h;
+                    y[j] += sj * h;
+                    u(&y)
+                };
+                let hij =
+                    (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0)) / (4.0 * h * h);
+                tr += a * hij;
+            }
+        }
+        let got = r[p] * (n as f64).sqrt();
+        assert!(
+            (got - tr).abs() < 1e-5 * (1.0 + tr.abs()),
+            "point {p}: {got} vs {tr}"
+        );
+    }
+    check_jacobian_fd(&ev, &e, &th, 1e-6);
+}
+
+#[test]
+fn nonlocal_problems_are_checked() {
+    let d = 2;
+    let base = || {
+        Problem::new(
+            d,
+            PdeOperator::poisson(),
+            ScalarField::Zero,
+            ScalarField::Zero,
+        )
+        .unwrap()
+    };
+    let bad = base().with_nonlocal(vec![NonlocalTerm::shifted(vec![0.1], 1.0, 0.0)]);
+    assert_eq!(bad.unwrap_err().code(), "E-FEX-015");
+    let bad = base().with_second_order(SecondOrderForm {
+        diag: vec![1.0, 1.0],
+        off: vec![(1, 0, 0.5)],
+    });
+    assert_eq!(bad.unwrap_err().code(), "E-FEX-015");
+    let t = Template::new("depth1", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let p = base()
+        .with_loss(LossKind::Rayleigh)
+        .with_nonlocal(vec![NonlocalTerm::shifted(vec![0.1, 0.1], 1.0, 0.0)])
+        .unwrap();
+    let err = Evaluator::new(&t, &p, &[0.1, 0.2], &[])
+        .err()
+        .expect("refused");
+    assert_eq!(err.code(), "E-FEX-015");
+    let spec = crate::errors::codes::REGISTRY
+        .iter()
+        .find(|s| s.code == "E-FEX-015")
+        .expect("registered");
+    assert_eq!(spec.remediation, err.remediation());
+}
+
+#[test]
+fn dirichlet_energy_value_and_gradient() {
+    // mean(w |∇u|²) + λ mean((u − g)²) against jets_at, and its gradient
+    // against finite differences.
+    let d = 3;
+    let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
+    let mut rng = Rng(23);
+    let n = 120;
+    let xi = grid(&mut rng, n, d, -1.0, 1.0);
+    let xb = grid(&mut rng, 30, d, -1.0, 1.0);
+    let w = |x: &[f64]| (-(x[0] * x[0] - 1.0).powi(2)).exp();
+    let prob = Problem::new(
+        d,
+        PdeOperator::poisson(),
+        ScalarField::Zero,
+        ScalarField::Func(Arc::new(|x: &[f64]| 0.5 * (1.0 + x[0]))),
+    )
+    .unwrap()
+    .with_potential(ScalarField::Func(Arc::new(w)))
+    .with_loss(LossKind::Dirichlet);
+    assert!(!prob.loss().is_least_squares());
+    let ev = Evaluator::new(&t, &prob, &xi, &xb).unwrap();
+    let e = [7usize, 1, 3, 8];
+    let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.4, 0.4)).collect();
+    let jets = ev.jets_at(&e, &th, &xi).unwrap();
+    let mut want = 0.0;
+    for p in 0..n {
+        let g = &jets.grad[p * d..(p + 1) * d];
+        want += w(&xi[p * d..(p + 1) * d]) * g.iter().map(|v| v * v).sum::<f64>() / n as f64;
+    }
+    let jb = ev.jets_at(&e, &th, &xb).unwrap();
+    for p in 0..30 {
+        let r = jb.u[p] - 0.5 * (1.0 + xb[p * d]);
+        want += 100.0 * r * r / 30.0;
+    }
+    let got = ev.loss(&e, &th).unwrap();
+    assert!(close(got, want, 1e-12), "{got} vs {want}");
+    let mut g = vec![0.0; t.n_params()];
+    ev.loss_and_grad(&e, &th, &mut g).unwrap();
+    let fd = fd_grad(&ev, &e, &th);
+    for k in 0..g.len() {
+        assert!(
+            (g[k] - fd[k]).abs() < 1e-5 * (1.0 + fd[k].abs()),
+            "k={k}: {} vs {}",
+            g[k],
+            fd[k]
+        );
+    }
+}

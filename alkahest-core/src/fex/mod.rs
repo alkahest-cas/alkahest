@@ -21,12 +21,15 @@
 //!   linear-plus-cubic form (Poisson, transport, cubic Schrödinger) or an
 //!   arbitrary expression in [`JetSymbols`], with least-squares,
 //!   normalised and Rayleigh-quotient losses;
+//! * [`NonlocalTerm`] / [`SecondOrderForm`] — partial integro-differential
+//!   operators: a jump integral in Taylor-moment or quadrature form, and a
+//!   constant diffusion matrix `Tr(A ∇²u)` in place of the Laplacian;
 //! * [`fit`] / [`fit_batch`] — Levenberg–Marquardt, Adam and BFGS.
 //!
 //! Dimension `d` is concrete here. Exact verification for symbolic `d`
 //! needs the `Sum` head and is out of scope for this module.
 //!
-//! Error codes are `E-FEX-001` … `E-FEX-008` ([`FexError`]).
+//! Error codes are `E-FEX-001` … `E-FEX-015` ([`FexError`]).
 
 mod canon;
 mod error;
@@ -47,7 +50,7 @@ pub use eval::{Evaluator, Jets};
 pub use fit::{fit, fit_batch, FitMethod, FitOptions, FitResult};
 pub use ops::{BinaryOp, UnaryOp, ALL_UNARY, PAPER_BINARY, PAPER_UNARY};
 pub use problem::{
-    CompiledOperatorHandle, CoordFn, JetSymbols, LinearOperator, LossKind, PdeOperator, Problem,
-    ScalarField,
+    CompiledOperatorHandle, CoordFn, JetSymbols, LinearOperator, LossKind, NonlocalTerm,
+    PdeOperator, Problem, ScalarField, SecondOrderForm,
 };
 pub use template::{shape_preset, SlotInfo, SlotKind, Template, MAX_TEMPLATE_NODES};

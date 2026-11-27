@@ -79,11 +79,14 @@ from .alkahest import ExprPool, FexError, _FexEvaluator, _FexProblem, _FexTempla
 __all__ = [
     "PAPER_BINARY",
     "PAPER_UNARY",
+    "BidiagonalDiffusion",  # noqa: F822 (module __getattr__, from _fex_pide)
     "Evaluator",
     "FexError",
     "FitResult",
+    "GaussianJump",  # noqa: F822 (module __getattr__, from _fex_pide)
     "Jet",
     "Problem",
+    "RadialDrift",  # noqa: F822 (module __getattr__, from _fex_pide)
     "SearchResult",
     "Template",
     "TorchEvaluator",  # noqa: F822 (module __getattr__: torch is imported on first use)
@@ -92,6 +95,8 @@ __all__ = [
     "family_symbols",
     "finalize",
     "fit",
+    "gaussian_expectation",  # noqa: F822 (module __getattr__, from _fex_pide)
+    "group_weights",  # noqa: F822 (module __getattr__, from _fex_pide)
     "lift_candidate",
     "recovery_metric",
     "reduce_problem",
@@ -101,6 +106,7 @@ __all__ = [
     "search",
     "snap_candidates",
     "solve",
+    "taylor_moment",  # noqa: F822 (module __getattr__, from _fex_pide)
     "transform_problem",
 ]
 
@@ -507,6 +513,134 @@ class Problem:
             power=power,
         )
 
+    @classmethod
+    def dirichlet(
+        cls,
+        jet: Jet,
+        weight: Any = None,
+        bc: Any = None,
+        *,
+        strong_form: Any = None,
+        bc_weight: float = 100.0,
+        exact: Callable | None = None,
+    ) -> Problem:
+        """The Ritz (variational) energy ``mean(w(x)·|∇u|²) + λ·mean((u − bc)²)``
+        over the problem's interior points (``loss="dirichlet"``), with
+        ``w = weight`` (``1`` when ``None``).
+
+        Its minimiser under the boundary data solves ``∇·(w∇u) = 0``. For the
+        committor of Song, Cameron & Yang's variational formulation, sample
+        the points from a density ``ρ`` and take ``w = e^{−βV}/ρ``.
+        ``strong_form`` (default ``Δu``) is the Euler–Lagrange operator, read
+        only by :func:`analyze`. Fitted by BFGS (the energy has no residual
+        vector); :func:`finalize` does not verify it.
+        """
+        op = strong_form(jet) if callable(strong_form) else strong_form
+        if op is None:
+            op = jet.lap
+        return cls._make(
+            jet.dim,
+            "expr",
+            jet,
+            0.0,
+            bc,
+            weight,
+            exact,
+            operator=op,
+            u=jet.u,
+            lap=jet.lap,
+            grad=jet.grad,
+            ut=jet.ut,
+            time=jet.time,
+            bc_weight=bc_weight,
+            loss="dirichlet",
+        )
+
+    @classmethod
+    def pide(
+        cls,
+        dim: int,
+        *,
+        time: int = 0,
+        drift: Any = None,
+        diffusion: Any = None,
+        jump: Any = None,
+        rhs: Any = 0.0,
+        terminal: Any = None,
+        T: Any = 1,
+        bc_weight: float = 100.0,
+        extra: Any = None,
+        exact: Callable | None = None,
+        jet: Jet | None = None,
+    ) -> Problem:
+        """A partial integro-differential equation (FEX-PG, Hardwick–Liang–Yang):
+
+        ``u_t + b·∇u + ½Tr(σσᵀ∇²u) + λ∫(u(x+G) − u − G·∇u) φ(z)dz = rhs``,
+        ``u(T, x) = terminal``, with ``dim`` coordinates including time
+        (index ``time``).
+
+        ``drift`` is ``None``, a list of expressions (one per spatial
+        coordinate) or :class:`RadialDrift`; ``diffusion`` is ``None``, a
+        number ``θ`` (``σ = θI``), :class:`BidiagonalDiffusion` or a matrix;
+        ``jump`` is a :class:`GaussianJump`. The jump integral enters through
+        its Taylor-moment replacement (:func:`taylor_moment`): a local part in
+        the operator and a nonlocal part evaluated at shifted points.
+        ``extra`` adds any further operator term (an expression in the jet
+        symbols; not verified by :func:`finalize`). Boundary points for
+        ``terminal`` are the slice ``x[time] = T``
+        (:func:`sample_initial_slice` with ``t0=T``).
+        """
+        from . import _fex_pide as _pd
+
+        jet = jet or Jet(dim, time)
+        if jet.time != time:
+            raise _pd._err("the jet's time coordinate must be the PIDE's")
+        op, kw, desc = _pd.build(
+            dim,
+            time=time,
+            drift=drift,
+            diffusion=diffusion,
+            jump=jump,
+            rhs=rhs,
+            terminal=terminal,
+            T=T,
+            bc_weight=bc_weight,
+            extra=extra,
+            jet=jet,
+        )
+        rhs_e = _source(rhs, jet)
+        if rhs_e is not None and _pd.exact_number(rhs_e) is not None:
+            rhs_e = _pd.to_expr(rhs_e, jet.pool)
+        out = cls._make(
+            dim,
+            "expr",
+            jet,
+            rhs_e,
+            terminal,
+            None,
+            exact,
+            operator=op,
+            u=jet.u,
+            lap=jet.lap,
+            grad=jet.grad,
+            ut=jet.ut,
+            time=time,
+            bc_weight=bc_weight,
+            loss="least_squares",
+            **{k: v for k, v in kw.items() if v is not None},
+        )
+        out.spec["pide"] = desc
+        return out
+
+
+_PIDE_NAMES = (
+    "BidiagonalDiffusion",
+    "GaussianJump",
+    "RadialDrift",
+    "gaussian_expectation",
+    "group_weights",
+    "taylor_moment",
+)
 
 # ---------------------------------------------------------------------------
 # Point samplers (the reference implementation's)
@@ -1859,6 +1993,10 @@ def __getattr__(name: str) -> Any:
         from ._fex_torch import TorchEvaluator
 
         return TorchEvaluator
+    if name in _PIDE_NAMES:
+        from . import _fex_pide
+
+        return getattr(_fex_pide, name)
     raise AttributeError(f"module 'alkahest.fex' has no attribute {name!r}")
 
 

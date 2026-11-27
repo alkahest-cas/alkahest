@@ -19,8 +19,8 @@ use pyo3::types::{PyDict, PyList};
 
 use alkahest_core::fex::{
     canonical_key, canonical_skeletons, fit_batch, redundant_params, same_function, Evaluator,
-    FexError, FitMethod, FitOptions, JetSymbols, LinearOperator, LossKind, PdeOperator, Problem,
-    ScalarField, SlotKind, Template,
+    FexError, FitMethod, FitOptions, JetSymbols, LinearOperator, LossKind, NonlocalTerm,
+    PdeOperator, Problem, ScalarField, SecondOrderForm, SlotKind, Template,
 };
 use alkahest_core::ExprId;
 
@@ -392,6 +392,11 @@ fn field(
     ))
 }
 
+/// `(scale, shift, c_u, c_lap)` of a nonlocal term, as Python passes it.
+type NonlocalSpec = (Vec<f64>, Vec<f64>, f64, f64);
+/// `(diagonal, [(i, j, a_ij)])` of a second-order form.
+type SecondOrderSpec = (Vec<f64>, Vec<(usize, usize, f64)>);
+
 /// A PDE problem for FEX scoring.
 #[pyclass(name = "_FexProblem", module = "alkahest", frozen)]
 pub struct PyFexProblem {
@@ -411,7 +416,7 @@ impl PyFexProblem {
         dim, kind, *, rhs = None, bc = None, potential = None, coords = None,
         grad_coeffs = None, linear = None, operator = None, u = None, lap = None,
         grad = None, ut = None, time = None, bc_weight = 100.0, loss = "least_squares",
-        power = 3.0
+        power = 3.0, nonlocal_terms = None, second_order = None
     ))]
     fn new(
         py: Python<'_>,
@@ -432,6 +437,8 @@ impl PyFexProblem {
         bc_weight: f64,
         loss: &str,
         power: f64,
+        nonlocal_terms: Option<Vec<NonlocalSpec>>,
+        second_order: Option<SecondOrderSpec>,
     ) -> PyResult<Self> {
         let pool: Option<Py<PyExprPool>> = coords
             .as_ref()
@@ -505,9 +512,10 @@ impl PyFexProblem {
             "normalized" => LossKind::Normalized { power },
             "rayleigh" => LossKind::Rayleigh,
             "centered" | "least_squares_centered" => LossKind::CenteredLeastSquares,
+            "dirichlet" | "ritz" => LossKind::Dirichlet,
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown loss {other:?}; use least_squares, normalized, rayleigh or centered"
+                    "unknown loss {other:?}; use least_squares, normalized, rayleigh, centered or dirichlet"
                 )))
             }
         };
@@ -518,6 +526,23 @@ impl PyFexProblem {
             .with_loss(loss);
         if let Some(t) = time {
             p = p.with_time(t).map_err(fex_err)?;
+        }
+        if let Some((diag, off)) = second_order {
+            p = p
+                .with_second_order(SecondOrderForm { diag, off })
+                .map_err(fex_err)?;
+        }
+        if let Some(terms) = nonlocal_terms {
+            let terms = terms
+                .into_iter()
+                .map(|(scale, shift, u, lap)| NonlocalTerm {
+                    scale,
+                    shift,
+                    u,
+                    lap,
+                })
+                .collect();
+            p = p.with_nonlocal(terms).map_err(fex_err)?;
         }
         Ok(PyFexProblem { inner: Arc::new(p) })
     }
@@ -538,6 +563,7 @@ impl PyFexProblem {
             LossKind::LeastSquares => "least_squares",
             LossKind::Normalized { .. } => "normalized",
             LossKind::Rayleigh => "rayleigh",
+            LossKind::Dirichlet => "dirichlet",
             LossKind::CenteredLeastSquares => "centered",
             _ => "other",
         }
@@ -549,6 +575,11 @@ impl PyFexProblem {
             PdeOperator::Linear(_) => "linear",
             _ => "compiled",
         }
+    }
+
+    #[getter]
+    fn n_nonlocal(&self) -> usize {
+        self.inner.nonlocal().len()
     }
 
     #[getter]

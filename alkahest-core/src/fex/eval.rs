@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 
 use super::error::FexError;
 use super::ops::{BinaryOp, UnaryOp, ALL_UNARY};
-use super::problem::{LossKind, PdeOperator, Problem};
+use super::problem::{LossKind, NonlocalTerm, PdeOperator, Problem, SecondOrderForm};
 use super::template::{SlotKind, Template};
 
 /// Rows per parallel work item.
@@ -146,6 +146,14 @@ pub struct Evaluator {
     bd: Block,
     order: u8,
     mask: Vec<f64>,
+    /// The second-order form the operator's `lap` reads (the Laplacian over
+    /// the spatial coordinates unless the problem sets one).
+    qm: SecondOrderForm,
+    /// The spatial Laplacian (nonlocal terms, `jets_at`).
+    ql: SecondOrderForm,
+    /// One block of transformed interior points per nonlocal term, with the
+    /// jet order it reads.
+    nl: Vec<(Block, NonlocalTerm, u8)>,
     stride: usize,
 }
 
@@ -206,7 +214,7 @@ impl Evaluator {
         };
         let rhs = rows(interior, ni, &|x| problem.rhs.eval(x));
         let uses_pot = !problem.potential.is_zero()
-            && (matches!(problem.loss, LossKind::Rayleigh)
+            && (matches!(problem.loss, LossKind::Rayleigh | LossKind::Dirichlet)
                 || matches!(&problem.operator, PdeOperator::Linear(l) if l.potential));
         let pot = if uses_pot {
             rows(interior, ni, &|x| problem.potential.eval(x))
@@ -220,6 +228,32 @@ impl Evaluator {
         } else {
             0.0
         };
+        if !problem.nonlocal.is_empty() && !problem.loss.is_least_squares() {
+            return Err(FexError::Nonlocal {
+                detail: format!(
+                    "nonlocal terms need a least-squares or centred loss, this problem's is {:?}",
+                    problem.loss
+                ),
+            });
+        }
+        let nl = problem
+            .nonlocal
+            .iter()
+            .map(|t| {
+                let mut y = Vec::with_capacity(interior.len());
+                for p in 0..ni {
+                    t.map(&interior[p * dim..(p + 1) * dim], &mut y);
+                }
+                let ord = if t.lap != 0.0 { 2 } else { 0 };
+                (
+                    Block::new(y, ni, Vec::new(), Vec::new(), wi),
+                    t.clone(),
+                    ord,
+                )
+            })
+            .collect();
+        let ql = SecondOrderForm::diagonal(mask.clone());
+        let qm = problem.second_order.clone().unwrap_or_else(|| ql.clone());
         Ok(Evaluator {
             template: template.clone(),
             problem: problem.clone(),
@@ -227,6 +261,9 @@ impl Evaluator {
             bd: Block::new(boundary.to_vec(), nb, target, Vec::new(), wb),
             order: problem.interior_order(),
             mask,
+            qm,
+            ql,
+            nl,
             stride: dim + 2,
         })
     }
@@ -287,11 +324,16 @@ impl Evaluator {
             .collect())
     }
 
-    fn tables<'a>(&'a self, blk: &'a Block, ops: &[NodeOp]) -> Vec<Option<&'a LeafTable>> {
+    fn tables<'a>(
+        &'a self,
+        blk: &'a Block,
+        ops: &[NodeOp],
+        q: &SecondOrderForm,
+    ) -> Vec<Option<&'a LeafTable>> {
         let dim = self.template.dim();
         ops.iter()
             .map(|op| match op {
-                NodeOp::Leaf(phi) if !phi.is_constant() => Some(blk.table(*phi, dim, &self.mask)),
+                NodeOp::Leaf(phi) if !phi.is_constant() => Some(blk.table(*phi, dim, &q.diag)),
                 _ => None,
             })
             .collect()
@@ -307,11 +349,11 @@ impl Evaluator {
         th: &[f64],
         p: usize,
         order: u8,
+        q: &SecondOrderForm,
         s: &mut Scratch,
     ) {
         let dim = self.template.dim();
         let st = self.stride;
-        let m = &self.mask;
         let Scratch { jets, aux, fc, .. } = s;
         for (k, node) in self.template.plan.iter().enumerate() {
             let (lo, hi) = jets.split_at_mut(k * st);
@@ -358,7 +400,7 @@ impl Evaluator {
                             out[2 + i] = a1 * c[2 + i];
                         }
                         out[1] = if order >= 2 {
-                            let g2 = mdot(&c[2..], &c[2..], m);
+                            let g2 = q.dot(&c[2..], &c[2..]);
                             al * (f[2] * g2 + f[1] * c[1])
                         } else {
                             0.0
@@ -380,7 +422,7 @@ impl Evaluator {
                                 out[i] = a[i] - b[i];
                             }
                         }
-                        BinaryOp::Mul => mul_jet(a, b, out, order, m),
+                        BinaryOp::Mul => mul_jet(a, b, out, order, q),
                         BinaryOp::Div => {
                             // q = a · r with r = 1/b (r's jet kept for the
                             // reverse sweep).
@@ -394,12 +436,12 @@ impl Evaluator {
                                     r[2 + i] = f[1] * b[2 + i];
                                 }
                                 r[1] = if order >= 2 {
-                                    f[2] * mdot(&b[2..], &b[2..], m) + f[1] * b[1]
+                                    f[2] * q.dot(&b[2..], &b[2..]) + f[1] * b[1]
                                 } else {
                                     0.0
                                 };
                             }
-                            mul_jet(a, &aux[k * st..k * st + st], out, order, m);
+                            mul_jet(a, &aux[k * st..k * st + st], out, order, q);
                         }
                     }
                 }
@@ -417,12 +459,12 @@ impl Evaluator {
         th: &[f64],
         p: usize,
         order: u8,
+        q: &SecondOrderForm,
         s: &mut Scratch,
         out: &mut [f64],
     ) {
         let dim = self.template.dim();
         let st = self.stride;
-        let m = &self.mask;
         let Scratch {
             jets,
             adj,
@@ -482,7 +524,7 @@ impl Evaluator {
                     let (g2, gdot) = if order >= 1 {
                         let gd = dot(&ad[2..], &c[2..]);
                         let g2 = if order >= 2 {
-                            mdot(&c[2..], &c[2..], m)
+                            q.dot(&c[2..], &c[2..])
                         } else {
                             0.0
                         };
@@ -500,8 +542,9 @@ impl Evaluator {
                         let a1 = al * f[1];
                         let a2 = 2.0 * al * f[2] * lb;
                         for i in 0..dim {
-                            lo[ca + 2 + i] += a1 * ad[2 + i] + a2 * m[i] * c[2 + i];
+                            lo[ca + 2 + i] += a1 * ad[2 + i];
                         }
+                        q.add_scaled(&c[2..], a2, &mut lo[ca + 2..ca + 2 + dim]);
                         lo[ca + 1] += a1 * lb;
                     }
                 }
@@ -527,7 +570,7 @@ impl Evaluator {
                             let b = &jets[cb..cb + st];
                             tmp.fill(0.0);
                             // a's adjoint into lo[ca..], b's into tmp, then add.
-                            mul_jet_adj(ad, a, b, &mut lo[ca..ca + st], tmp, order, m);
+                            mul_jet_adj(ad, a, b, &mut lo[ca..ca + st], tmp, order, q);
                             for i in 0..len {
                                 lo[cb + i] += tmp[i];
                             }
@@ -537,7 +580,7 @@ impl Evaluator {
                             let r = &aux[k * st..k * st + st];
                             let b = &jets[cb..cb + st];
                             tmp.fill(0.0);
-                            mul_jet_adj(ad, a, r, &mut lo[ca..ca + st], tmp, order, m);
+                            mul_jet_adj(ad, a, r, &mut lo[ca..ca + st], tmp, order, q);
                             // tmp is r's adjoint; r = 1/b with α = 1, β = 0.
                             let f = fc[k];
                             let rb = tmp[0];
@@ -546,7 +589,7 @@ impl Evaluator {
                             let (g2, gdot) = if order >= 1 {
                                 let gd = dot(&tmp[2..], &b[2..]);
                                 let g2 = if order >= 2 {
-                                    mdot(&b[2..], &b[2..], m)
+                                    q.dot(&b[2..], &b[2..])
                                 } else {
                                     0.0
                                 };
@@ -558,8 +601,9 @@ impl Evaluator {
                             if order >= 1 {
                                 let a2 = 2.0 * f[2] * rl;
                                 for i in 0..dim {
-                                    lo[cb + 2 + i] += f[1] * tmp[2 + i] + a2 * m[i] * b[2 + i];
+                                    lo[cb + 2 + i] += f[1] * tmp[2 + i];
                                 }
+                                q.add_scaled(&b[2..], a2, &mut lo[cb + 2..cb + 2 + dim]);
                                 lo[cb + 1] += f[1] * rl;
                             }
                         }
@@ -623,6 +667,25 @@ impl Evaluator {
         }
     }
 
+    /// Seed the root adjoint with a nonlocal term's `w·(c_u, c_Δ)`.
+    fn seed_nonlocal(&self, s: &mut Scratch, w: f64, t: &NonlocalTerm, ord: u8) {
+        let st = self.stride;
+        let n = self.template.plan.len();
+        s.adj[..n * st].fill(0.0);
+        let root = (n - 1) * st;
+        s.adj[root] = w * t.u;
+        if ord >= 2 {
+            s.adj[root + 1] = w * t.lap;
+        }
+    }
+
+    fn nonlocal_tables<'a>(&'a self, ops: &[NodeOp]) -> Vec<Vec<Option<&'a LeafTable>>> {
+        self.nl
+            .iter()
+            .map(|(blk, _, _)| self.tables(blk, ops, &self.ql))
+            .collect()
+    }
+
     fn seed_root(&self, s: &mut Scratch, scale: f64, partials_too: bool) {
         let st = self.stride;
         let n = self.template.plan.len();
@@ -645,6 +708,7 @@ impl Evaluator {
         ops: &[NodeOp],
         ti: &[Option<&LeafTable>],
         tb: &[Option<&LeafTable>],
+        tn: &[Vec<Option<&LeafTable>>],
         th: &[f64],
         row0: usize,
         r: &mut [f64],
@@ -656,26 +720,43 @@ impl Evaluator {
         for (ri, row) in (row0..row0 + r.len()).enumerate() {
             if row < self.int.n {
                 let p = row;
-                self.forward(ops, ti, th, p, self.order, s);
+                self.forward(ops, ti, th, p, self.order, &self.qm, s);
                 let w = self.int.weight;
-                let f = self.operator(p, s);
+                let mut f = self.operator(p, s);
+                let mut jr = jac.as_deref_mut().map(|j| &mut j[ri * np..(ri + 1) * np]);
+                if let Some(jr) = jr.as_deref_mut() {
+                    jr.fill(0.0);
+                    self.seed_root(s, w, true);
+                    self.backward(ops, ti, th, p, self.order, &self.qm, s, jr);
+                }
+                // Nonlocal terms: forward at the transformed point, then the
+                // reverse sweep right away (its seed does not depend on r).
+                for (k, (_, t, ord)) in self.nl.iter().enumerate() {
+                    self.forward(ops, &tn[k], th, p, *ord, &self.ql, s);
+                    f += t.u * s.jets[root]
+                        + if *ord >= 2 {
+                            t.lap * s.jets[root + 1]
+                        } else {
+                            0.0
+                        };
+                    if let Some(jr) = jr.as_deref_mut() {
+                        self.seed_nonlocal(s, w, t, *ord);
+                        self.backward(ops, &tn[k], th, p, *ord, &self.ql, s, jr);
+                    }
+                }
                 let rv = w * (f - self.int.target[p]);
                 if !rv.is_finite() {
                     return false;
                 }
                 r[ri] = rv;
-                if let Some(j) = jac.as_deref_mut() {
-                    let jr = &mut j[ri * np..(ri + 1) * np];
-                    jr.fill(0.0);
-                    self.seed_root(s, w, true);
-                    self.backward(ops, ti, th, p, self.order, s, jr);
+                if let Some(jr) = jr {
                     if !jr.iter().all(|v| v.is_finite()) {
                         return false;
                     }
                 }
             } else {
                 let p = row - self.int.n;
-                self.forward(ops, tb, th, p, 0, s);
+                self.forward(ops, tb, th, p, 0, &self.qm, s);
                 let w = self.bd.weight;
                 let rv = w * (s.jets[root] - self.bd.target[p]);
                 if !rv.is_finite() {
@@ -686,7 +767,7 @@ impl Evaluator {
                     let jr = &mut j[ri * np..(ri + 1) * np];
                     jr.fill(0.0);
                     self.seed_root(s, w, false);
-                    self.backward(ops, tb, th, p, 0, s, jr);
+                    self.backward(ops, tb, th, p, 0, &self.qm, s, jr);
                     if !jr.iter().all(|v| v.is_finite()) {
                         return false;
                     }
@@ -747,8 +828,9 @@ impl Evaluator {
         mut jac: Option<&mut [f64]>,
     ) -> bool {
         let np = self.template.n_params();
-        let ti = self.tables(&self.int, ops);
-        let tb = self.tables(&self.bd, ops);
+        let ti = self.tables(&self.int, ops, &self.qm);
+        let tb = self.tables(&self.bd, ops, &self.qm);
+        let tn = self.nonlocal_tables(ops);
         let ok = match jac.as_deref_mut() {
             Some(j) => {
                 let tasks: Vec<(usize, &mut [f64], &mut [f64])> = r
@@ -759,7 +841,7 @@ impl Evaluator {
                     .collect();
                 let oks = map_tasks(tasks, |(row0, rc, jc)| {
                     let mut s = self.scratch();
-                    self.rows_chunk(ops, &ti, &tb, th, row0, rc, Some(jc), &mut s)
+                    self.rows_chunk(ops, &ti, &tb, &tn, th, row0, rc, Some(jc), &mut s)
                 });
                 let ok = oks.iter().all(|&b| b);
                 if !ok {
@@ -775,7 +857,7 @@ impl Evaluator {
                     .collect();
                 let oks = map_tasks(tasks, |(row0, rc)| {
                     let mut s = self.scratch();
-                    self.rows_chunk(ops, &ti, &tb, th, row0, rc, None, &mut s)
+                    self.rows_chunk(ops, &ti, &tb, &tn, th, row0, rc, None, &mut s)
                 });
                 oks.iter().all(|&b| b)
             }
@@ -956,11 +1038,15 @@ impl Evaluator {
     pub(crate) fn loss_impl(&self, ops: &[NodeOp], th: &[f64], grad: Option<&mut [f64]>) -> f64 {
         let np = self.template.n_params();
         let out = match self.problem.loss {
+            LossKind::LeastSquares if !self.nl.is_empty() => {
+                self.centered_loss(ops, th, grad.is_some())
+            }
             LossKind::LeastSquares => self.ls_loss(ops, th, grad.is_some()),
             LossKind::Normalized { power } => {
                 self.scalar_loss(ops, th, grad.is_some(), Some(power))
             }
             LossKind::Rayleigh => self.scalar_loss(ops, th, grad.is_some(), None),
+            LossKind::Dirichlet => self.dirichlet_loss(ops, th, grad.is_some()),
             LossKind::CenteredLeastSquares => self.centered_loss(ops, th, grad.is_some()),
         };
         match out {
@@ -1028,8 +1114,8 @@ impl Evaluator {
     /// `Σ r²` and (optionally) `Σ 2 r ∂r/∂θ`, without storing the Jacobian.
     fn ls_loss(&self, ops: &[NodeOp], th: &[f64], want_grad: bool) -> Option<(f64, Vec<f64>)> {
         let np = self.template.n_params();
-        let ti = self.tables(&self.int, ops);
-        let tb = self.tables(&self.bd, ops);
+        let ti = self.tables(&self.int, ops, &self.qm);
+        let tb = self.tables(&self.bd, ops, &self.qm);
         let root = (self.template.plan.len() - 1) * self.stride;
         let parts = map_tasks(self.row_chunks(), |(r0, r1)| {
             let mut s = self.scratch();
@@ -1038,7 +1124,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, p, self.order, &mut s);
+                    self.forward(ops, &ti, th, p, self.order, &self.qm, &mut s);
                     let w = self.int.weight;
                     let rv = w * (self.operator(p, &mut s) - self.int.target[p]);
                     if !rv.is_finite() {
@@ -1047,11 +1133,11 @@ impl Evaluator {
                     l += rv * rv;
                     if want_grad {
                         self.seed_root(&mut s, 2.0 * rv * w, true);
-                        self.backward(ops, &ti, th, p, self.order, &mut s, &mut g);
+                        self.backward(ops, &ti, th, p, self.order, &self.qm, &mut s, &mut g);
                     }
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &self.qm, &mut s);
                     let w = self.bd.weight;
                     let rv = w * (s.jets[root] - self.bd.target[p]);
                     if !rv.is_finite() {
@@ -1060,7 +1146,78 @@ impl Evaluator {
                     l += rv * rv;
                     if want_grad {
                         self.seed_root(&mut s, 2.0 * rv * w, false);
-                        self.backward(ops, &tb, th, p, 0, &mut s, &mut g);
+                        self.backward(ops, &tb, th, p, 0, &self.qm, &mut s, &mut g);
+                    }
+                }
+            }
+            Some((l, g))
+        });
+        let mut loss = 0.0;
+        let mut grad = if want_grad { vec![0.0; np] } else { Vec::new() };
+        for part in parts {
+            let (l, g) = part?;
+            loss += l;
+            for (a, b) in grad.iter_mut().zip(&g) {
+                *a += b;
+            }
+        }
+        Some((loss, grad))
+    }
+
+    /// The Ritz energy `mean(w |∇u|²) + λ mean(r_bd²)` and its gradient in
+    /// one forward/reverse pass per point.
+    fn dirichlet_loss(
+        &self,
+        ops: &[NodeOp],
+        th: &[f64],
+        want_grad: bool,
+    ) -> Option<(f64, Vec<f64>)> {
+        let np = self.template.n_params();
+        let ti = self.tables(&self.int, ops, &self.qm);
+        let tb = self.tables(&self.bd, ops, &self.qm);
+        let st = self.stride;
+        let root = (self.template.plan.len() - 1) * st;
+        let ni = self.int.n as f64;
+        let parts = map_tasks(self.row_chunks(), |(r0, r1)| {
+            let mut s = self.scratch();
+            let mut g = if want_grad { vec![0.0; np] } else { Vec::new() };
+            let mut l = 0.0;
+            for row in r0..r1 {
+                if row < self.int.n {
+                    let p = row;
+                    self.forward(ops, &ti, th, p, 1, &self.qm, &mut s);
+                    let w = if self.int.pot.is_empty() {
+                        1.0
+                    } else {
+                        self.int.pot[p]
+                    };
+                    let gr = &s.jets[root + 2..root + st];
+                    let e = w * mdot(gr, gr, &self.mask) / ni;
+                    if !e.is_finite() {
+                        return None;
+                    }
+                    l += e;
+                    if want_grad {
+                        let n_adj = s.adj.len();
+                        s.adj[..n_adj].fill(0.0);
+                        for i in 0..st - 2 {
+                            s.adj[root + 2 + i] =
+                                2.0 * w * self.mask[i] * s.jets[root + 2 + i] / ni;
+                        }
+                        self.backward(ops, &ti, th, p, 1, &self.qm, &mut s, &mut g);
+                    }
+                } else {
+                    let p = row - self.int.n;
+                    self.forward(ops, &tb, th, p, 0, &self.qm, &mut s);
+                    let w = self.bd.weight;
+                    let rv = w * (s.jets[root] - self.bd.target[p]);
+                    if !rv.is_finite() {
+                        return None;
+                    }
+                    l += rv * rv;
+                    if want_grad {
+                        self.seed_root(&mut s, 2.0 * rv * w, false);
+                        self.backward(ops, &tb, th, p, 0, &self.qm, &mut s, &mut g);
                     }
                 }
             }
@@ -1089,8 +1246,8 @@ impl Evaluator {
         power: Option<f64>,
     ) -> Option<(f64, Vec<f64>)> {
         let np = self.template.n_params();
-        let ti = self.tables(&self.int, ops);
-        let tb = self.tables(&self.bd, ops);
+        let ti = self.tables(&self.int, ops, &self.qm);
+        let tb = self.tables(&self.bd, ops, &self.qm);
         let st = self.stride;
         let root = (self.template.plan.len() - 1) * st;
         let ni = self.int.n as f64;
@@ -1110,7 +1267,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, p, order, &mut s);
+                    self.forward(ops, &ti, th, p, order, &self.qm, &mut s);
                     let u = s.jets[root];
                     if rayleigh {
                         let g = &s.jets[root + 2..root + st];
@@ -1123,7 +1280,7 @@ impl Evaluator {
                     }
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &self.qm, &mut s);
                     let rv = self.bd.weight * (s.jets[root] - self.bd.target[p]);
                     bd += rv * rv;
                 }
@@ -1152,7 +1309,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, p, order, &mut s);
+                    self.forward(ops, &ti, th, p, order, &self.qm, &mut s);
                     let u = s.jets[root];
                     let n_adj = s.adj.len();
                     s.adj[..n_adj].fill(0.0);
@@ -1178,14 +1335,14 @@ impl Evaluator {
                         };
                         s.adj[root] -= num / (den * den) * du / ni;
                     }
-                    self.backward(ops, &ti, th, p, order, &mut s, &mut g);
+                    self.backward(ops, &ti, th, p, order, &self.qm, &mut s, &mut g);
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &self.qm, &mut s);
                     let w = self.bd.weight;
                     let rv = w * (s.jets[root] - self.bd.target[p]);
                     self.seed_root(&mut s, 2.0 * rv * w, false);
-                    self.backward(ops, &tb, th, p, 0, &mut s, &mut g);
+                    self.backward(ops, &tb, th, p, 0, &self.qm, &mut s, &mut g);
                 }
             }
             g
@@ -1212,7 +1369,7 @@ impl Evaluator {
         }
         let n = points.len() / dim;
         let blk = Block::new(points.to_vec(), n, Vec::new(), Vec::new(), 1.0);
-        let tabs = self.tables(&blk, &ops);
+        let tabs = self.tables(&blk, &ops, &self.ql);
         let mut s = self.scratch();
         let st = self.stride;
         let root = (self.template.plan.len() - 1) * st;
@@ -1222,7 +1379,7 @@ impl Evaluator {
             lap: Vec::with_capacity(n),
         };
         for p in 0..n {
-            self.forward(&ops, &tabs, theta, p, 2, &mut s);
+            self.forward(&ops, &tabs, theta, p, 2, &self.ql, &mut s);
             out.u.push(s.jets[root]);
             out.lap.push(s.jets[root + 1]);
             out.grad.extend_from_slice(&s.jets[root + 2..root + st]);
@@ -1248,7 +1405,7 @@ impl Evaluator {
             });
         }
         let blk = Block::new(point.to_vec(), 1, Vec::new(), Vec::new(), 1.0);
-        let tabs = self.tables(&blk, &ops);
+        let tabs = self.tables(&blk, &ops, &self.ql);
         let mut s = self.scratch();
         let st = self.stride;
         let np = self.template.n_params();
@@ -1256,7 +1413,7 @@ impl Evaluator {
         let root = (n - 1) * st;
         let mut out = vec![0.0; st * np];
         for comp in 0..st {
-            self.forward(&ops, &tabs, theta, 0, 2, &mut s);
+            self.forward(&ops, &tabs, theta, 0, 2, &self.ql, &mut s);
             s.adj[..n * st].fill(0.0);
             s.adj[root + comp] = 1.0;
             self.backward(
@@ -1265,6 +1422,7 @@ impl Evaluator {
                 theta,
                 0,
                 2,
+                &self.ql,
                 &mut s,
                 &mut out[comp * np..(comp + 1) * np],
             );
@@ -1275,15 +1433,15 @@ impl Evaluator {
 
 /// Jet product `out = a·b`.
 #[inline]
-fn mul_jet(a: &[f64], b: &[f64], out: &mut [f64], order: u8, m: &[f64]) {
+fn mul_jet(a: &[f64], b: &[f64], out: &mut [f64], order: u8, q: &SecondOrderForm) {
     out[0] = a[0] * b[0];
     if order >= 1 {
-        let d = m.len();
+        let d = q.diag.len();
         for i in 0..d {
             out[2 + i] = a[0] * b[2 + i] + b[0] * a[2 + i];
         }
         out[1] = if order >= 2 {
-            a[0] * b[1] + b[0] * a[1] + 2.0 * mdot(&a[2..], &b[2..], m)
+            a[0] * b[1] + b[0] * a[1] + 2.0 * q.dot(&a[2..], &b[2..])
         } else {
             0.0
         };
@@ -1300,21 +1458,23 @@ fn mul_jet_adj(
     ab: &mut [f64],
     bb: &mut [f64],
     order: u8,
-    m: &[f64],
+    q: &SecondOrderForm,
 ) {
     let vb = ad[0];
     ab[0] += vb * b[0];
     bb[0] += vb * a[0];
     if order >= 1 {
-        let d = m.len();
+        let d = q.diag.len();
         let lb = if order >= 2 { ad[1] } else { 0.0 };
         let gb = &ad[2..2 + d];
         ab[0] += dot(gb, &b[2..]) + lb * b[1];
         bb[0] += dot(gb, &a[2..]) + lb * a[1];
         for i in 0..d {
-            ab[2 + i] += gb[i] * b[0] + 2.0 * lb * m[i] * b[2 + i];
-            bb[2 + i] += gb[i] * a[0] + 2.0 * lb * m[i] * a[2 + i];
+            ab[2 + i] += gb[i] * b[0];
+            bb[2 + i] += gb[i] * a[0];
         }
+        q.add_scaled(&b[2..], 2.0 * lb, &mut ab[2..2 + d]);
+        q.add_scaled(&a[2..], 2.0 * lb, &mut bb[2..2 + d]);
         ab[1] += lb * b[0];
         bb[1] += lb * a[0];
     }

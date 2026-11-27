@@ -366,6 +366,151 @@ impl PdeOperator {
     }
 }
 
+/// A constant second-order form `Tr(A·∇²u)` over the coordinates: the
+/// quantity the jet symbol `lap` stands for when it is not the Laplacian
+/// (a PIDE's diffusion term `½ Tr(σσᵀ ∇²u)` is `Tr(A ∇²u)` with
+/// `A = ½ σσᵀ`). `A` is symmetric, given by its diagonal and its nonzero
+/// entries above the diagonal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondOrderForm {
+    /// `A_ii`, one per coordinate (`0` for the time coordinate).
+    pub diag: Vec<f64>,
+    /// `(i, j, A_ij)` with `i < j`; `A_ji = A_ij` is implied.
+    pub off: Vec<(usize, usize, f64)>,
+}
+
+impl SecondOrderForm {
+    /// A diagonal form (`diag = mask` is the Laplacian over the
+    /// coordinates with `mask[i] = 1`).
+    pub fn diagonal(diag: Vec<f64>) -> SecondOrderForm {
+        SecondOrderForm {
+            diag,
+            off: Vec::new(),
+        }
+    }
+
+    /// `aᵀ A b`.
+    #[inline]
+    pub(crate) fn dot(&self, a: &[f64], b: &[f64]) -> f64 {
+        let mut s = 0.0;
+        for i in 0..self.diag.len() {
+            s += a[i] * b[i] * self.diag[i];
+        }
+        for &(i, j, c) in &self.off {
+            s += c * (a[i] * b[j] + a[j] * b[i]);
+        }
+        s
+    }
+
+    /// `out += scale · A c`.
+    #[inline]
+    pub(crate) fn add_scaled(&self, c: &[f64], scale: f64, out: &mut [f64]) {
+        if scale == 0.0 {
+            return;
+        }
+        for i in 0..self.diag.len() {
+            out[i] += scale * self.diag[i] * c[i];
+        }
+        for &(i, j, a) in &self.off {
+            out[i] += scale * a * c[j];
+            out[j] += scale * a * c[i];
+        }
+    }
+
+    fn check(&self, dim: usize) -> Result<(), FexError> {
+        if self.diag.len() != dim {
+            return Err(FexError::Nonlocal {
+                detail: format!(
+                    "the second-order form has {} diagonal entries for dimension {dim}",
+                    self.diag.len()
+                ),
+            });
+        }
+        for &(i, j, c) in &self.off {
+            if i >= j || j >= dim || !c.is_finite() {
+                return Err(FexError::Nonlocal {
+                    detail: format!(
+                        "off-diagonal entry ({i}, {j}, {c}) must have i < j < {dim} and be finite"
+                    ),
+                });
+            }
+        }
+        if self.diag.iter().any(|v| !v.is_finite()) {
+            return Err(FexError::Nonlocal {
+                detail: "the second-order form has a non-finite diagonal entry".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One nonlocal term of a partial integro-differential operator, evaluated
+/// at a transformed copy of each interior point:
+/// `c_u · u(y) + c_Δ · Δu(y)` with `y = s ⊙ x + m` (elementwise).
+///
+/// This is how a jump integral `∫ (u(x + G) − u(x) − G·∇u(x)) ν(dz)` enters
+/// the residual: in Hardwick–Liang–Yang's Taylor-moment form
+/// `λ (u(x + μ) + ½σ² Δu(x + μ))` (one term with `s = 1`, `m = μ`), or as a
+/// quadrature rule `Σ_k w_k u(T(x, z_k))` (one term per node, e.g.
+/// `s = e^{z_k}` for the multiplicative jumps `x ↦ x e^z` of option
+/// pricing). The local part `−λ u − λ E[G]·∇u` belongs in the operator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NonlocalTerm {
+    /// The elementwise scale `s` (empty means all ones).
+    pub scale: Vec<f64>,
+    /// The shift `m`.
+    pub shift: Vec<f64>,
+    /// `c_u`.
+    pub u: f64,
+    /// `c_Δ` (the Laplacian over the spatial coordinates at `y`).
+    pub lap: f64,
+}
+
+impl NonlocalTerm {
+    /// `c_u · u(x + m) + c_Δ · Δu(x + m)`.
+    pub fn shifted(shift: Vec<f64>, u: f64, lap: f64) -> NonlocalTerm {
+        NonlocalTerm {
+            scale: Vec::new(),
+            shift,
+            u,
+            lap,
+        }
+    }
+
+    /// The transformed point `s ⊙ x + m`, appended to `out`.
+    pub(crate) fn map(&self, x: &[f64], out: &mut Vec<f64>) {
+        for (i, &xi) in x.iter().enumerate() {
+            let s = if self.scale.is_empty() {
+                1.0
+            } else {
+                self.scale[i]
+            };
+            out.push(s * xi + self.shift[i]);
+        }
+    }
+
+    fn check(&self, dim: usize) -> Result<(), FexError> {
+        if self.shift.len() != dim || !(self.scale.is_empty() || self.scale.len() == dim) {
+            return Err(FexError::Nonlocal {
+                detail: format!(
+                    "a nonlocal term needs {dim} shift (and 0 or {dim} scale) entries, got {} and {}",
+                    self.shift.len(),
+                    self.scale.len()
+                ),
+            });
+        }
+        let finite = self.shift.iter().chain(&self.scale).all(|v| v.is_finite())
+            && self.u.is_finite()
+            && self.lap.is_finite();
+        if !finite {
+            return Err(FexError::Nonlocal {
+                detail: "a nonlocal term has a non-finite entry".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// How residuals become a scalar loss.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -390,6 +535,13 @@ pub enum LossKind {
     /// `−Δu + V u = λ u` becomes `−Δv − |∇v|² + V = λ`, and the fitted mean
     /// of the residual is the eigenvalue. Levenberg–Marquardt applies.
     CenteredLeastSquares,
+    /// The Ritz (variational) energy `mean(w(x)·|∇u|²) + λ·mean(r_bd²)`,
+    /// with `w` the problem's potential field (`1` when it is zero) and the
+    /// gradient over the spatial coordinates. Its minimiser under the
+    /// boundary data solves `∇·(w ∇u) = 0`: with points sampled from a
+    /// density `ρ` and `w = e^{−βV}/ρ`, the committor of Song, Cameron &
+    /// Yang's variational formulation. The operator is not read.
+    Dirichlet,
 }
 
 impl LossKind {
@@ -414,6 +566,8 @@ pub struct Problem {
     pub(crate) potential: ScalarField,
     pub(crate) bc_weight: f64,
     pub(crate) loss: LossKind,
+    pub(crate) second_order: Option<SecondOrderForm>,
+    pub(crate) nonlocal: Vec<NonlocalTerm>,
 }
 
 impl Problem {
@@ -446,6 +600,8 @@ impl Problem {
             potential: ScalarField::Zero,
             bc_weight: 100.0,
             loss: LossKind::LeastSquares,
+            second_order: None,
+            nonlocal: Vec::new(),
         })
     }
 
@@ -480,6 +636,35 @@ impl Problem {
         self
     }
 
+    /// Let the jet symbol `lap` stand for `Tr(A·∇²u)` instead of the
+    /// Laplacian over the spatial coordinates (a constant diffusion matrix;
+    /// see [`SecondOrderForm`]).
+    pub fn with_second_order(mut self, form: SecondOrderForm) -> Result<Problem, FexError> {
+        form.check(self.dim)?;
+        self.second_order = Some(form);
+        Ok(self)
+    }
+
+    /// Add the nonlocal terms of a partial integro-differential operator
+    /// (see [`NonlocalTerm`]). They need a least-squares loss.
+    pub fn with_nonlocal(mut self, terms: Vec<NonlocalTerm>) -> Result<Problem, FexError> {
+        for t in &terms {
+            t.check(self.dim)?;
+        }
+        self.nonlocal = terms;
+        Ok(self)
+    }
+
+    /// The nonlocal terms (empty for a local PDE).
+    pub fn nonlocal(&self) -> &[NonlocalTerm] {
+        &self.nonlocal
+    }
+
+    /// The second-order form `lap` stands for (`None`: the Laplacian).
+    pub fn second_order(&self) -> Option<&SecondOrderForm> {
+        self.second_order.as_ref()
+    }
+
     /// Dimension (number of coordinates, time included).
     pub fn dim(&self) -> usize {
         self.dim
@@ -503,7 +688,7 @@ impl Problem {
     /// Highest jet order needed at interior points.
     pub(crate) fn interior_order(&self) -> u8 {
         match self.loss {
-            LossKind::Rayleigh => 1,
+            LossKind::Rayleigh | LossKind::Dirichlet => 1,
             _ => self.operator.order(),
         }
     }

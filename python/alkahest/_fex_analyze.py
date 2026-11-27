@@ -260,6 +260,13 @@ class OperatorView:
         return out
 
 
+def _nonlocal(problem: Any) -> bool:
+    """Nonlocal terms or a second-order form other than the Laplacian: the
+    operator expression alone does not describe the problem."""
+    spec = problem.spec or {}
+    return bool(spec.get("nonlocal_terms")) or spec.get("second_order") is not None
+
+
 def operator_view(problem: Any) -> OperatorView:
     """The problem's operator as an expression in its jet symbols."""
     spec = problem.spec or {}
@@ -552,8 +559,14 @@ def analyze(
         )  # |∇u|² written per coordinate is not detected
         and _data_rotation_invariant([e for e in data if e is not None], coords, rng)
     )
-    depends = _dependence(view, [V])
-    disp = _dispersion(view, rng) if (linear and homogeneous) else None
+    pide = _nonlocal(problem)
+    if pide:
+        notes.append(
+            "PIDE: nonlocal terms (or a diffusion matrix) are not part of the operator "
+            "expression; no substitution, reduction or dispersion proposal"
+        )
+    depends = list(range(d)) if pide else _dependence(view, [V])
+    disp = _dispersion(view, rng) if (linear and homogeneous and not pide) else None
     scaling = None
     if view.op is not None and const_coeff and linear and problem.spec.get("kind") == "poisson":
         k = _homogeneous_degree(view.rhs, coords, rng)
@@ -572,6 +585,8 @@ def analyze(
         notes.append("homogeneous operator with exp in its data: try u = e^v")
     if "log" in (leaf_v | inner_v) and not view.eigen:
         transforms.append("log")
+    if pide:
+        transforms = []
 
     # Vocabulary of the solution.
     leaves = {"0", "id"} | {o for o in leaf_v if o in _ALL_UNARY}
@@ -816,6 +831,10 @@ def transform_problem(problem: Any, kind: str = "exp", *, loss: str | None = Non
 
     if kind not in ("exp", "log"):
         raise _err("E-FEX-012", f"unknown transform {kind!r}; use 'exp' or 'log'")
+    if _nonlocal(problem):
+        raise _err("E-FEX-012", "a substitution of a PIDE (nonlocal terms) is not supported")
+    if problem.loss == "dirichlet":
+        raise _err("E-FEX-012", "a substitution of a variational (Ritz) energy is not supported")
     view = operator_view(problem)
     if view.op is None:
         raise _err("E-FEX-012", "the problem's operator is not available symbolically")
@@ -875,6 +894,8 @@ def reduce_problem(problem: Any, variables: list[int]) -> Any:
     """
     from . import fex as _fex
 
+    if _nonlocal(problem):
+        raise _err("E-FEX-012", "a variable reduction of a PIDE (nonlocal terms) is not supported")
     view = operator_view(problem)
     if view.op is None:
         raise _err("E-FEX-012", "the problem's operator is not available symbolically")
@@ -910,6 +931,11 @@ def reduce_problem(problem: Any, variables: list[int]) -> Any:
     kw = {}
     if loss == "normalized":
         kw["power"] = spec.get("power", 3.0)
+    if loss == "dirichlet" and spec.get("potential") is not None:
+        w = spec["potential"]
+        if _is_expr(w) and (_symbols(w) & dropped):
+            raise _err("E-FEX-012", "the energy weight depends on a dropped coordinate")
+        kw["potential"] = w
     out = _fex.Problem.from_operator(
         new,
         op,

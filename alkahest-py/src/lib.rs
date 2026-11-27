@@ -6942,6 +6942,64 @@ fn py_dsolve_certificate<'py>(
     Ok(out)
 }
 
+/// `_pde_kernel_certificate(operator, solution, coords, u, lap, grad, native=False)`
+/// — a Lean certificate (reflective ``Alkahest.Kernel.Pde``) that the PDE
+/// operator, written in the jet symbols ``u``, ``lap`` and ``grad`` and the
+/// coordinates, vanishes on the jet of ``solution`` everywhere. Returns a dict
+/// with ``certificate`` (``str`` or ``None``), ``path`` and ``detail`` (the
+/// withheld reason). Used by ``alkahest.fex.finalize``.
+#[pyfunction]
+#[pyo3(
+    name = "_pde_kernel_certificate",
+    signature = (operator, solution, coords, u, lap, grad, native=false)
+)]
+#[allow(clippy::too_many_arguments)]
+fn py_pde_kernel_certificate<'py>(
+    py: Python<'py>,
+    operator: PyRef<PyExpr>,
+    solution: PyRef<PyExpr>,
+    coords: Vec<PyExpr>,
+    u: PyRef<PyExpr>,
+    lap: PyRef<PyExpr>,
+    grad: Vec<PyExpr>,
+    native: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    same_pool!("_pde_kernel_certificate"; operator, solution, coords, u, lap, grad);
+    let pool_py = operator.pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let cs: Vec<ExprId> = coords.iter().map(|e| e.id).collect();
+    let gs: Vec<ExprId> = grad.iter().map(|e| e.id).collect();
+    let (mode, path) = if native {
+        (alkahest_core::KernelCheckMode::Native, "kernel_native")
+    } else {
+        (alkahest_core::KernelCheckMode::Kernel, "kernel")
+    };
+    let r = alkahest_core::emit_pde_kernel_cert(
+        operator.id,
+        solution.id,
+        &cs,
+        u.id,
+        lap.id,
+        &gs,
+        &pool.inner,
+        mode,
+    );
+    let out = PyDict::new(py);
+    match r {
+        Ok(src) => {
+            out.set_item("certificate", src)?;
+            out.set_item("path", path)?;
+            out.set_item("detail", py.None())?;
+        }
+        Err(e) => {
+            out.set_item("certificate", py.None())?;
+            out.set_item("path", py.None())?;
+            out.set_item("detail", e)?;
+        }
+    }
+    Ok(out)
+}
+
 /// `dsolve` input for an equation written with the applied function `y(x)`
 /// and its derivatives: each `y⁽ᵏ⁾(x)` becomes a symbol, `back` receives the
 /// inverse map.  Refuses (`E-DIFF-005`/`E-DIFF-007`) a `y` that is not an
@@ -24306,6 +24364,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_dsolve_system, m)?)?;
     m.add_function(wrap_pyfunction!(py_dsolve_certificate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_pde_kernel_certificate, m)?)?;
     m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_fourier_transform, m)?)?;
