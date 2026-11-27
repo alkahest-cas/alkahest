@@ -358,3 +358,37 @@ def test_torch_evaluator_expression_operators():
         assert (np.isfinite(l1) == np.isfinite(l2)).all()
         assert np.allclose(l1[fin], l2[fin], rtol=1e-12, atol=1e-14)
         assert np.allclose(g1[fin], g2[fin], rtol=1e-9, atol=1e-11)
+
+
+# ---------------------------------------------------------------------------
+# Variational (Ritz) energy
+# ---------------------------------------------------------------------------
+
+
+def test_dirichlet_energy_matches_its_definition_and_reduces():
+    rng = _rng(7)
+    d = 3
+    jet = fex.Jet(d)
+    x = jet.x
+    w = ak.exp(-((x[0] ** 2 - 1) ** 2))
+    prob = fex.Problem.dirichlet(jet, weight=w, bc=(1 + x[0]) / 2)
+    assert prob.loss == "dirichlet"
+    xi = fex.sample_box(300, d, -1, 1, rng)
+    xb = fex.sample_box(40, d, -1, 1, rng)
+    tpl = fex.Template("depth2_sub", dim=d)
+    ev = fex.Evaluator(tpl, prob, xi, xb)
+    es = tpl.random_skeletons(8, rng)
+    th = tpl.init_params(8, rng, scale=0.5)
+    losses = ev.loss(es, th)
+    for e, t, lo in zip(es, th, losses):
+        if not np.isfinite(lo):
+            continue
+        u, g, _ = ev.jets(e, t, xi)
+        wv = np.exp(-((xi[:, 0] ** 2 - 1) ** 2))
+        ub, _, _ = ev.jets(e, t, xb)
+        want = np.mean(wv * (g**2).sum(1)) + 100.0 * np.mean((ub - (1 + xb[:, 0]) / 2) ** 2)
+        assert lo == pytest.approx(want, rel=1e-12)
+    # The weight depends on x₀ only, so the reduction to x₀ keeps it.
+    red = fex.reduce_problem(prob, [0])
+    assert red.loss == "dirichlet"
+    assert red.spec["potential"] is not None
