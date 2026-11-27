@@ -65,6 +65,8 @@ returns a SciPy CSR matrix (`format="dense"` / `"raw"` without SciPy).
   the *sign of the coefficient at each point* — also for nonlinear
   coefficients such as Burgers' `u·u_x`. `scheme="weno5"` uses the Jiang–Peng
   WENO-5 derivatives instead (uniform grids).
+* **Conservative WENO-5 fluxes** (`scheme="weno5_fv"`): for conservation laws
+  `u_t + div F(u) = rest`, see [below](#conservative-weno-fluxes).
 * **Spectral collocation**: `scheme="chebyshev"` (Gauss–Lobatto nodes) and
   `scheme="fourier"` (periodic). Derivatives are dense differentiation
   matrices applied along each axis.
@@ -140,6 +142,133 @@ assert np.max(np.abs(a - b)) < 1e-6
 The native integrators run entirely in Rust: every right-hand side and
 Jacobian evaluation is one pass of the compiled kernels.
 
+### Linear solvers and threads
+
+The BDF Newton iterations solve with `M − cJ`. `linear_solver=` chooses how:
+
+* `"direct"` — banded LU after reverse Cuthill–McKee ordering. Ideal in one
+  dimension, but an `n × n` grid has a band of about `n` (`O(n⁴)` work per
+  factorisation) and an `n³` grid one of about `n²` (`O(n⁷)` work, `O(n⁵)`
+  memory).
+* `"krylov"` — restarted GMRES, right-preconditioned by ILU(0) of the exact
+  sparse iteration matrix, in the integrator's own weighted RMS norm (the
+  linear tolerance is `0.05 ×` the Newton tolerance, as in SUNDIALS CVODE).
+  Every factorisation and solve costs `O(nnz)`. A GMRES solve that misses its
+  tolerance counts as a failed Newton iteration; after three in a row, or on
+  an ILU zero pivot, the integration switches to the direct solver when its
+  band fits in memory.
+* `"auto"` (default) — the direct solver for small or narrow-band systems,
+  GMRES from 2000 states with a band of 32 or more, or whenever the band
+  would not fit in memory.
+
+`res.stats` reports `linear_solver`, `linear_solves`, `krylov_iters`,
+`krylov_failures`, `preconditioner_setups` and `direct_fallbacks`.
+
+With the `parallel` feature (on in the wheels), kernels applied over many
+points and the Jacobian rows of the interior kernels are evaluated on all
+cores in fixed chunks, and so are the state copies; GMRES's products and
+reductions are chunked the same way (on more than 262 144 states: below that
+the sequential ILU(0) solves dominate and fork-join costs more than it
+saves). Every point is computed by the same compiled code whatever its
+chunk, and reductions are summed in a fixed chunk order, so **results are
+bitwise identical for every thread count**. `threads=` runs one integration on
+a dedicated pool of that many threads (default: all cores, or
+`RAYON_NUM_THREADS`). The dense collocation operators, the boundary fills, the
+ILU(0) triangular solves and the banded LU stay sequential, so the stiff
+integrations of the benchmarks gain little from threads; explicit methods on
+large grids gain most.
+
+```python
+y = P.symbol("y")
+V = u(x, y, t)
+sq = (
+    akx.PDE(akx.D(V, t) - akx.D(V, x, 2) - akx.D(V, y, 2), V)
+    .on(akx.Box([x, y], [(0, 1), (0, 1)]))
+    .bc(u(0, y, t), 0).bc(u(1, y, t), 0).bc(u(x, 0, t), 0).bc(u(x, 1, t), 0)
+    .ic(u(x, y, 0), ak.sin(P.pi() * x) * ak.sin(P.pi() * y))
+)
+ms = akx.method_of_lines(sq, 65)
+k = ms.integrate(0.05, rtol=1e-8, atol=1e-10)              # auto: GMRES here
+d = ms.integrate(0.05, rtol=1e-8, atol=1e-10, linear_solver="direct")
+assert k.stats["linear_solver"] == "krylov"
+assert np.max(np.abs(k.y[-1] - d.y[-1])) < 1e-8
+one = ms.integrate(0.01, threads=1)
+assert np.array_equal(one.y, ms.integrate(0.01, threads=4).y)
+```
+
+## Conservative WENO fluxes
+
+`scheme="weno5_fv"` discretises a conservation law `u_t + div F(u) = rest`
+in Shu–Osher flux-difference form: the update of node `j` is
+`−(F̂_{j+1/2} − F̂_{j−1/2})/h`, where the interface flux `F̂` is the WENO-5
+reconstruction of the split fluxes `F± = (F ± αu)/2` (left-biased for `F+`,
+right-biased for `F−`). Each interface flux is computed once, into an
+auxiliary field, and differenced, so `Σ_j h u_j` changes only through the
+boundary fluxes — **exactly conserved, to rounding, on a periodic grid** —
+while smooth solutions converge at fifth order. `rest` (viscosity, sources)
+uses the central stencils of `order`.
+
+* `flux={u(x, t): F}` per conservative unknown (a dict or list over the space
+  variables in 2-D/3-D). The equation minus `−div F` must leave no first
+  derivative along a flux direction; this is checked symbolically and refused
+  with `E-PDE-373` otherwise. For a single scalar equation `u_t + a(u)u_x = …`
+  the flux may be omitted: `F = ∫a du` is computed and checked by
+  differentiation.
+* `flux_splitting="rusanov"` (default) takes `α` per interface as the largest
+  wave speed over its six-cell stencil; `"lax_friedrichs"` uses one constant
+  `α = wave_speed`. `wave_speed=` defaults to `|F′(u)|`, or for a system to the
+  Gershgorin bound `maxᵢ Σⱼ |∂Fᵢ/∂uⱼ|` on the spectral radius (safe, more
+  diffusive than the exact `|v| + c` of the Euler equations, which can be
+  given instead).
+* `weno_variant="js"` (Jiang–Shu weights) or `"z"` (WENO-Z, which keeps
+  fifth order at critical points).
+* Near a non-periodic boundary the reconstructions drop to WENO-3 and then to
+  first order; a face without a boundary condition takes the physical flux of
+  its boundary node (transmissive). Uniform grids only. Systems are
+  reconstructed component-wise (no characteristic decomposition).
+
+```python
+half = P.rational(1, 2)
+two_pi = 2 * P.pi()
+burgers_p = (
+    akx.PDE(akx.D(U, t) + U * akx.D(U, x), U)
+    .on(akx.Interval(x, 0, two_pi))
+    .bc(u(0, t), u(two_pi, t))
+    .ic(u(x, 0), half + ak.sin(x))
+)
+ms = akx.method_of_lines(burgers_p, {x: 200}, scheme="weno5_fv", flux={U: U**2 / 2})
+res = ms.integrate(3.0, method="rk45", rtol=1e-7, atol=1e-9)    # through the shock
+v = res.field("u")
+assert abs(v.sum() - ms.field(ms.y0).sum()) < 1e-10              # mass, to rounding
+assert v.max() < 1.52 and v.min() > -0.52                        # no oscillations
+```
+
+The Euler equations of gas dynamics, with the Sod shock tube (no boundary
+conditions: the outer interfaces carry the physical flux):
+
+```python
+rho, mom, ene = akx.Function("rho"), akx.Function("m"), akx.Function("E")
+r, m, E = rho(x, t), mom(x, t), ene(x, t)
+g = P.rational(7, 5)
+p = (g - 1) * (E - m**2 / (2 * r))
+F = [m, m**2 / r + p, (E + p) * m / r]
+step = (1 + ak.tanh((x - half) * 10**4)) / 2
+sod = (
+    akx.PDE([akx.D(w, t) + ak.diff(f, x).value for w, f in zip((r, m, E), F)], [r, m, E])
+    .on(akx.Interval(x, 0, 1))
+    .ic(rho(x, 0), 1 - P.float(0.875) * step)
+    .ic(mom(x, 0), 0)
+    .ic(ene(x, 0), P.float(2.5) - P.float(2.25) * step)
+)
+ms = akx.method_of_lines(
+    sod, {x: 200}, scheme="weno5_fv", flux=dict(zip((r, m, E), F)),
+    wave_speed=ak.abs(m / r) + ak.sqrt(g * p / r), jacobian=False,
+)
+res = ms.integrate(0.2, method="rk45", rtol=1e-6, atol=1e-8)
+dens = res.field("rho")
+assert 0.12 < dens.min() and dens.max() < 1.001
+```
+
 ## Stability
 
 `ms.stability_report()` takes the linear constant-coefficient part of each
@@ -204,7 +333,7 @@ assert "stablehlo" in ms.to_stablehlo()
 
 ## Errors
 
-`NumericPdeError`, codes `E-PDE-359 … E-PDE-372`:
+`NumericPdeError`, codes `E-PDE-359 … E-PDE-373`:
 
 | code | meaning |
 |---|---|
@@ -222,3 +351,4 @@ assert "stablehlo" in ms.to_stablehlo()
 | `E-PDE-370` | export needs JAX (or a function has no JAX translation) |
 | `E-PDE-371` | a SciPy-backed method or format without SciPy |
 | `E-PDE-372` | invalid integration arguments (`dt` missing, unknown method, `to_ode` on a large grid) |
+| `E-PDE-373` | `scheme="weno5_fv"`: a flux that is missing, not a function of the unknowns, or does not account for every first-derivative term; a non-numeric `wave_speed` with global Lax–Friedrichs splitting |

@@ -35,9 +35,22 @@
 //! nodes (chain rule through fills and dense ops), giving the exact Jacobian
 //! of the discrete right-hand side as a CSR matrix whose pattern is fixed
 //! after the first call.
+//!
+//! # Threads
+//!
+//! With the `parallel` feature, a kernel applied over many points is split
+//! into fixed chunks of contiguous points evaluated on Rayon's pool (the
+//! caller's pool: see [`with_threads`]), and so is the assembly of the
+//! Jacobian rows of every `Rhs` kernel. Each point is evaluated by the same
+//! compiled scalar loop whatever chunk it falls in, and the Jacobian entries
+//! are concatenated in chunk order, so the right-hand side, the Jacobian and
+//! every integration are **bitwise identical for every thread count**. The
+//! dense collocation ops, the boundary fills and the banded LU stay
+//! sequential.
 
 mod banded;
 mod integrate;
+mod krylov;
 
 use std::sync::{Arc, Mutex};
 
@@ -45,8 +58,103 @@ use crate::jit::CompiledVecFn;
 
 pub use banded::{rcm_order, BandedLu};
 pub use integrate::{
-    integrate, MolIntegrateOptions, MolMethod, MolSolution, MolStats, StepFailure,
+    integrate, integrate_with, MolIntegrateOptions, MolLinearSolver, MolLinearStats, MolMethod,
+    MolSolution, MolSolverOptions, MolStats, StepFailure, AUTO_MIN_BANDWIDTH, AUTO_MIN_STATES,
 };
+pub use krylov::{gmres, GmresOutcome, Ilu0};
+
+/// Points per parallel chunk of a kernel evaluation.
+#[cfg(feature = "parallel")]
+const PAR_CHUNK_POINTS: usize = 2048;
+/// Kernel evaluations over fewer points stay on the calling thread.
+#[cfg(feature = "parallel")]
+const PAR_MIN_POINTS: usize = 8192;
+/// Boxes whose rows are shorter than this, with at least
+/// `NARROW_MIN_POINTS` points, are evaluated by one gathered kernel call.
+const NARROW_ROW: usize = 16;
+const NARROW_MIN_POINTS: usize = 64;
+/// Points per segment of the Jacobian assembly of an `Rhs` kernel.
+const JAC_SEG: usize = 4096;
+
+/// Run `f` on a dedicated Rayon pool of `threads` worker threads, so the
+/// program's kernels (and everything else that uses Rayon inside `f`) run on
+/// that many threads. Without the `parallel` feature, or if the pool cannot
+/// be built, `f` runs on the calling thread.
+pub fn with_threads<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+    #[cfg(feature = "parallel")]
+    {
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.max(1))
+            .build()
+        {
+            return pool.install(f);
+        }
+    }
+    let _ = threads;
+    f()
+}
+
+/// A raw pointer that may cross threads: used only for copies into
+/// provably disjoint ranges (see the SAFETY notes at each use).
+#[cfg(feature = "parallel")]
+#[derive(Clone, Copy)]
+struct SendPtr(*mut f64);
+
+#[cfg(feature = "parallel")]
+// SAFETY: see the type's documentation.
+unsafe impl Send for SendPtr {}
+#[cfg(feature = "parallel")]
+// SAFETY: see the type's documentation.
+unsafe impl Sync for SendPtr {}
+
+#[cfg(feature = "parallel")]
+impl SendPtr {
+    /// `self + k` (elements).
+    ///
+    /// # Safety
+    /// `k` must be within the allocation the pointer came from.
+    unsafe fn at(self, k: usize) -> *mut f64 {
+        // SAFETY: the caller keeps `k` in bounds.
+        unsafe { self.0.add(k) }
+    }
+}
+
+/// Copy runs `(field, flat, state, len)` on Rayon's pool, long runs split
+/// into pieces so a single long row is spread over the threads too.
+#[cfg(feature = "parallel")]
+fn par_copy_runs(
+    runs: &[(usize, usize, usize, usize)],
+    copy: impl Fn(&(usize, usize, usize, usize)) + Sync + Send,
+) {
+    use rayon::prelude::*;
+    let mut pieces: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(runs.len());
+    for &(f, p, s, len) in runs {
+        let mut k = 0;
+        while k < len {
+            let m = (len - k).min(PAR_CHUNK_POINTS * 4);
+            pieces.push((f, p + k, s + k, m));
+            k += m;
+        }
+    }
+    pieces.par_chunks(16).for_each(|c| c.iter().for_each(&copy));
+}
+
+/// Map `f` over `items` in order — on Rayon's pool when `parallel` is on and
+/// `work` (the number of points) is large enough. The output order is the
+/// input order either way.
+fn map_ordered<I: Sync, T: Send>(
+    items: &[I],
+    work: usize,
+    f: impl Fn(&I) -> T + Sync + Send,
+) -> Vec<T> {
+    #[cfg(feature = "parallel")]
+    if items.len() > 1 && work >= PAR_MIN_POINTS {
+        use rayon::prelude::*;
+        return items.par_iter().map(&f).collect();
+    }
+    let _ = work;
+    items.iter().map(f).collect()
+}
 
 /// Errors from building or running a [`MolProgram`].
 #[derive(Debug, Clone, PartialEq)]
@@ -442,9 +550,26 @@ impl MolProgram {
         // Only state nodes change between calls: derived nodes are rewritten
         // by their fill / dense ops before anything reads them, and nodes no
         // op writes keep their initial value.
-        for &(f, p, s, len) in &self.runs {
-            sc.full[f][p..p + len].copy_from_slice(&y[s..s + len]);
+        #[cfg(feature = "parallel")]
+        if y.len() >= PAR_MIN_POINTS && rayon::current_num_threads() > 1 {
+            let dst: Vec<SendPtr> = sc
+                .full
+                .iter_mut()
+                .map(|v| SendPtr(v.as_mut_ptr()))
+                .collect();
+            let src = SendPtr(y.as_ptr() as *mut f64);
+            par_copy_runs(&self.runs, |&(f, p, s, len)| {
+                // SAFETY: state nodes are distinct (checked in `new`), so the
+                // runs' destinations are pairwise disjoint ranges of the
+                // field arrays, which nothing else touches meanwhile; `y`
+                // has `n_states` values (checked by the caller).
+                unsafe { std::ptr::copy_nonoverlapping(src.at(s), dst[f].at(p), len) }
+            });
+        } else {
+            self.scatter(sc, y);
         }
+        #[cfg(not(feature = "parallel"))]
+        self.scatter(sc, y);
         let want_rhs = out.is_some();
         for op in &self.ops {
             match op {
@@ -458,9 +583,30 @@ impl MolProgram {
             }
         }
         if let Some(out) = out {
+            #[cfg(feature = "parallel")]
+            if out.len() >= PAR_MIN_POINTS && rayon::current_num_threads() > 1 {
+                let src: Vec<SendPtr> = sc
+                    .dfull
+                    .iter()
+                    .map(|v| SendPtr(v.as_ptr() as *mut f64))
+                    .collect();
+                let dst = SendPtr(out.as_mut_ptr());
+                par_copy_runs(&self.runs, |&(f, p, s, len)| {
+                    // SAFETY: the runs cover distinct state indices, so the
+                    // destinations are disjoint ranges of `out`.
+                    unsafe { std::ptr::copy_nonoverlapping(src[f].at(p), dst.at(s), len) }
+                });
+                return;
+            }
             for &(f, p, s, len) in &self.runs {
                 out[s..s + len].copy_from_slice(&sc.dfull[f][p..p + len]);
             }
+        }
+    }
+
+    fn scatter(&self, sc: &mut Scratch, y: &[f64]) {
+        for &(f, p, s, len) in &self.runs {
+            sc.full[f][p..p + len].copy_from_slice(&y[s..s + len]);
         }
     }
 
@@ -489,41 +635,11 @@ impl MolProgram {
             .map(|(&(_, b), &s)| (b - 1) * s)
             .sum();
         let span = last_pt - first + 1;
-        if points > len && span <= 2 * points {
-            sc.tbuf[..span].fill(t);
-            let Scratch {
-                full,
-                dfull,
-                tbuf,
-                obuf,
-                ..
-            } = sc;
-            {
-                let cols: Vec<&[f64]> = o
-                    .inputs
-                    .iter()
-                    .map(|inp| match inp {
-                        MolInput::Field { field, offset } => {
-                            let s = (first as isize + self.shift(offset)) as usize;
-                            &full[*field][s..s + span]
-                        }
-                        MolInput::Coef(c) => &self.coefs[*c][first..first + span],
-                        MolInput::Time => &tbuf[..span],
-                    })
-                    .collect();
-                o.kernel.call_batch(&cols, &mut [&mut obuf[..span]]);
-            }
-            let target = match o.target {
-                MolTarget::Rhs(f) => &mut dfull[f],
-                MolTarget::Fill(f) => &mut full[f],
-            };
-            for_each_row(&self.strides, &o.region, |start| {
-                let r = start - first;
-                target[start..start + len].copy_from_slice(&obuf[r..r + len]);
-            });
-            return;
+        let use_span = points > len && span <= 2 * points;
+        if o.inputs.iter().any(|i| matches!(i, MolInput::Time)) {
+            let m = if use_span { span } else { len };
+            sc.tbuf[..m].fill(t);
         }
-        sc.tbuf[..len].fill(t);
         let Scratch {
             full,
             dfull,
@@ -531,35 +647,120 @@ impl MolProgram {
             obuf,
             ..
         } = sc;
-        for_each_row(&self.strides, &o.region, |start| {
+        if use_span {
+            self.eval_run(o, full, tbuf, first, &mut obuf[..span]);
+            let target = match o.target {
+                MolTarget::Rhs(f) => &mut dfull[f],
+                MolTarget::Fill(f) => &mut full[f],
+            };
+            #[cfg(feature = "parallel")]
+            if points >= PAR_MIN_POINTS && rayon::current_num_threads() > 1 {
+                let mut rows: Vec<(usize, usize, usize, usize)> = Vec::new();
+                for_each_row(&self.strides, &o.region, |start| {
+                    rows.push((0, start, start - first, len));
+                });
+                let dst = SendPtr(target.as_mut_ptr());
+                let src = SendPtr(obuf.as_ptr() as *mut f64);
+                par_copy_runs(&rows, |&(_, p, s, m)| {
+                    // SAFETY: the rows of a box are disjoint ranges of the
+                    // target array, within its bounds (validated region);
+                    // `obuf` holds the `span` values read here.
+                    unsafe { std::ptr::copy_nonoverlapping(src.at(s), dst.at(p), m) }
+                });
+                return;
+            }
+            for_each_row(&self.strides, &o.region, |start| {
+                let r = start - first;
+                target[start..start + len].copy_from_slice(&obuf[r..r + len]);
+            });
+            return;
+        }
+        if len < NARROW_ROW && points >= NARROW_MIN_POINTS {
+            // A narrow box with many rows (a boundary column or layer of a
+            // 2-D/3-D grid): one kernel call per row would cost more than the
+            // kernel itself. Gather the inputs of every point into
+            // contiguous columns, evaluate once, scatter the results. Every
+            // input is read before any output is written, as in the span
+            // path above.
+            let mut pts: Vec<usize> = Vec::with_capacity(points);
+            for_each_point(&self.strides, &o.region, |p| pts.push(p));
+            let data: Vec<Vec<f64>> = o
+                .inputs
+                .iter()
+                .map(|inp| match inp {
+                    MolInput::Field { field, offset } => {
+                        let sh = self.shift(offset);
+                        let src = &full[*field];
+                        pts.iter()
+                            .map(|&p| src[(p as isize + sh) as usize])
+                            .collect()
+                    }
+                    MolInput::Coef(c) => pts.iter().map(|&p| self.coefs[*c][p]).collect(),
+                    MolInput::Time => vec![t; points],
+                })
+                .collect();
+            let cols: Vec<&[f64]> = data.iter().map(|v| &v[..]).collect();
+            let out = &mut obuf[..points];
+            o.kernel.call_batch(&cols, &mut [&mut out[..]]);
+            let target = match o.target {
+                MolTarget::Rhs(f) => &mut dfull[f],
+                MolTarget::Fill(f) => &mut full[f],
+            };
+            for (&p, &v) in pts.iter().zip(out.iter()) {
+                target[p] = v;
+            }
+            return;
+        }
+        for_each_row(&self.strides, &o.region, |start| match o.target {
+            MolTarget::Rhs(f) => {
+                self.eval_run(o, full, tbuf, start, &mut dfull[f][start..start + len]);
+            }
+            MolTarget::Fill(f) => {
+                self.eval_run(o, full, tbuf, start, &mut obuf[..len]);
+                full[f][start..start + len].copy_from_slice(&obuf[..len]);
+            }
+        });
+    }
+
+    /// Evaluate the kernel of `o` at the contiguous flat points
+    /// `start .. start + out.len()` into `out` — in fixed chunks on Rayon's
+    /// pool when the run is long (every point is computed by the same scalar
+    /// code whatever its chunk, so the values do not depend on the thread
+    /// count). `tbuf` holds `t` in at least `out.len()` slots when the kernel
+    /// reads the time.
+    fn eval_run(
+        &self,
+        o: &MolKernelOp,
+        full: &[Vec<f64>],
+        tbuf: &[f64],
+        start: usize,
+        out: &mut [f64],
+    ) {
+        let run = |s0: usize, out: &mut [f64]| {
+            let m = out.len();
             let cols: Vec<&[f64]> = o
                 .inputs
                 .iter()
                 .map(|inp| match inp {
                     MolInput::Field { field, offset } => {
-                        let shift = self.shift(offset);
-                        let s = (start as isize + shift) as usize;
-                        &full[*field][s..s + len]
+                        let s = (s0 as isize + self.shift(offset)) as usize;
+                        &full[*field][s..s + m]
                     }
-                    MolInput::Coef(c) => &self.coefs[*c][start..start + len],
-                    MolInput::Time => &tbuf[..len],
+                    MolInput::Coef(c) => &self.coefs[*c][s0..s0 + m],
+                    MolInput::Time => &tbuf[..m],
                 })
                 .collect();
-            match o.target {
-                MolTarget::Rhs(f) => {
-                    let out = &mut dfull[f][start..start + len];
-                    o.kernel.call_batch(&cols, &mut [out]);
-                }
-                MolTarget::Fill(_) => {
-                    let out = &mut obuf[..len];
-                    o.kernel.call_batch(&cols, &mut [out]);
-                }
-            }
-            drop(cols);
-            if let MolTarget::Fill(f) = o.target {
-                full[f][start..start + len].copy_from_slice(&obuf[..len]);
-            }
-        });
+            o.kernel.call_batch(&cols, &mut [out]);
+        };
+        #[cfg(feature = "parallel")]
+        if out.len() >= PAR_MIN_POINTS && rayon::current_num_threads() > 1 {
+            use rayon::prelude::*;
+            out.par_chunks_mut(PAR_CHUNK_POINTS)
+                .enumerate()
+                .for_each(|(c, ch)| run(start + c * PAR_CHUNK_POINTS, ch));
+            return;
+        }
+        run(start, out);
     }
 
     fn apply_dense(&self, sc: &mut Scratch, o: &MolDenseOp) {
@@ -786,6 +987,65 @@ impl MolProgram {
                             _ => 0,
                         })
                         .collect();
+                    if let MolTarget::Rhs(f) = o.target {
+                        // Rows of state nodes: no later op reads them, so the
+                        // segments are independent — evaluated in parallel
+                        // and concatenated in order (the same entries in the
+                        // same order as one sequential pass).
+                        let mut segs: Vec<(usize, usize)> = Vec::new();
+                        for_each_row(&self.strides, &o.region, |start| {
+                            let mut s = start;
+                            while s < start + len {
+                                let e = (s + JAC_SEG).min(start + len);
+                                segs.push((s, e - s));
+                                s = e;
+                            }
+                        });
+                        let full = &sc.full;
+                        let tcol = vec![t; len.min(JAC_SEG)];
+                        let nj = o.jac_inputs.len();
+                        let (row_of, ents) = (&row_of, &ents);
+                        let points: usize = o.region.iter().map(|&(a, b)| b - a).product();
+                        let parts = map_ordered(&segs, points, |&(s0, m)| {
+                            let cols: Vec<&[f64]> = o
+                                .inputs
+                                .iter()
+                                .map(|inp| match inp {
+                                    MolInput::Field { field, offset } => {
+                                        let s = (s0 as isize + self.shift(offset)) as usize;
+                                        &full[*field][s..s + m]
+                                    }
+                                    MolInput::Coef(c) => &self.coefs[*c][s0..s0 + m],
+                                    MolInput::Time => &tcol[..m],
+                                })
+                                .collect();
+                            let mut bufs: Vec<Vec<f64>> = vec![vec![0.0; m]; nj];
+                            {
+                                let mut outs: Vec<&mut [f64]> =
+                                    bufs.iter_mut().map(|b| &mut b[..]).collect();
+                                jk.call_batch(&cols, &mut outs);
+                            }
+                            let mut contrib: Vec<(usize, f64)> = Vec::new();
+                            let mut res: Vec<(usize, usize, f64)> = Vec::with_capacity(m * nj);
+                            for j in 0..m {
+                                let p = s0 + j;
+                                contrib.clear();
+                                for (k, (&sh, &fld)) in shifts.iter().zip(&fields).enumerate() {
+                                    let w = bufs[k][j];
+                                    let q = fld * size + (p as isize + sh) as usize;
+                                    push_dep(q, w, &self.state_of, row_of, ents, &mut contrib);
+                                }
+                                merge(&mut contrib);
+                                let r = self.state_of[f * size + p];
+                                res.extend(contrib.iter().map(|&(c, v)| (r, c, v)));
+                            }
+                            res
+                        });
+                        for p in parts {
+                            out.extend(p);
+                        }
+                        continue;
+                    }
                     let Scratch {
                         full, tbuf, jbuf, ..
                     } = &mut *sc;

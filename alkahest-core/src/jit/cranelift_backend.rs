@@ -294,14 +294,51 @@ fn is_generic_call(node: ExprId, pool: &ExprPool, math: &MathFuncIds) -> bool {
 // FloatOps over Cranelift IR — the shared power kernels, emitted inline
 // ---------------------------------------------------------------------------
 
+/// The lane type of the two-point SIMD loop.
+const VEC: types::Type = types::F64X2;
+
+/// An `f64` constant, splatted to both lanes in vector code.
+fn konst_v(builder: &mut FunctionBuilder<'_>, v: f64, vec: bool) -> Value {
+    let c = builder.ins().f64const(v);
+    if vec {
+        builder.ins().splat(VEC, c)
+    } else {
+        c
+    }
+}
+
+/// `if mask { a } else { b }`: a scalar `select`, or a lane-wise
+/// `bitselect` on a vector comparison mask.
+fn select_v(
+    builder: &mut FunctionBuilder<'_>,
+    mask: Value,
+    a: Value,
+    b: Value,
+    vec: bool,
+) -> Value {
+    if vec {
+        let m = builder.ins().bitcast(
+            VEC,
+            MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little),
+            mask,
+        );
+        builder.ins().bitselect(m, a, b)
+    } else {
+        builder.ins().select(mask, a, b)
+    }
+}
+
 struct ClifOps<'a, 'b> {
     builder: &'a mut FunctionBuilder<'b>,
+    /// Emit two-lane vector code (every operation lane-wise, so each lane
+    /// rounds exactly as the scalar code does).
+    vec: bool,
 }
 
 impl FloatOps for ClifOps<'_, '_> {
     type V = Value;
     fn konst(&mut self, v: f64) -> Value {
-        self.builder.ins().f64const(v)
+        konst_v(self.builder, v, self.vec)
     }
     fn add(&mut self, a: Value, b: Value) -> Value {
         self.builder.ins().fadd(a, b)
@@ -323,25 +360,25 @@ impl FloatOps for ClifOps<'_, '_> {
     }
     fn select_finite(&mut self, t: Value, a: Value, b: Value) -> Value {
         let abs = self.builder.ins().fabs(t);
-        let inf = self.builder.ins().f64const(f64::INFINITY);
+        let inf = konst_v(self.builder, f64::INFINITY, self.vec);
         let c = self.builder.ins().fcmp(FloatCC::LessThan, abs, inf);
-        self.builder.ins().select(c, a, b)
+        select_v(self.builder, c, a, b, self.vec)
     }
     fn select_finite_nonzero(&mut self, t: Value, a: Value, b: Value) -> Value {
         let abs = self.builder.ins().fabs(t);
-        let inf = self.builder.ins().f64const(f64::INFINITY);
-        let zero = self.builder.ins().f64const(0.0);
+        let inf = konst_v(self.builder, f64::INFINITY, self.vec);
+        let zero = konst_v(self.builder, 0.0, self.vec);
         let finite = self.builder.ins().fcmp(FloatCC::LessThan, abs, inf);
         // `NotEqual` is true for NaN, which `finite` excludes anyway (and
         // matches Rust's `!=`); `OrderedNotEqual` has no aarch64 lowering.
         let nonzero = self.builder.ins().fcmp(FloatCC::NotEqual, t, zero);
         let c = self.builder.ins().band(finite, nonzero);
-        self.builder.ins().select(c, a, b)
+        select_v(self.builder, c, a, b, self.vec)
     }
     fn select_neg_inf(&mut self, t: Value, a: Value, b: Value) -> Value {
-        let ninf = self.builder.ins().f64const(f64::NEG_INFINITY);
+        let ninf = konst_v(self.builder, f64::NEG_INFINITY, self.vec);
         let c = self.builder.ins().fcmp(FloatCC::Equal, t, ninf);
-        self.builder.ins().select(c, a, b)
+        select_v(self.builder, c, a, b, self.vec)
     }
 }
 
@@ -363,6 +400,128 @@ struct Codegen<'a> {
     /// with a hardware multiply-add (the Horner links of
     /// [`super::optimize`]); empty when nothing may be fused.
     fma_adds: &'a IdSet,
+    /// Emit two-lane vector code (see [`simd_eligible`]).
+    vec: bool,
+}
+
+/// Call a math trampoline: directly, or once per lane in vector code (the
+/// lanes are split out, evaluated by the same scalar function, and
+/// reassembled).
+fn call_math(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    func_id: FuncId,
+    args: &[Value],
+    vec: bool,
+) -> Value {
+    let fref = module.declare_func_in_func(func_id, builder.func);
+    if !vec {
+        let call = builder.ins().call(fref, args);
+        return builder.inst_results(call)[0];
+    }
+    let mut lanes = [None, None];
+    for (l, slot) in lanes.iter_mut().enumerate() {
+        let a: Vec<Value> = args
+            .iter()
+            .map(|&v| builder.ins().extractlane(v, l as u8))
+            .collect();
+        let call = builder.ins().call(fref, &a);
+        *slot = Some(builder.inst_results(call)[0]);
+    }
+    let (l0, l1) = (lanes[0].expect("lane 0"), lanes[1].expect("lane 1"));
+    let v = builder.ins().scalar_to_vector(VEC, l0);
+    builder.ins().insertlane(v, l1, 1)
+}
+
+/// The one-argument heads with a dedicated trampoline (as
+/// [`MathFuncIds::unary`]).
+fn has_trampoline(name: &str) -> bool {
+    matches!(
+        name,
+        "sin"
+            | "cos"
+            | "exp"
+            | "log"
+            | "sqrt"
+            | "tan"
+            | "abs"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "floor"
+            | "ceil"
+            | "round"
+            | "sign"
+    )
+}
+
+/// Largest DAG (in nodes) given a vector loop: the loop body is emitted
+/// twice, so very large expressions keep the scalar loop alone.
+const SIMD_MAX_NODES: usize = 20_000;
+
+/// Whether the column loop of `outputs` gets a two-lane vector body: every
+/// node must be a number, an input or constant symbol, `Add`, `Mul`, `Pow`
+/// or a one-argument math function with a trampoline (no generic primitive
+/// that can fail at a point, no `RootOf`), the host must have a hardware
+/// FMA (the fused sums and power kernels emit it), and the environment
+/// variable `ALKAHEST_JIT_SIMD` must not be `0`/`false`/`off`/`no`.
+///
+/// Each lane executes exactly the scalar loop's operation sequence (IEEE
+/// lane-wise arithmetic, the same constants, the same fused multiply-adds,
+/// the same trampolines), so the vector loop's results are bitwise those
+/// of the scalar loop.
+fn simd_eligible(outputs: &[ExprId], inputs: &[ExprId], pool: &ExprPool) -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("ALKAHEST_JIT_SIMD")
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Ok("0" | "false" | "off" | "no")
+        )
+    });
+    if !on || !has_hw_fma() || !cfg!(target_arch = "x86_64") {
+        return false;
+    }
+    let mut seen = IdSet::default();
+    for &root in outputs {
+        for node in topo_sort(root, pool) {
+            if !seen.insert(node) {
+                continue;
+            }
+            if seen.len() > SIMD_MAX_NODES {
+                return false;
+            }
+            if inputs.contains(&node) {
+                continue;
+            }
+            let ok = pool.with(node, |d| match d {
+                ExprData::Symbol { name, .. } => {
+                    crate::eval::symbols::constant_value_f64(name).is_some()
+                }
+                ExprData::Integer(_)
+                | ExprData::Rational(_)
+                | ExprData::Float(_)
+                | ExprData::Add(_)
+                | ExprData::Mul(_)
+                | ExprData::Pow { .. } => true,
+                ExprData::Func { name, args } => {
+                    name != crate::poly::root_of::ROOT_OF && args.len() == 1 && has_trampoline(name)
+                }
+                _ => false,
+            });
+            if !ok {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// The emitted value of a node, and — for a generic call — its failure flag.
@@ -387,10 +546,11 @@ fn codegen_node(
             .ok_or_else(|| JitError::CompilationFailed(format!("missing {what}")))
     };
     let plain = |value| Ok(Emitted { value, fail: None });
+    let vec = cg.vec;
     match pool.get(node) {
-        ExprData::Integer(n) => plain(builder.ins().f64const(integer_to_f64(&n.0))),
-        ExprData::Rational(r) => plain(builder.ins().f64const(rational_to_f64(&r.0))),
-        ExprData::Float(f) => plain(builder.ins().f64const(f.inner.to_f64())),
+        ExprData::Integer(n) => plain(konst_v(builder, integer_to_f64(&n.0), vec)),
+        ExprData::Rational(r) => plain(konst_v(builder, rational_to_f64(&r.0), vec)),
+        ExprData::Float(f) => plain(konst_v(builder, f.inner.to_f64(), vec)),
         // `π` is a constant, not an input.  `load_inputs` has already
         // populated `values` for every declared input and the caller skips
         // those nodes, so an input *named* `pi` still wins; this arm is only
@@ -399,7 +559,7 @@ fn codegen_node(
         // answers, the other refuses — and the agreement tests exist precisely
         // to stop that. `EulerGamma`, `Catalan` and `Glaisher` likewise.
         ExprData::Symbol { name, .. } => match crate::eval::symbols::constant_value_f64(&name) {
-            Some(v) => plain(builder.ins().f64const(v)),
+            Some(v) => plain(konst_v(builder, v, vec)),
             None => Err(JitError::UnsupportedNode(format!(
                 "unbound symbol '{name}'"
             ))),
@@ -453,12 +613,12 @@ fn codegen_node(
                     }
                 });
             }
-            plain(acc.unwrap_or_else(|| builder.ins().f64const(0.0)))
+            plain(acc.unwrap_or_else(|| konst_v(builder, 0.0, vec)))
         }
         ExprData::Add(args) => {
             // Seeded with +0.0 like the interpreter, so an all-(-0.0) sum is
             // +0.0 in both.
-            let mut acc = builder.ins().f64const(0.0);
+            let mut acc = konst_v(builder, 0.0, vec);
             for a in &args {
                 let v = get(a, "Add child")?;
                 acc = builder.ins().fadd(acc, v);
@@ -477,7 +637,7 @@ fn codegen_node(
                     Some(p) => builder.ins().fmul(p, v),
                 });
             }
-            plain(acc.unwrap_or_else(|| builder.ins().f64const(1.0)))
+            plain(acc.unwrap_or_else(|| konst_v(builder, 1.0, vec)))
         }
         ExprData::Pow { base, exp } => {
             let b = get(&base, "Pow base")?;
@@ -493,21 +653,25 @@ fn codegen_node(
                 if let Some(n) = small_integer_exponent(v) {
                     // Exactly the choice `powi_f64` makes at run time.
                     if (-1..=2).contains(&n) || has_hw_fma() {
-                        return plain(powi_with(&mut ClifOps { builder }, b, n));
+                        return plain(powi_with(&mut ClifOps { builder, vec }, b, n));
                     }
                 }
                 if v == 0.5 {
-                    return plain(sqrt_pow_with(&mut ClifOps { builder }, b));
+                    return plain(sqrt_pow_with(&mut ClifOps { builder, vec }, b));
                 }
             }
             let e = get(&exp, "Pow exp")?;
-            let pow_ref = module.declare_func_in_func(math.pow_id, builder.func);
-            let call = builder.ins().call(pow_ref, &[b, e]);
-            plain(builder.inst_results(call)[0])
+            plain(call_math(builder, module, math.pow_id, &[b, e], vec))
         }
         // A real algebraic number is a constant, computed now exactly as the
         // interpreter does; a non-real one has no `f64` value, which — like
         // the interpreter's `None` — makes every output reaching it `NaN`.
+        ExprData::Func { .. } if vec && is_generic_call(node, pool, math) => Err(
+            JitError::UnsupportedNode("a generic call in vector code".into()),
+        ),
+        ExprData::Func { name, .. } if vec && name == crate::poly::root_of::ROOT_OF => {
+            Err(JitError::UnsupportedNode("RootOf in vector code".into()))
+        }
         ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
             match crate::poly::root_of::root_of_real_f64(node, pool) {
                 Some(v) => plain(builder.ins().f64const(v)),
@@ -521,9 +685,23 @@ fn codegen_node(
             if args.len() == 1 {
                 if let Some(func_id) = math.unary(&name) {
                     let a = get(&args[0], "Func arg")?;
-                    let func_ref = module.declare_func_in_func(func_id, builder.func);
-                    let call = builder.ins().call(func_ref, &[a]);
-                    return plain(builder.inst_results(call)[0]);
+                    // Inline what one instruction does exactly as the
+                    // trampoline would (`f64::abs`, IEEE `sqrt`, the
+                    // `tramp_sign` branches): no call, and vectorisable.
+                    return plain(match name.as_str() {
+                        "abs" => builder.ins().fabs(a),
+                        "sqrt" => builder.ins().sqrt(a),
+                        "sign" => {
+                            let zero = konst_v(builder, 0.0, vec);
+                            let one = konst_v(builder, 1.0, vec);
+                            let m_one = konst_v(builder, -1.0, vec);
+                            let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, zero);
+                            let lt = builder.ins().fcmp(FloatCC::LessThan, a, zero);
+                            let neg = select_v(builder, lt, m_one, zero, vec);
+                            select_v(builder, gt, one, neg, vec)
+                        }
+                        _ => call_math(builder, module, func_id, &[a], vec),
+                    });
                 }
             }
             // Any other registered head runs its own `numeric_f64` kernel —
@@ -711,12 +889,33 @@ pub(super) fn compile_cranelift_many(
     compile_cranelift_code(outputs, inputs, pool, false, fma_adds)
 }
 
+/// Compile with the two-lane vector column loop where the DAG allows it
+/// ([`simd_eligible`]); should the vector code fail to compile, compile again
+/// with the scalar loop alone.
 fn compile_cranelift_code(
     outputs: &[ExprId],
     inputs: &[ExprId],
     pool: &ExprPool,
     want_scalar: bool,
     fma_adds: &IdSet,
+) -> Result<CraneliftCode, JitError> {
+    if simd_eligible(outputs, inputs, pool) {
+        if let Ok(code) =
+            compile_cranelift_code_with(outputs, inputs, pool, want_scalar, fma_adds, true)
+        {
+            return Ok(code);
+        }
+    }
+    compile_cranelift_code_with(outputs, inputs, pool, want_scalar, fma_adds, false)
+}
+
+fn compile_cranelift_code_with(
+    outputs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    want_scalar: bool,
+    fma_adds: &IdSet,
+    simd: bool,
 ) -> Result<CraneliftCode, JitError> {
     let target = EvalTarget {
         outputs,
@@ -927,6 +1126,7 @@ fn compile_cranelift_code(
                 fail_slot,
                 args_slot,
                 fma_adds,
+                vec: false,
             };
             let result = emit_point(
                 EvalTarget {
@@ -967,10 +1167,14 @@ fn compile_cranelift_code(
         let mut func_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut cols_ctx.func, &mut func_ctx);
         let entry = builder.create_block();
+        let vec_blocks = simd.then(|| (builder.create_block(), builder.create_block()));
         let loop_hdr = builder.create_block();
         let loop_body = builder.create_block();
         let exit = builder.create_block();
         builder.append_block_params_for_function_params(entry);
+        if let Some((vec_hdr, _)) = vec_blocks {
+            builder.append_block_param(vec_hdr, types::I64);
+        }
         builder.append_block_param(loop_hdr, types::I64);
         builder.switch_to_block(entry);
         builder.seal_block(entry);
@@ -1001,11 +1205,54 @@ fn compile_cranelift_code(
             fail_slot,
             args_slot,
             fma_adds,
+            vec: false,
         };
         let start_arg = BlockArg::from(start);
-        builder
-            .ins()
-            .jump(loop_hdr, std::slice::from_ref(&start_arg));
+        builder.ins().jump(
+            vec_blocks.map_or(loop_hdr, |b| b.0),
+            std::slice::from_ref(&start_arg),
+        );
+
+        if let Some((vec_hdr, vec_body)) = vec_blocks {
+            // Two points per iteration while two remain, then the scalar
+            // loop for the tail. Lane `l` of every value is point `idx + l`.
+            builder.switch_to_block(vec_hdr);
+            let idx = builder.block_params(vec_hdr)[0];
+            let next2 = builder.ins().iadd_imm(idx, 2);
+            let fits = builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, next2, end);
+            let idx_arg = BlockArg::from(idx);
+            builder.ins().brif(
+                fits,
+                vec_body,
+                &[],
+                loop_hdr,
+                std::slice::from_ref(&idx_arg),
+            );
+
+            builder.switch_to_block(vec_body);
+            let byte_off = builder.ins().ishl_imm(idx, 3);
+            // Columns are 8-byte aligned only: unaligned vector accesses.
+            let flags = MemFlags::new().with_notrap();
+            let input_values: Vec<Value> = col_bases
+                .iter()
+                .map(|&base| {
+                    let addr = builder.ins().iadd(base, byte_off);
+                    builder.ins().load(VEC, flags, addr, 0)
+                })
+                .collect();
+            let cgv = Codegen { vec: true, ..cg };
+            let results = emit_point(target, &cgv, &input_values, &mut builder, &mut module)?;
+            for (&base, &r) in out_bases.iter().zip(&results) {
+                let addr = builder.ins().iadd(base, byte_off);
+                builder.ins().store(flags, r, addr, 0);
+            }
+            let next_arg = BlockArg::from(next2);
+            builder.ins().jump(vec_hdr, std::slice::from_ref(&next_arg));
+            builder.seal_block(vec_body);
+            builder.seal_block(vec_hdr);
+        }
 
         builder.switch_to_block(loop_hdr);
         let idx = builder.block_params(loop_hdr)[0];

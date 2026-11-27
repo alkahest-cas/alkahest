@@ -12,10 +12,16 @@
 //!   algebraic constraints) integrate directly.
 //! * [`MolMethod::Euler`], [`MolMethod::Rk4`] — fixed step, for stability
 //!   studies.
+//!
+//! The BDF Newton iterations solve with the iteration matrix `M - c J`
+//! either directly (the banded LU) or iteratively (ILU(0)-preconditioned
+//! restarted GMRES on the same exact sparse matrix, [`super::krylov`]);
+//! [`integrate_with`] chooses by size ([`MolLinearSolver::Auto`]) unless told.
 
 #![allow(clippy::needless_range_loop)]
 
 use super::banded::{rcm_order, BandedLu};
+use super::krylov::{gmres, Ilu0};
 use super::{CsrMatrix, MolError, MolProgram};
 
 /// Integration method.
@@ -87,6 +93,81 @@ pub struct MolSolution {
     pub band: Option<(usize, usize, usize)>,
 }
 
+/// Linear solver for the Newton iterations of the BDF method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum MolLinearSolver {
+    /// Choose by size: the banded direct solver while its factorisation is
+    /// cheap, GMRES + ILU(0) once the band is wide (large 2-D and 3-D grids)
+    /// or its storage would exceed `max_band_bytes`.
+    #[default]
+    Auto,
+    /// Banded LU after reverse Cuthill–McKee ordering.
+    Direct,
+    /// Restarted GMRES, right-preconditioned by ILU(0) of the iteration
+    /// matrix, in the integrator's weighted RMS norm.
+    Krylov,
+}
+
+/// Linear-solver options for [`integrate_with`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct MolSolverOptions {
+    pub linear_solver: MolLinearSolver,
+    /// GMRES restart length.
+    pub gmres_restart: usize,
+    /// GMRES iterations allowed per linear solve.
+    pub gmres_max_iters: usize,
+    /// The GMRES tolerance as a fraction of the Newton tolerance (in the
+    /// same weighted RMS norm; SUNDIALS CVODE's `eplifac`).
+    pub krylov_tol_factor: f64,
+    /// [`MolLinearSolver::Auto`]: use GMRES when the system has at least
+    /// this many states ...
+    pub auto_min_states: usize,
+    /// ... and the reordered band has at least this lower bandwidth.
+    pub auto_min_bandwidth: usize,
+}
+
+impl Default for MolSolverOptions {
+    fn default() -> Self {
+        MolSolverOptions {
+            linear_solver: MolLinearSolver::Auto,
+            gmres_restart: 30,
+            gmres_max_iters: 120,
+            krylov_tol_factor: 0.05,
+            auto_min_states: AUTO_MIN_STATES,
+            auto_min_bandwidth: AUTO_MIN_BANDWIDTH,
+        }
+    }
+}
+
+/// Default [`MolSolverOptions::auto_min_states`].
+pub const AUTO_MIN_STATES: usize = 2000;
+/// Default [`MolSolverOptions::auto_min_bandwidth`].
+pub const AUTO_MIN_BANDWIDTH: usize = 32;
+
+/// Linear-solver work counters of a BDF integration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MolLinearStats {
+    /// The solver the integration started with (`Direct` or `Krylov`);
+    /// `None` for the explicit methods.
+    pub solver: Option<MolLinearSolver>,
+    /// Linear solves (one per Newton iteration).
+    pub linear_solves: usize,
+    /// GMRES iterations, summed over all solves.
+    pub krylov_iters: usize,
+    /// GMRES solves that missed their tolerance (each one counts as a
+    /// failed Newton iteration, and the step is retried exactly as after a
+    /// singular factorisation).
+    pub krylov_failures: usize,
+    /// ILU(0) factorisations.
+    pub preconditioner_setups: usize,
+    /// Times the integration switched from GMRES to the direct solver
+    /// (ILU breakdown, or repeated GMRES failures with the band affordable).
+    pub direct_fallbacks: usize,
+}
+
 fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
     if n == 0 {
         return 0.0;
@@ -97,6 +178,7 @@ fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
 struct Ctx<'a> {
     prog: &'a MolProgram,
     stats: MolStats,
+    lin: MolLinearStats,
 }
 
 impl Ctx<'_> {
@@ -119,6 +201,19 @@ pub fn integrate(
     t_eval: &[f64],
     opts: &MolIntegrateOptions,
 ) -> Result<MolSolution, MolError> {
+    integrate_with(prog, t0, y0, t_eval, opts, &MolSolverOptions::default()).map(|r| r.0)
+}
+
+/// [`integrate`] with explicit linear-solver options; also returns the
+/// linear-solver work counters.
+pub fn integrate_with(
+    prog: &MolProgram,
+    t0: f64,
+    y0: &[f64],
+    t_eval: &[f64],
+    opts: &MolIntegrateOptions,
+    solver: &MolSolverOptions,
+) -> Result<(MolSolution, MolLinearStats), MolError> {
     prog.check_y(y0)?;
     if t_eval.is_empty() {
         return Err(MolError::BadArgument("t_eval is empty".into()));
@@ -142,6 +237,7 @@ pub fn integrate(
     let mut ctx = Ctx {
         prog,
         stats: MolStats::default(),
+        lin: MolLinearStats::default(),
     };
     let mut sol = MolSolution {
         t: Vec::with_capacity(t_eval.len()),
@@ -152,10 +248,10 @@ pub fn integrate(
     match opts.method {
         MolMethod::Rk45 => rk45(&mut ctx, t0, y0, t_eval, opts, &mut sol)?,
         MolMethod::Euler | MolMethod::Rk4 => fixed(&mut ctx, t0, y0, t_eval, opts, &mut sol)?,
-        MolMethod::Bdf => bdf(&mut ctx, t0, y0, t_eval, opts, &mut sol)?,
+        MolMethod::Bdf => bdf(&mut ctx, t0, y0, t_eval, opts, solver, &mut sol)?,
     }
     sol.stats = ctx.stats;
-    Ok(sol)
+    Ok((sol, ctx.lin))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -513,12 +609,24 @@ struct Iteration {
     ku: usize,
 }
 
+/// A factored (or preconditioned) iteration matrix.
+enum Lin {
+    Banded(BandedLu),
+    Krylov { a: CsrMatrix, ilu: Ilu0 },
+}
+
+/// GMRES failures in a row (with no accepted step between) after which the
+/// integration switches to the direct solver, when the band fits.
+const KRYLOV_FAILS_BEFORE_FALLBACK: usize = 3;
+
+#[allow(clippy::too_many_arguments)]
 fn bdf(
     ctx: &mut Ctx<'_>,
     t0: f64,
     y0: &[f64],
     t_eval: &[f64],
     opts: &MolIntegrateOptions,
+    solver: &MolSolverOptions,
     sol: &mut MolSolution,
 ) -> Result<(), MolError> {
     let n = y0.len();
@@ -571,17 +679,32 @@ fn bdf(
     let iter_pattern = with_diagonal(&jac);
     let perm = rcm_order(&iter_pattern);
     let (kl, ku) = BandedLu::bandwidths(&iter_pattern, &perm);
-    if BandedLu::storage_bytes(n, kl, ku) > opts.max_band_bytes {
+    let band_fits = BandedLu::storage_bytes(n, kl, ku) <= opts.max_band_bytes;
+    let mut use_krylov = match solver.linear_solver {
+        MolLinearSolver::Direct => false,
+        MolLinearSolver::Krylov => true,
+        MolLinearSolver::Auto => {
+            !band_fits || (n >= solver.auto_min_states && kl >= solver.auto_min_bandwidth)
+        }
+    };
+    if !use_krylov && !band_fits {
         return Err(MolError::Integration(format!(
             "the BDF iteration matrix needs {} MB of band storage (n = {n}, kl = {kl}, ku = {ku}); \
-             refine less or use an explicit method",
+             refine less, use the Krylov linear solver or an explicit method",
             BandedLu::storage_bytes(n, kl, ku) >> 20
         )));
     }
+    ctx.lin.solver = Some(if use_krylov {
+        MolLinearSolver::Krylov
+    } else {
+        MolLinearSolver::Direct
+    });
     sol.band = Some((n, kl, ku));
     let it = Iteration { perm, kl, ku };
-    let mut lu: Option<BandedLu> = None;
+    let mut lu: Option<Lin> = None;
     let mut current_jac = true;
+    let mut krylov_fails_in_row = 0usize;
+    let lin_tol = solver.krylov_tol_factor * newton_tol;
 
     let mut next = 0;
     while next < t_eval.len() && t_eval[next] <= t {
@@ -597,6 +720,7 @@ fn bdf(
     let mut ynew = vec![0.0; n];
     let mut dcorr = vec![0.0; n];
     let mut scale = vec![0.0; n];
+    let mut weight = vec![0.0; n];
 
     while next < t_eval.len() {
         let min_step = 10.0 * (next_up(t) - t).abs();
@@ -645,12 +769,31 @@ fn bdf(
                 psi[i] = s / alpha[order];
             }
             let c = h / alpha[order];
+            if use_krylov {
+                for i in 0..n {
+                    weight[i] = 1.0 / scale[i];
+                }
+            }
             let mut converged = false;
             loop {
                 if lu.is_none() {
                     let a = iteration_matrix(&jac, &mass, c);
                     ctx.stats.factorizations += 1;
-                    lu = BandedLu::factor(&a, &it.perm, it.kl, it.ku);
+                    if use_krylov {
+                        ctx.lin.preconditioner_setups += 1;
+                        match Ilu0::factor(&a) {
+                            Some(ilu) => lu = Some(Lin::Krylov { a, ilu }),
+                            None if band_fits => {
+                                // ILU breakdown (a zero pivot): go direct.
+                                use_krylov = false;
+                                ctx.lin.direct_fallbacks += 1;
+                                lu = BandedLu::factor(&a, &it.perm, it.kl, it.ku).map(Lin::Banded);
+                            }
+                            None => {}
+                        }
+                    } else {
+                        lu = BandedLu::factor(&a, &it.perm, it.kl, it.ku).map(Lin::Banded);
+                    }
                     if lu.is_none() {
                         // Singular: shrink the step.
                         break;
@@ -673,7 +816,27 @@ fn bdf(
                     for i in 0..n {
                         rhs[i] = c * fbuf[i] - mass[i] * (psi[i] + dcorr[i]);
                     }
-                    lu_ref.solve(&mut rhs);
+                    ctx.lin.linear_solves += 1;
+                    match lu_ref {
+                        Lin::Banded(b) => b.solve(&mut rhs),
+                        Lin::Krylov { a, ilu } => {
+                            let out = gmres(
+                                a,
+                                ilu,
+                                &weight,
+                                &mut rhs,
+                                lin_tol,
+                                solver.gmres_restart,
+                                solver.gmres_max_iters,
+                            );
+                            ctx.lin.krylov_iters += out.iterations;
+                            if !out.converged {
+                                ctx.lin.krylov_failures += 1;
+                                krylov_fails_in_row += 1;
+                                break;
+                            }
+                        }
+                    }
                     let dy_norm = rms((0..n).map(|i| rhs[i] / scale[i]), n);
                     let rate = dy_norm_old.map(|o| dy_norm / o);
                     if let Some(r) = rate {
@@ -709,6 +872,10 @@ fn bdf(
                 change_d(&mut d, order, 0.5);
                 n_equal_steps = 0;
                 lu = None;
+                if use_krylov && band_fits && krylov_fails_in_row >= KRYLOV_FAILS_BEFORE_FALLBACK {
+                    use_krylov = false;
+                    ctx.lin.direct_fallbacks += 1;
+                }
                 continue;
             }
             let safety =
@@ -740,6 +907,7 @@ fn bdf(
         t = t_new;
         std::mem::swap(&mut y, &mut ynew);
         current_jac = false;
+        krylov_fails_in_row = 0;
         // Update the differences.
         for i in 0..n {
             d[order + 2][i] = dcorr[i] - d[order + 1][i];

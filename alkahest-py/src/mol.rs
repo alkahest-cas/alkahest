@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use alkahest_core::kernel::ExprId;
 use alkahest_core::pde::mol::{
-    integrate, MolDenseOp, MolError, MolInput, MolIntegrateOptions, MolKernelOp, MolMethod, MolOp,
-    MolProgram, MolTarget,
+    integrate_with, with_threads, MolDenseOp, MolError, MolInput, MolIntegrateOptions, MolKernelOp,
+    MolLinearSolver, MolMethod, MolOp, MolProgram, MolSolverOptions, MolTarget,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -256,8 +256,14 @@ impl PyMolProgram {
     }
 
     /// Integrate natively; returns `(t, y_flat, stats, band)`.
+    ///
+    /// `linear_solver` is `"auto"`, `"direct"` or `"krylov"` (BDF only);
+    /// `threads` runs the integration on a dedicated pool of that many
+    /// threads (default: the global pool).
     #[pyo3(signature = (t0, y0, t_eval, method="bdf", rtol=1e-6, atol=1e-9, h0=None,
-                        max_step=f64::INFINITY, max_steps=10_000_000, max_order=5))]
+                        max_step=f64::INFINITY, max_steps=10_000_000, max_order=5,
+                        linear_solver="auto", threads=None, gmres_restart=None,
+                        gmres_max_iters=None, krylov_tol_factor=None))]
     #[allow(clippy::too_many_arguments)]
     fn integrate<'py>(
         &self,
@@ -272,6 +278,11 @@ impl PyMolProgram {
         max_step: f64,
         max_steps: usize,
         max_order: usize,
+        linear_solver: &str,
+        threads: Option<usize>,
+        gmres_restart: Option<usize>,
+        gmres_max_iters: Option<usize>,
+        krylov_tol_factor: Option<f64>,
     ) -> PyResult<Bound<'py, PyTuple>> {
         let method = match method {
             "rk45" => MolMethod::Rk45,
@@ -284,6 +295,32 @@ impl PyMolProgram {
                 )))
             }
         };
+        let mut solver = MolSolverOptions::default();
+        solver.linear_solver = match linear_solver {
+            "auto" => MolLinearSolver::Auto,
+            "direct" => MolLinearSolver::Direct,
+            "krylov" | "gmres" => MolLinearSolver::Krylov,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown linear solver {other:?} (auto, direct, krylov)"
+                )))
+            }
+        };
+        if let Some(m) = gmres_restart {
+            solver.gmres_restart = m.max(1);
+        }
+        if let Some(m) = gmres_max_iters {
+            solver.gmres_max_iters = m.max(1);
+        }
+        if let Some(f) = krylov_tol_factor {
+            if !(f > 0.0 && f.is_finite()) {
+                return Err(PyValueError::new_err("krylov_tol_factor must be > 0"));
+            }
+            solver.krylov_tol_factor = f;
+        }
+        if threads == Some(0) {
+            return Err(PyValueError::new_err("threads must be >= 1"));
+        }
         let y0 = read_f64s(y0, "y0")?;
         let t_eval = read_f64s(t_eval, "t_eval")?;
         let opts = MolIntegrateOptions {
@@ -297,8 +334,14 @@ impl PyMolProgram {
             ..Default::default()
         };
         let prog = self.inner.clone();
-        let sol = py
-            .detach(move || integrate(&prog, t0, &y0, &t_eval, &opts))
+        let (sol, lin) = py
+            .detach(move || {
+                let run = || integrate_with(&prog, t0, &y0, &t_eval, &opts, &solver);
+                match threads {
+                    Some(k) => with_threads(k, run),
+                    None => run(),
+                }
+            })
             .map_err(mol_err)?;
         let stats = PyDict::new(py);
         stats.set_item("steps", sol.stats.steps)?;
@@ -307,6 +350,19 @@ impl PyMolProgram {
         stats.set_item("jac_evals", sol.stats.jac_evals)?;
         stats.set_item("factorizations", sol.stats.factorizations)?;
         stats.set_item("newton_iters", sol.stats.newton_iters)?;
+        stats.set_item(
+            "linear_solver",
+            match lin.solver {
+                Some(MolLinearSolver::Krylov) => Some("krylov"),
+                Some(_) => Some("direct"),
+                None => None,
+            },
+        )?;
+        stats.set_item("linear_solves", lin.linear_solves)?;
+        stats.set_item("krylov_iters", lin.krylov_iters)?;
+        stats.set_item("krylov_failures", lin.krylov_failures)?;
+        stats.set_item("preconditioner_setups", lin.preconditioner_setups)?;
+        stats.set_item("direct_fallbacks", lin.direct_fallbacks)?;
         let band = sol.band;
         (sol.t, f64_bytes(py, &sol.y), stats, band).into_pyobject(py)
     }

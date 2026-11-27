@@ -72,6 +72,9 @@ def stability_report(ms):
         if alg:
             entry["skipped"] = "algebraic equation"
             continue
+        if f in getattr(sys, "fv", {}):
+            entry["skipped"] = "conservative WENO flux (nonlinear: not analysed)"
+            continue
         jets = _jet_map(sys.ctx, g)
         if any(fld != f for _, fld, _ in jets):
             entry["skipped"] = "coupled to other fields (systems are not analysed)"

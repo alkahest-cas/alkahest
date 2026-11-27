@@ -268,3 +268,303 @@ fn bdf_integrates_an_index_one_dae() {
 }
 
 use crate::kernel::ExprId;
+
+/// `u_t = Δu + r u (1 - u)` on `[0, 1]²` with `m × m` interior points,
+/// Dirichlet zeros (constant padding), the 5-point Laplacian.
+fn heat2d_program(m: usize, r: f64) -> MolProgram {
+    let pool = ExprPool::new();
+    let names = ["c", "w", "e", "s", "n"];
+    let s: Vec<ExprId> = names
+        .iter()
+        .map(|nm| pool.symbol(*nm, Domain::Real))
+        .collect();
+    let h = 1.0 / (m as f64 + 1.0);
+    let c = pool.float(1.0 / (h * h), 53);
+    let lap = pool.mul(vec![
+        c,
+        pool.add(vec![
+            s[1],
+            s[2],
+            s[3],
+            s[4],
+            pool.mul(vec![pool.integer(-4_i32), s[0]]),
+        ]),
+    ]);
+    let rr = pool.float(r, 53);
+    let one = pool.integer(1_i32);
+    let reac = pool.mul(vec![
+        rr,
+        s[0],
+        pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), s[0]])]),
+    ]);
+    let f = pool.add(vec![lap, reac]);
+    // ∂f/∂c = -4/h² + r (1 - 2c); the neighbours: 1/h².
+    let dfc = pool.add(vec![
+        pool.mul(vec![c, pool.integer(-4_i32)]),
+        pool.mul(vec![
+            rr,
+            pool.add(vec![one, pool.mul(vec![pool.integer(-2_i32), s[0]])]),
+        ]),
+    ]);
+    let k = compile_many(&[f], &s, &pool).unwrap();
+    let jk = compile_many(&[dfc, c, c, c, c], &s, &pool).unwrap();
+    let offs: [[isize; 2]; 5] = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]];
+    let inputs = offs
+        .iter()
+        .map(|o| MolInput::Field {
+            field: 0,
+            offset: o.to_vec(),
+        })
+        .collect();
+    let op = MolKernelOp {
+        kernel: Arc::new(k),
+        inputs,
+        target: MolTarget::Rhs(0),
+        region: vec![(1, m + 1), (1, m + 1)],
+        jac_kernel: Some(Arc::new(jk)),
+        jac_inputs: vec![0, 1, 2, 3, 4],
+    };
+    let w = m + 2;
+    let states = (1..=m)
+        .flat_map(|i| (1..=m).map(move |j| (0, i * w + j)))
+        .collect();
+    MolProgram::new(
+        vec![w, w],
+        1,
+        vec![],
+        states,
+        vec![false; m * m],
+        vec![MolOp::Kernel(op)],
+    )
+    .unwrap()
+}
+
+fn sine2d(m: usize) -> Vec<f64> {
+    let h = 1.0 / (m as f64 + 1.0);
+    let pi = std::f64::consts::PI;
+    (1..=m)
+        .flat_map(|i| (1..=m).map(move |j| (pi * i as f64 * h).sin() * (pi * j as f64 * h).sin()))
+        .collect()
+}
+
+fn bdf_with(
+    p: &MolProgram,
+    y0: &[f64],
+    t: f64,
+    lin: MolLinearSolver,
+) -> (MolSolution, MolLinearStats) {
+    let opts = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        rtol: 1e-8,
+        atol: 1e-10,
+        ..Default::default()
+    };
+    let so = MolSolverOptions {
+        linear_solver: lin,
+        ..Default::default()
+    };
+    integrate_with(p, 0.0, y0, &[t], &opts, &so).unwrap()
+}
+
+#[test]
+fn krylov_bdf_matches_the_direct_solver_in_2d() {
+    let m = 24;
+    let p = heat2d_program(m, 3.0);
+    let y0 = sine2d(m);
+    let (d, ld) = bdf_with(&p, &y0, 0.05, MolLinearSolver::Direct);
+    let (k, lk) = bdf_with(&p, &y0, 0.05, MolLinearSolver::Krylov);
+    assert_eq!(ld.solver, Some(MolLinearSolver::Direct));
+    assert_eq!(lk.solver, Some(MolLinearSolver::Krylov));
+    assert_eq!(ld.krylov_iters, 0);
+    assert!(
+        lk.krylov_iters > 0 && lk.preconditioner_setups > 0,
+        "{lk:?}"
+    );
+    assert_eq!(lk.direct_fallbacks, 0, "{lk:?}");
+    let err =
+        d.y.iter()
+            .zip(&k.y)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+    // Both solve the same nonlinear systems to the Newton tolerance.
+    assert!(err < 1e-6, "direct vs Krylov differ by {err}");
+    assert!(k.y.iter().any(|v| v.abs() > 0.1));
+}
+
+#[test]
+fn auto_picks_the_direct_solver_for_small_bands_and_krylov_for_wide_ones() {
+    let p = heat2d_program(10, 0.0);
+    let (_, l) = bdf_with(&p, &sine2d(10), 0.01, MolLinearSolver::Auto);
+    assert_eq!(l.solver, Some(MolLinearSolver::Direct));
+    // Lower the thresholds: the same problem goes to GMRES.
+    let opts = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        ..Default::default()
+    };
+    let so = MolSolverOptions {
+        auto_min_states: 50,
+        auto_min_bandwidth: 5,
+        ..Default::default()
+    };
+    let (_, l) = integrate_with(&p, 0.0, &sine2d(10), &[0.01], &opts, &so).unwrap();
+    assert_eq!(l.solver, Some(MolLinearSolver::Krylov));
+    // A band too large for `max_band_bytes`: Auto switches to GMRES
+    // instead of refusing; Direct refuses.
+    let small = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        max_band_bytes: 1024,
+        ..Default::default()
+    };
+    let (_, l) = integrate_with(
+        &p,
+        0.0,
+        &sine2d(10),
+        &[0.01],
+        &small,
+        &MolSolverOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(l.solver, Some(MolLinearSolver::Krylov));
+    let so = MolSolverOptions {
+        linear_solver: MolLinearSolver::Direct,
+        ..Default::default()
+    };
+    let r = integrate_with(&p, 0.0, &sine2d(10), &[0.01], &small, &so);
+    assert!(matches!(r, Err(MolError::Integration(_))));
+}
+
+#[test]
+fn krylov_bdf_integrates_an_index_one_dae() {
+    // The DAE of `bdf_integrates_an_index_one_dae`, with GMRES + ILU(0).
+    let pool = ExprPool::new();
+    let (y, z) = (
+        pool.symbol("y", Domain::Real),
+        pool.symbol("z", Domain::Real),
+    );
+    let fy = pool.add(vec![pool.mul(vec![pool.integer(-1_i32), y]), z]);
+    let fz = pool.add(vec![z, pool.mul(vec![pool.integer(-2_i32), y])]);
+    let mk = |e, jac: Vec<ExprId>, tgt| MolKernelOp {
+        kernel: Arc::new(compile_many(&[e], &[y, z], &pool).unwrap()),
+        inputs: vec![
+            MolInput::Field {
+                field: 0,
+                offset: vec![0],
+            },
+            MolInput::Field {
+                field: 1,
+                offset: vec![0],
+            },
+        ],
+        target: tgt,
+        region: vec![(0, 1)],
+        jac_kernel: Some(Arc::new(compile_many(&jac, &[y, z], &pool).unwrap())),
+        jac_inputs: vec![0, 1],
+    };
+    let ky = mk(
+        fy,
+        vec![pool.integer(-1_i32), pool.integer(1_i32)],
+        MolTarget::Rhs(0),
+    );
+    let kz = mk(
+        fz,
+        vec![pool.integer(-2_i32), pool.integer(1_i32)],
+        MolTarget::Rhs(1),
+    );
+    let p = MolProgram::new(
+        vec![1],
+        2,
+        vec![],
+        vec![(0, 0), (1, 0)],
+        vec![false, true],
+        vec![MolOp::Kernel(ky), MolOp::Kernel(kz)],
+    )
+    .unwrap();
+    let opts = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        rtol: 1e-9,
+        atol: 1e-12,
+        ..Default::default()
+    };
+    let so = MolSolverOptions {
+        linear_solver: MolLinearSolver::Krylov,
+        ..Default::default()
+    };
+    let (sol, l) = integrate_with(&p, 0.0, &[1.0, 0.0], &[1.0], &opts, &so).unwrap();
+    assert_eq!(l.solver, Some(MolLinearSolver::Krylov));
+    assert!((sol.y[0] - 1f64.exp()).abs() < 1e-6, "{}", sol.y[0]);
+    assert!((sol.y[1] - 2.0 * 1f64.exp()).abs() < 1e-5);
+}
+
+fn bits(v: &[f64]) -> Vec<u64> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+#[test]
+fn rhs_and_jacobian_are_bitwise_identical_across_thread_counts() {
+    // Long enough rows that the kernels and the Jacobian assembly split
+    // into many parallel chunks.
+    let n = 40_000;
+    let p = heat_program(n, true);
+    let y: Vec<f64> = (0..n).map(|i| ((i * 37 % 101) as f64).sin()).collect();
+    let run = |threads: usize| {
+        with_threads(threads, || {
+            let mut out = vec![0.0; n];
+            p.rhs(0.3, &y, &mut out).unwrap();
+            let j = p.jacobian(0.3, &y).unwrap();
+            (out, j)
+        })
+    };
+    let (r1, j1) = run(1);
+    for threads in [2, 3, 8] {
+        let (r, j) = run(threads);
+        assert_eq!(bits(&r), bits(&r1), "rhs differs with {threads} threads");
+        assert_eq!(j.indptr, j1.indptr);
+        assert_eq!(j.indices, j1.indices);
+        assert_eq!(bits(&j.data), bits(&j1.data), "{threads} threads");
+    }
+    // The 2-D program too (the span path).
+    let m = 140;
+    let p2 = heat2d_program(m, 2.0);
+    let y2 = sine2d(m);
+    let run2 = |threads: usize| {
+        with_threads(threads, || {
+            let mut out = vec![0.0; m * m];
+            p2.rhs(0.0, &y2, &mut out).unwrap();
+            (out, p2.jacobian(0.0, &y2).unwrap())
+        })
+    };
+    let (a1, b1) = run2(1);
+    let (a4, b4) = run2(4);
+    assert_eq!(bits(&a1), bits(&a4));
+    assert_eq!(bits(&b1.data), bits(&b4.data));
+}
+
+#[test]
+fn krylov_integration_is_bitwise_identical_across_thread_counts() {
+    // 130² states: the kernels and the Jacobian assembly run chunked (the
+    // GMRES reductions go parallel only on larger systems; see krylov.rs).
+    let m = 130;
+    let p = heat2d_program(m, 1.0);
+    let y0 = sine2d(m);
+    let opts = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        rtol: 1e-6,
+        atol: 1e-9,
+        ..Default::default()
+    };
+    let so = MolSolverOptions {
+        linear_solver: MolLinearSolver::Krylov,
+        ..Default::default()
+    };
+    let run = |threads: usize| {
+        with_threads(threads, || {
+            integrate_with(&p, 0.0, &y0, &[2e-3], &opts, &so).unwrap()
+        })
+    };
+    let (s1, l1) = run(1);
+    let (s4, l4) = run(4);
+    assert_eq!(bits(&s1.y), bits(&s4.y));
+    assert_eq!(s1.stats, s4.stats);
+    assert_eq!(l1, l4);
+    assert!(l1.krylov_iters > 0);
+}
