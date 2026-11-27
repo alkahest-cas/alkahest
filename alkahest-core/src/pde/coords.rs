@@ -26,7 +26,7 @@
 //! # Symbolic dimension: [`SymbolicCartesian`]
 //!
 //! `ℝᵈ` with coordinates `xᵢ = Indexed(x, i)`, `1 ≤ i ≤ d`, through the
-//! reserved `Sum` / `Indexed` / `KroneckerDelta` heads of [`super::sum`]:
+//! reserved `Sum` / `Indexed` / `KroneckerDelta` heads of [`mod@super::sum`]:
 //! `∂f/∂xⱼ` for a free index `j`, `∇·F = Σⱼ ∂Fⱼ/∂xⱼ` for a field given by its
 //! `j`-th component, and `Δf` ([`super::laplacian_indexed`]), so for example
 //! `Δ Σᵢ xᵢ² = 2d`.

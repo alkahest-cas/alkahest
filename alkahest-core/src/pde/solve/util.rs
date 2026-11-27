@@ -53,8 +53,15 @@ pub(crate) fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
     // The same expression with powers merged (identities only; see
     // `normalize_powers`), which the normal form does not do for symbolic
     // exponents.
+    if !SPECIAL_QUADRATURE.with(|c| c.get().0) {
+        return false;
+    }
     let n = crate::pde::verify::normalize_powers(s, pool);
-    n != s && zero_test(n, pool, None).status == ZeroStatus::ProvedZero
+    let ok = n != s && zero_test(n, pool, None).status == ZeroStatus::ProvedZero;
+    if ok {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, true)));
+    }
+    ok
 }
 
 /// [`is_zero`] for expressions that may contain `Integral` nodes: the
@@ -138,6 +145,25 @@ pub(crate) fn names_in(exprs: &[ExprId], pool: &ExprPool) -> HashSet<String> {
         push_children(n, pool, &mut stack);
     }
     out
+}
+
+/// Whether `e` contains a function application named `head`.
+pub(crate) fn contains_head(e: ExprId, head: &str, pool: &ExprPool) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![e];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if pool.with(
+            n,
+            |d| matches!(d, ExprData::Func { name, .. } if name == head),
+        ) {
+            return true;
+        }
+        push_children(n, pool, &mut stack);
+    }
+    false
 }
 
 /// A fresh real symbol `{stem}{k}` whose name is not in `taken` (which is
@@ -412,6 +438,12 @@ fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<
     if has_undefined(e, pool) {
         return None;
     }
+    // An integrand holding a `₂F₁` from an inner special quadrature: the
+    // integrator does not close these and can spend long declining; the
+    // caller falls back to an unevaluated integral.
+    if contains_head(e, crate::specfun::hyper::HYPER, pool) {
+        return None;
+    }
     if let Some(r) = integrate_core(e, v, pool) {
         return Some(r);
     }
@@ -636,10 +668,55 @@ fn replace_apps(e: ExprId, name: &str, params: &[ExprId], body: ExprId, pool: &E
 ///   linear argument), symbolic `k`:
 ///   `W^{k+1}/(λ(k+1)) ₂F₁(1, (k+1)/2; (k+3)/2; −σW²)`.
 fn special_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    gaussian_quadrature(e, v, pool)
+    if !SPECIAL_QUADRATURE.with(|c| c.get().0) {
+        return None;
+    }
+    let r = gaussian_quadrature(e, v, pool)
         .or_else(|| incomplete_gamma_quadrature(e, v, pool))
         .or_else(|| exp_of_exp_quadrature(e, v, pool))
-        .or_else(|| tangent_power_quadrature(e, v, pool))
+        .or_else(|| tangent_power_quadrature(e, v, pool));
+    if r.is_some() {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, true)));
+    }
+    r
+}
+
+thread_local! {
+    /// `(enabled, used since the last reset)` for [`special_quadrature`] and
+    /// the power-normalising retry of [`is_zero`].
+    static SPECIAL_QUADRATURE: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, false)) };
+}
+
+/// Clear the "a special quadrature was used" mark (the dispatcher does this
+/// before each tier).
+pub(crate) fn reset_special_quadrature_used() {
+    SPECIAL_QUADRATURE.with(|c| c.set((c.get().0, false)));
+}
+
+/// Whether [`special_quadrature`] produced a closed form since the last
+/// reset.
+pub(crate) fn special_quadrature_used() -> bool {
+    SPECIAL_QUADRATURE.with(|c| c.get().1)
+}
+
+/// Disables the special-function quadratures (and the power-normalising
+/// retry of [`is_zero`]) until dropped: a tier whose candidates all failed
+/// verification after either was used is re-run without them, so a closed
+/// form or first integral the final zero test cannot confirm never displaces
+/// an unevaluated integral that verifies.
+pub(crate) struct WithoutSpecialQuadrature;
+
+impl WithoutSpecialQuadrature {
+    pub(crate) fn new() -> Self {
+        SPECIAL_QUADRATURE.with(|c| c.set((false, c.get().1)));
+        WithoutSpecialQuadrature
+    }
+}
+
+impl Drop for WithoutSpecialQuadrature {
+    fn drop(&mut self) {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, c.get().1)));
+    }
 }
 
 /// `(rest, Σ args)` of a product whose exponential factors in `v` are
