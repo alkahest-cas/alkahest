@@ -1,0 +1,252 @@
+[
+ {
+  "id": "hab-2.3.3a",
+  "source": "Haberman 2.3.3(a): u(x,0) = 6 sin(9πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 6*Sin[9*Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.3.3b",
+  "source": "Haberman 2.3.3(b): u(x,0) = 3 sin(πx/L) − sin(3πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 3*Sin[Pi*x/L] - Sin[3*Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.3.3c",
+  "source": "Haberman 2.3.3(c): u(x,0) = 2 cos(3πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 2*Cos[3*Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.3.3d",
+  "source": "Haberman 2.3.3(d): piecewise initial data",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == Piecewise[{{1, x < L/2}}, 2]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.3.4",
+  "source": "Haberman 2.3.4: u(x,0) = 1",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 1; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.3.7",
+  "source": "Haberman 2.3.7 (k = 1, L = π): u(x,0) = x",
+  "code": "k = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = u[x, 0] == x; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {}];"
+ },
+ {
+  "id": "hab-2.4.1a",
+  "source": "Haberman 2.4.1(a): insulated ends, step data",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == Piecewise[{{0, x < L/2}}, 1]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.4.1b",
+  "source": "Haberman 2.4.1(b): insulated ends, 6 + 4 cos(3πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == 6 + 4*Cos[3*Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.4.1c",
+  "source": "Haberman 2.4.1(c): insulated ends, −2 sin(πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == -2*Sin[Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.4.1d",
+  "source": "Haberman 2.4.1(d): insulated ends, −3 cos(8πx/L)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == -3*Cos[8*Pi*x/L]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.4.2",
+  "source": "Haberman 2.4.2: u_x(0) = 0, u(L) = 0",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == L - x; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-2.4.6",
+  "source": "Haberman 2.4.6: ring, periodic, u(x,0) = x^2",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[-L, t] == u[L, t], Derivative[1, 0][u][-L, t] == Derivative[1, 0][u][L, t]}; ic = u[x, 0] == x^2; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-5.8.robin",
+  "source": "Haberman 5.8: u(0) = 0, u_x(1) + u(1) = 0 (Robin), u(x,0) = x",
+  "code": "k = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][1, t] + u[1, t] == 0}; ic = u[x, 0] == x; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {}];"
+ },
+ {
+  "id": "hab-5.8.robin2",
+  "source": "Haberman 5.8.7: u_x(0) = 0, u_x(1) + 2u(1) = 0, u(x,0) = 1",
+  "code": "k = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] + 2*u[1, t] == 0}; ic = u[x, 0] == 1; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {}];"
+ },
+ {
+  "id": "str-4.1.2",
+  "source": "Strauss 4.1: Dirichlet heat with u(x,0) = x(π − x), k = 1",
+  "code": "k = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = u[x, 0] == x*(Pi - x); sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {}];"
+ },
+ {
+  "id": "str-4.2.1",
+  "source": "Strauss 4.2: mixed (Dirichlet / Neumann), u(x,0) = 1",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == 1; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-8.2.1",
+  "source": "Haberman 8.2: constant boundary temperatures (steady state)",
+  "code": "pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == T0, u[L, t] == T1}; ic = u[x, 0] == 0; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, L > 0}];"
+ },
+ {
+  "id": "hab-8.2.2",
+  "source": "Haberman 8.2: time-dependent end, u(L,t) = t",
+  "code": "k = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[1, t] == t}; ic = u[x, 0] == 0; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {}];"
+ },
+ {
+  "id": "hab-8.3.source",
+  "source": "Haberman 8.3: source sin(πx) e^{−t}",
+  "code": "k = 1; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + Sin[Pi*x]*Exp[-t]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 0; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "hab-8.3.steady-src",
+  "source": "Haberman 8.2.1: steady source Q = 1 with fixed ends",
+  "code": "pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + 1; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 0; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "heat-convection",
+  "source": "heat with decay: u_t = u_xx − u",
+  "code": "pde = D[u[x, t], t] == D[u[x, t], {x, 2}] - u[x, t]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = u[x, 0] == Sin[x] + Sin[3*x]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "mma-heat-doc",
+  "source": "Mathematica DSolve docs: heat, DirichletCondition, u(x,0) = 4 sin(2πx)",
+  "code": "pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 4*Sin[2*Pi*x]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "mma-heat-doc2",
+  "source": "Mathematica DSolve docs: heat with Neumann ends, u(x,0) = x^2",
+  "code": "pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] == 0}; ic = u[x, 0] == x^2; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "hab-4.4.1",
+  "source": "Haberman 4.4: string, plucked (triangle) data",
+  "code": "pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == Piecewise[{{x, x < L/2}}, L - x], Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {c > 0, L > 0}];"
+ },
+ {
+  "id": "hab-4.4.2",
+  "source": "Haberman 4.4: string with initial velocity 1",
+  "code": "pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 1}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {c > 0, L > 0}];"
+ },
+ {
+  "id": "str-4.1.wave",
+  "source": "Strauss 4.1: string, u(x,0) = sin 3x, u_t = 0",
+  "code": "pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {u[x, 0] == Sin[3*x], Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {c > 0}];"
+ },
+ {
+  "id": "str-4.2.wave",
+  "source": "Strauss 4.2: string free at x = L (Neumann)",
+  "code": "pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {u[x, 0] == x, Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {c > 0, L > 0}];"
+ },
+ {
+  "id": "str-wave-neu",
+  "source": "Strauss 4.2: both ends free, u(x,0) = cos^2 x",
+  "code": "pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][Pi, t] == 0}; ic = {u[x, 0] == Cos[x]^2, Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {c > 0}];"
+ },
+ {
+  "id": "telegraph-1",
+  "source": "damped string u_tt + 2u_t = u_xx",
+  "code": "pde = D[u[x, t], {t, 2}] + 2*D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {u[x, 0] == Sin[2*x], Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "klein-gordon-1",
+  "source": "Klein–Gordon on an interval u_tt = u_xx − u",
+  "code": "pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] - u[x, t]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {u[x, 0] == Sin[x], Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "wave-forced",
+  "source": "forced string u_tt = u_xx + sin(πx)",
+  "code": "pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] + Sin[Pi*x]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "schrodinger-box",
+  "source": "Schrödinger in a box i u_t = −u_xx",
+  "code": "pde = I*D[u[x, t], t] == -D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = u[x, 0] == Sin[x] + Sin[2*x]; sol = DSolveValue[{pde, bc, ic}, u[x, t], {x, t}];"
+ },
+ {
+  "id": "hab-2.5.1a",
+  "source": "Haberman 2.5.1(a): rectangle, u(x, b) = f, others 0 (f = x)",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == 0, u[a, y] == 0, u[x, 0] == 0, u[x, b] == x}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}, Assumptions -> {a > 0, b > 0}];"
+ },
+ {
+  "id": "hab-2.5.1b",
+  "source": "Haberman 2.5.1(b): rectangle, Neumann sides",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {Derivative[1, 0][u][0, y] == 0, Derivative[1, 0][u][a, y] == 0, u[x, 0] == 0, u[x, b] == Cos[Pi*x/a]}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}, Assumptions -> {a > 0, b > 0}];"
+ },
+ {
+  "id": "hab-2.5.1c",
+  "source": "Haberman 2.5.1(c): rectangle, data on x = a",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == 0, u[a, y] == Sin[Pi*y/b], u[x, 0] == 0, u[x, b] == 0}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}, Assumptions -> {a > 0, b > 0}];"
+ },
+ {
+  "id": "str-6.2.1",
+  "source": "Strauss 6.2: square, all four sides with data",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == 0, u[Pi, y] == Sin[y], u[x, 0] == 0, u[x, Pi] == Sin[2*x]}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}];"
+ },
+ {
+  "id": "lap-all4",
+  "source": "rectangle with data on all four sides",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == y*(1 - y), u[1, y] == 0, u[x, 0] == 0, u[x, 1] == x*(1 - x)}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}];"
+ },
+ {
+  "id": "poisson-sq",
+  "source": "Poisson Δu = −1 on the square, u = 0 on the boundary",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == -1; bc = {u[0, y] == 0, u[Pi, y] == 0, u[x, 0] == 0, u[x, Pi] == 0}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}];"
+ },
+ {
+  "id": "poisson-sin",
+  "source": "Poisson Δu = sin x sin 2y on the square",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == Sin[x]*Sin[2*y]; bc = {u[0, y] == 0, u[Pi, y] == 0, u[x, 0] == 0, u[x, Pi] == 0}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}];"
+ },
+ {
+  "id": "helmholtz-rect",
+  "source": "Helmholtz Δu + 2u = 0, data sin 3x on y = 1",
+  "code": "pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] + 2*u[x, y] == 0; bc = {u[0, y] == 0, u[Pi, y] == 0, u[x, 0] == 0, u[x, 1] == Sin[3*x]}; sol = DSolveValue[{pde, bc}, u[x, y], {x, y}];"
+ },
+ {
+  "id": "heat-2d",
+  "source": "heat on the unit square, u(x,y,0) = x y (1 − x)(1 − y)",
+  "code": "pde = D[u[x, y, t], t] == D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]; bc = {u[0, y, t] == 0, u[1, y, t] == 0, u[x, 0, t] == 0, u[x, 1, t] == 0}; ic = u[x, y, 0] == x*y*(1 - x)*(1 - y); sol = DSolveValue[{pde, bc, ic}, u[x, y, t], {x, y, t}];"
+ },
+ {
+  "id": "wave-2d",
+  "source": "vibrating membrane on [0, π]², u(x,y,0) = sin x sin y",
+  "code": "pde = D[u[x, y, t], {t, 2}] == D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]; bc = {u[0, y, t] == 0, u[Pi, y, t] == 0, u[x, 0, t] == 0, u[x, Pi, t] == 0}; ic = {u[x, y, 0] == Sin[x]*Sin[y], Derivative[0, 0, 1][u][x, y, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[x, y, t], {x, y, t}];"
+ },
+ {
+  "id": "hab-2.5.disk",
+  "source": "Haberman 2.5.2: disk, u(a, θ) = f(θ) = cos^2 θ",
+  "code": "pde = D[u[r, theta], {r, 2}] + D[u[r, theta], r]/r + D[u[r, theta], {theta, 2}]/r^2 == 0; bc = {u[a, theta] == Cos[theta]^2, u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = DSolveValue[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {a > 0}];"
+ },
+ {
+  "id": "str-6.3.1",
+  "source": "Strauss 6.3: disk with u(1, θ) = sin^3 θ",
+  "code": "pde = D[u[r, theta], {r, 2}] + D[u[r, theta], r]/r + D[u[r, theta], {theta, 2}]/r^2 == 0; bc = {u[1, theta] == Sin[theta]^3, u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = DSolveValue[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {}];"
+ },
+ {
+  "id": "hab-2.5.annulus",
+  "source": "Haberman 2.5.8: annulus 1 < r < 2",
+  "code": "pde = D[u[r, theta], {r, 2}] + D[u[r, theta], r]/r + D[u[r, theta], {theta, 2}]/r^2 == 0; bc = {u[1, theta] == 0, u[2, theta] == Sin[theta], u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = DSolveValue[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {}];"
+ },
+ {
+  "id": "hab-2.5.sector",
+  "source": "Haberman 2.5.3: wedge 0 < θ < π/2",
+  "code": "pde = D[u[r, theta], {r, 2}] + D[u[r, theta], r]/r + D[u[r, theta], {theta, 2}]/r^2 == 0; bc = {u[r, 0] == 0, u[r, Pi/2] == 0, u[1, theta] == theta*(Pi/2 - theta)}; sol = DSolveValue[{pde, bc}, u[r, theta], {r, theta}];"
+ },
+ {
+  "id": "hab-7.7.disk-heat",
+  "source": "Haberman 7.7: heat on the unit disk, radially symmetric data 1 − r^2",
+  "code": "pde = D[u[r, t], t] == D[u[r, t], {r, 2}] + D[u[r, t], r]/r; bc = u[1, t] == 0; ic = u[r, 0] == 1 - r^2; sol = DSolveValue[{pde, bc, ic}, u[r, t], {r, t}];"
+ },
+ {
+  "id": "hab-7.7.drum",
+  "source": "Haberman 7.7: drum, radially symmetric, u(r,0) = 1 − r^2",
+  "code": "pde = D[u[r, t], {t, 2}] == D[u[r, t], {r, 2}] + D[u[r, t], r]/r; bc = u[1, t] == 0; ic = {u[r, 0] == 1 - r^2, Derivative[0, 1][u][r, 0] == 0}; sol = DSolveValue[{pde, bc, ic}, u[r, t], {r, t}];"
+ },
+ {
+  "id": "ball-heat",
+  "source": "Strauss 10.5: heat in the unit ball, radial, u(r,0) = 1",
+  "code": "pde = D[u[r, t], t] == D[u[r, t], {r, 2}] + 2*D[u[r, t], r]/r; bc = u[1, t] == 0; ic = u[r, 0] == 1; sol = DSolveValue[{pde, bc, ic}, u[r, t], {r, t}];"
+ },
+ {
+  "id": "ball-laplace",
+  "source": "Strauss 10.3: Laplace in the unit ball, axisymmetric, u(1, θ) = cos^2 θ",
+  "code": "pde = D[u[r, theta], {r, 2}] + 2*D[u[r, theta], r]/r + D[u[r, theta], {theta, 2}]/r^2 + Cos[theta]/Sin[theta]*D[u[r, theta], theta]/r^2 == 0; bc = u[1, theta] == Cos[theta]^2; sol = DSolveValue[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {0 < theta < Pi}];"
+ }
+]

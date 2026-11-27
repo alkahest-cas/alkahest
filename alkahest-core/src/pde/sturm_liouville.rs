@@ -313,6 +313,7 @@ fn structural_sign(e: ExprId, pool: &ExprPool) -> Sgn {
         }
         ExprData::Func { name, args } if args.len() == 1 => match name.as_str() {
             "exp" | "cosh" => Sgn::Pos,
+            "sinh" | "tanh" => structural_sign(args[0], pool),
             "sqrt" if structural_sign(args[0], pool) == Sgn::Pos => Sgn::Pos,
             _ => Sgn::Unknown,
         },
@@ -1196,7 +1197,7 @@ fn combine(statuses: &[ZeroStatus]) -> VerificationStatus {
 }
 
 /// Zero status of an exact residual: `simplify` first, then `zero_test`.
-fn zstatus(e: ExprId, pool: &ExprPool) -> ZeroStatus {
+pub(crate) fn zstatus(e: ExprId, pool: &ExprPool) -> ZeroStatus {
     let s = simp(e, pool);
     if is_zero_literal(s, pool) {
         return ZeroStatus::ProvedZero;

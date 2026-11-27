@@ -373,6 +373,36 @@ Exception subclasses
    - ``E-PDE-163`` — the candidate built by a transform method was **refuted**
      by substitution and withheld.
 
+   Milestone M4 (separation of variables and eigenfunction series) owns
+   ``200``–``249``:
+
+   - ``E-PDE-200`` — the equation does not separate in the given variables
+     (no variable splits off with the multipliers tried).
+   - ``E-PDE-201`` — a problem outside the method: nonlinear, a system, a
+     domain that is not a product of intervals or a curvilinear region (with
+     at most one half-line in time), or a separated eigenproblem with
+     eigenvalues below its threshold.
+   - ``E-PDE-202`` — a condition the method cannot use: not linear on one face
+     with constant coefficients, a condition at a singular end (``r = 0``,
+     the poles), an incomplete periodicity condition.
+   - ``E-PDE-203`` — missing or duplicated data (one condition is needed at
+     each regular end; ``u`` and ``u_t`` at ``t = 0`` for a second-order
+     equation in time).
+   - ``E-PDE-204`` — the amplitude equation in the data direction is not of
+     constant-coefficient, Euler or Bessel type.
+   - ``E-PDE-205`` — the boundary data could not be homogenised (lifting /
+     steady state).
+   - ``E-PDE-206`` — a mode, amplitude or lifting was **refuted** by its exact
+     check; nothing is returned.
+   - ``E-PDE-207`` — the data violate a solvability condition (a Neumann
+     problem whose flux does not balance, a source with a component on a zero
+     mode).
+   - ``E-PDE-208`` — the closed-form coefficients disagree with a numerical
+     projection of the data; nothing is returned.
+   - ``E-PDE-209`` — a numeric truncation was asked for while a
+     ``RootOfFamily`` or an unevaluated coefficient integral still has
+     symbolic parameters.
+
    Milestone M5 (Green's functions) owns ``250``–``299``:
 
    - ``E-PDE-250`` — no fundamental solution / Green's function here: a

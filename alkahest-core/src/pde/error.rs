@@ -156,6 +156,26 @@ pub enum PdeError {
     /// by substitution (a kernel that does not satisfy the PDE, a closed form
     /// that misses a condition).
     TransformVerificationFailed(String),
+    /// `E-PDE-200` — the equation does not separate in the given variables: no variable splits off with the multipliers tried (`1` and the reciprocals of the jet-free coefficients).
+    SeparationNotSeparable(String),
+    /// `E-PDE-201` — a problem outside the implemented classes: nonlinear, a system, a domain that is not a product of intervals / a curvilinear region (with at most one half-line in time), an eigenproblem with eigenvalues below its threshold.
+    SeparationUnsupported(String),
+    /// `E-PDE-202` — a boundary or initial condition that is not linear on one face with constant coefficients (`α u + β ∂ₙu = g` at an end of one variable's range), a condition at a singular end of the coordinates, or a periodicity condition that is incomplete.
+    SeparationCondition(String),
+    /// `E-PDE-203` — missing or duplicated data: not exactly one condition at each regular end, no initial condition, or no initial velocity for an equation of second order in time.
+    SeparationMissingData(String),
+    /// `E-PDE-204` — the amplitude equation of the modes in the data direction is not of constant-coefficient, Euler or Bessel type, or its conditions cannot be imposed.
+    SeparationModeOde(String),
+    /// `E-PDE-205` — the boundary data could not be homogenised: data in more than one variable that depends on time, and no closed-form steady state.
+    SeparationLifting(String),
+    /// `E-PDE-206` — a mode, amplitude or lifting was refuted by its exact check; nothing is returned.
+    SeparationVerificationFailed(String),
+    /// `E-PDE-207` — the data violates a solvability (compatibility) condition: a Neumann problem whose flux does not balance, or a source with a component on a zero mode.
+    SeparationCompatibility(String),
+    /// `E-PDE-208` — the closed-form coefficients disagree with numerical projections of the data; nothing is returned.
+    SeparationProjectionRefuted(String),
+    /// `E-PDE-209` — a numeric truncation was asked for while a RootOfFamily or an unevaluated coefficient integral still has symbolic parameters.
+    SeparationTruncation(String),
     /// `E-PDE-250` — no Green's function / fundamental solution is implemented
     /// for this operator, dimension or problem (a radial form of a 1-D-only
     /// operator, a symbolic dimension for an operator other than Laplace and
@@ -235,6 +255,16 @@ impl fmt::Display for PdeError {
             PdeError::TransformData(d) => ("transform method data", d),
             PdeError::TransformOde(d) => ("transformed equation not solved", d),
             PdeError::TransformVerificationFailed(d) => ("transform solution refuted", d),
+            PdeError::SeparationNotSeparable(d) => ("the equation does not separate", d),
+            PdeError::SeparationUnsupported(d) => ("separation of variables unsupported", d),
+            PdeError::SeparationCondition(d) => ("condition unsupported by separation", d),
+            PdeError::SeparationMissingData(d) => ("missing or duplicated data", d),
+            PdeError::SeparationModeOde(d) => ("amplitude equation not solved", d),
+            PdeError::SeparationLifting(d) => ("boundary data not homogenised", d),
+            PdeError::SeparationVerificationFailed(d) => ("series solution refuted", d),
+            PdeError::SeparationCompatibility(d) => ("data incompatible", d),
+            PdeError::SeparationProjectionRefuted(d) => ("coefficients refuted numerically", d),
+            PdeError::SeparationTruncation(d) => ("series not numeric", d),
             PdeError::GreenUnsupported(d) => ("Green's function unsupported", d),
             PdeError::GreenInvalidInput(d) => ("invalid Green's-function input", d),
             PdeError::GreenRegionUnsupported(d) => ("method of images does not apply", d),
@@ -294,6 +324,16 @@ impl AlkahestError for PdeError {
             PdeError::TransformData(_) => "E-PDE-161",
             PdeError::TransformOde(_) => "E-PDE-162",
             PdeError::TransformVerificationFailed(_) => "E-PDE-163",
+            PdeError::SeparationNotSeparable(_) => "E-PDE-200",
+            PdeError::SeparationUnsupported(_) => "E-PDE-201",
+            PdeError::SeparationCondition(_) => "E-PDE-202",
+            PdeError::SeparationMissingData(_) => "E-PDE-203",
+            PdeError::SeparationModeOde(_) => "E-PDE-204",
+            PdeError::SeparationLifting(_) => "E-PDE-205",
+            PdeError::SeparationVerificationFailed(_) => "E-PDE-206",
+            PdeError::SeparationCompatibility(_) => "E-PDE-207",
+            PdeError::SeparationProjectionRefuted(_) => "E-PDE-208",
+            PdeError::SeparationTruncation(_) => "E-PDE-209",
             PdeError::GreenUnsupported(_) => "E-PDE-250",
             PdeError::GreenInvalidInput(_) => "E-PDE-251",
             PdeError::GreenRegionUnsupported(_) => "E-PDE-252",

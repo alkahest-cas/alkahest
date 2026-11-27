@@ -341,8 +341,9 @@ class Box(_Domain):
 class Disk(_Domain):
     """``Disk((x, y), radius, center=(0, 0))`` — the open disk.
 
-    Carried for the separation-of-variables milestone; the solvers that use it
-    land there.
+    :func:`separation_solve` rewrites an isotropic equation on it in polar
+    coordinates; a boundary condition ``u(x, y, …) = g`` (the unknown at its
+    own arguments) is Dirichlet data on the circle.
     """
 
     __slots__ = ("center", "radius", "variables")
@@ -362,8 +363,8 @@ class Disk(_Domain):
 
 class Ball(_Domain):
     """``Ball([x, y, z], radius, center=None)`` — the open ball (origin by
-    default).  A stub for the separation-of-variables milestone, like
-    :class:`Disk`."""
+    default).  Like :class:`Disk`: :func:`separation_solve` works in polar
+    (two dimensions) or spherical (three) coordinates."""
 
     __slots__ = ("center", "radius", "variables")
 
