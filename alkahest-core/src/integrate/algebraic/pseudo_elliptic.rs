@@ -117,12 +117,13 @@ fn null_vectors(mut a: Vec<Vec<Rational>>, cols: usize) -> Vec<Vec<Rational>> {
         for v in a[r].iter_mut() {
             *v *= &inv;
         }
-        for i in 0..rows {
-            if i != r && a[i][c] != 0 {
-                let f = a[i][c].clone();
-                for j in 0..cols {
-                    let t = f.clone() * &a[r][j];
-                    a[i][j] -= t;
+        let pivot_row = a[r].clone();
+        for (i, row) in a.iter_mut().enumerate().take(rows) {
+            if i != r && row[c] != 0 {
+                let f = row[c].clone();
+                for (x, p) in row.iter_mut().zip(&pivot_row).take(cols) {
+                    let t = f.clone() * p;
+                    *x -= t;
                 }
             }
         }
