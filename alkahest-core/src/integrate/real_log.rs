@@ -35,10 +35,29 @@ fn samples() -> Vec<f64> {
     (0..64).map(|i| -7.31 + 0.2317 * i as f64).collect()
 }
 
+#[cfg(test)]
 fn eval_at(e: ExprId, var: ExprId, at: f64, pool: &ExprPool) -> Option<f64> {
     let mut env = HashMap::new();
     env.insert(var, at);
     crate::jit::eval_interp(e, &env, pool).filter(|v| v.is_finite())
+}
+
+/// `e` compiled once for sampling in `var` (finite values only).
+fn sampler<'a>(e: ExprId, var: ExprId, pool: &'a ExprPool) -> crate::jit::Sampler<'a> {
+    crate::jit::Sampler::new(e, var, &HashMap::new(), pool)
+}
+
+fn at(s: &crate::jit::Sampler<'_>, t: f64) -> Option<f64> {
+    s.eval(t).filter(|v| v.is_finite())
+}
+
+/// The samples where the integrand is a finite real, with its value there.
+fn integrand_points(integrand: ExprId, var: ExprId, pool: &ExprPool) -> Vec<(f64, f64)> {
+    let s = sampler(integrand, var, pool);
+    samples()
+        .into_iter()
+        .filter_map(|t| at(&s, t).map(|v| (t, v)))
+        .collect()
 }
 
 fn collect_logs(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
@@ -68,19 +87,10 @@ fn collect_logs(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) 
 }
 
 /// `true` when `f` evaluates to a finite real number at every sample where
-/// `integrand` does (and at two at least).
-fn real_where_integrand_is(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    let mut checked = 0;
-    for at in samples() {
-        if eval_at(integrand, var, at, pool).is_none() {
-            continue;
-        }
-        if eval_at(f, var, at, pool).is_none() {
-            return false;
-        }
-        checked += 1;
-    }
-    checked >= 2
+/// the integrand does (and at two at least).
+fn real_where_integrand_is(f: ExprId, pts: &[(f64, f64)], var: ExprId, pool: &ExprPool) -> bool {
+    let s = sampler(f, var, pool);
+    pts.len() >= 2 && pts.iter().all(|&(t, _)| at(&s, t).is_some())
 }
 
 /// Derivation-log rule name of the final real-log pass in `integrate`.
@@ -175,7 +185,8 @@ fn cheap_to_sample(e: ExprId, pool: &ExprPool) -> bool {
 /// See the module docs.  Returns `f` unchanged when nothing needs rewriting
 /// or the rewrite cannot be confirmed.
 pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
-    if real_where_integrand_is(f, integrand, var, pool) {
+    let pts = integrand_points(integrand, var, pool);
+    if pts.len() < 2 || real_where_integrand_is(f, &pts, var, pool) {
         return f;
     }
     let mut logs = Vec::new();
@@ -195,12 +206,10 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
             continue;
         };
         let a = args[0];
+        let sa = sampler(a, var, pool);
         let (mut neg, mut pos) = (false, false);
-        for at in samples() {
-            if eval_at(integrand, var, at, pool).is_none() {
-                continue;
-            }
-            match eval_at(a, var, at, pool) {
+        for &(t, _) in &pts {
+            match at(&sa, t) {
                 Some(v) if v < 0.0 => neg = true,
                 Some(v) if v > 0.0 => pos = true,
                 _ => {}
@@ -226,9 +235,7 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
         return f;
     }
     let g = simplify(crate::kernel::subs(f, &map, pool), pool).value;
-    if real_where_integrand_is(g, integrand, var, pool)
-        && differentiates_back(g, integrand, var, pool)
-    {
+    if real_where_integrand_is(g, &pts, var, pool) && differentiates_back(g, &pts, var, pool) {
         g
     } else {
         f
@@ -244,18 +251,15 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
 /// integrand is real, so this is a check of the construction, not a search.
 /// It is numeric rather than a second symbolic gate, whose `d/dx`-and-simplify
 /// of `|a|` inside a large answer can cost more than the integration did.
-fn differentiates_back(g: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+fn differentiates_back(g: ExprId, pts: &[(f64, f64)], var: ExprId, pool: &ExprPool) -> bool {
+    let sg = sampler(g, var, pool);
     let mut agreed = 0;
-    for at in samples() {
-        let Some(f) = eval_at(integrand, var, at, pool) else {
-            continue;
-        };
+    for &(t, f) in pts {
         if f.abs() > 1e6 {
             continue;
         }
-        let h = 1e-6 * at.abs().max(1.0);
-        let (Some(gp), Some(gm)) = (eval_at(g, var, at + h, pool), eval_at(g, var, at - h, pool))
-        else {
+        let h = 1e-6 * t.abs().max(1.0);
+        let (Some(gp), Some(gm)) = (at(&sg, t + h), at(&sg, t - h)) else {
             continue;
         };
         let d = (gp - gm) / (2.0 * h);
