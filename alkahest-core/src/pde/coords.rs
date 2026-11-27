@@ -57,7 +57,9 @@ fn inv(e: ExprId, pool: &ExprPool) -> ExprId {
 
 fn validate_vars(vars: &[ExprId], pool: &ExprPool) -> Result<(), PdeError> {
     if vars.is_empty() {
-        return Err(PdeError::CoordinateChart("a chart needs at least one coordinate".into()));
+        return Err(PdeError::CoordinateChart(
+            "a chart needs at least one coordinate".into(),
+        ));
     }
     for (i, &v) in vars.iter().enumerate() {
         if !pool.with(v, |d| matches!(d, ExprData::Symbol { .. })) {
@@ -177,7 +179,12 @@ impl CoordinatesN {
         }
         let dot = |a: &[ExprId], b: &[ExprId]| -> ExprId {
             simp(
-                pool.add(a.iter().zip(b).map(|(&x, &y)| pool.mul(vec![x, y])).collect()),
+                pool.add(
+                    a.iter()
+                        .zip(b)
+                        .map(|(&x, &y)| pool.mul(vec![x, y]))
+                        .collect(),
+                ),
                 pool,
             )
         };
@@ -350,7 +357,13 @@ impl SymbolicCartesian {
     pub fn radius_squared(&self, pool: &ExprPool) -> Result<ExprId, PdeError> {
         let i = super::sum::fresh_index(pool.symbol("i", Domain::Integer), &[self.dim], pool);
         let xi = self.coordinate(i, pool)?;
-        super::sum::sum(pool.pow(xi, pool.integer(2)), i, pool.integer(1), self.dim, pool)
+        super::sum::sum(
+            pool.pow(xi, pool.integer(2)),
+            i,
+            pool.integer(1),
+            self.dim,
+            pool,
+        )
     }
 
     /// The `j`-th gradient component `∂f/∂xⱼ` (`j` a symbol, assumed in
@@ -359,7 +372,12 @@ impl SymbolicCartesian {
     /// # Errors
     ///
     /// `E-PDE-022` / `E-PDE-041` when the term-wise derivative is refused.
-    pub fn gradient_component(&self, f: ExprId, j: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
+    pub fn gradient_component(
+        &self,
+        f: ExprId,
+        j: ExprId,
+        pool: &ExprPool,
+    ) -> Result<ExprId, PdeError> {
         let xj = self.coordinate(j, pool)?;
         let df = diff(f, xj, pool)
             .map_err(|e| PdeError::SumDifferentiation(e.to_string()))?
@@ -373,14 +391,23 @@ impl SymbolicCartesian {
     /// # Errors
     ///
     /// As [`Self::gradient_component`].
-    pub fn divergence(&self, component: ExprId, j: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
+    pub fn divergence(
+        &self,
+        component: ExprId,
+        j: ExprId,
+        pool: &ExprPool,
+    ) -> Result<ExprId, PdeError> {
         let one = pool.integer(1);
         let xj = self.coordinate(j, pool)?;
         let df = diff(component, xj, pool)
             .map_err(|e| PdeError::SumDifferentiation(e.to_string()))?
             .value;
         let df = simplify_sums(df, &[(j, one, self.dim)], pool);
-        Ok(simplify_sums(pool.func(SUM, vec![df, j, one, self.dim]), &[], pool))
+        Ok(simplify_sums(
+            pool.func(SUM, vec![df, j, one, self.dim]),
+            &[],
+            pool,
+        ))
     }
 
     /// `Δf = Σⱼ ∂²f/∂xⱼ²` ([`super::laplacian_indexed`]).
@@ -410,7 +437,9 @@ mod tests {
     #[test]
     fn cartesian_laplacian_of_unknown_in_four_dimensions() {
         let p = ExprPool::new();
-        let xs: Vec<ExprId> = (1..=4).map(|i| p.symbol(format!("x{i}"), Domain::Real)).collect();
+        let xs: Vec<ExprId> = (1..=4)
+            .map(|i| p.symbol(format!("x{i}"), Domain::Real))
+            .collect();
         let c = CoordinatesN::cartesian(&xs, &p).unwrap();
         let u = p.func("u", xs.clone());
         let lap = c.laplacian(u, &p).unwrap();
@@ -450,7 +479,10 @@ mod tests {
         let lap = c4.laplacian(f, &p).unwrap();
         let f1 = diff(f, r, &p).unwrap().value;
         let f2 = diff(f1, r, &p).unwrap().value;
-        let want = p.add(vec![f2, p.mul(vec![p.integer(3), f1, p.pow(r, p.integer(-1))])]);
+        let want = p.add(vec![
+            f2,
+            p.mul(vec![p.integer(3), f1, p.pow(r, p.integer(-1))]),
+        ]);
         assert!(zero(sub(lap, want, &p), &p), "{}", p.display(lap));
     }
 
@@ -483,12 +515,20 @@ mod tests {
         let r2 = c.radius_squared(&p).unwrap();
         // Δ |x|² = 2d.
         let lap = c.laplacian(r2, &p).unwrap();
-        assert!(zero(sub(lap, p.mul(vec![p.integer(2), dd]), &p), &p), "{}", p.display(lap));
+        assert!(
+            zero(sub(lap, p.mul(vec![p.integer(2), dd]), &p), &p),
+            "{}",
+            p.display(lap)
+        );
         // ∂|x|²/∂xⱼ = 2xⱼ.
         let j = p.symbol("j", Domain::Integer);
         let g = c.gradient_component(r2, j, &p).unwrap();
         let xj = c.coordinate(j, &p).unwrap();
-        assert!(zero(sub(g, p.mul(vec![p.integer(2), xj]), &p), &p), "{}", p.display(g));
+        assert!(
+            zero(sub(g, p.mul(vec![p.integer(2), xj]), &p), &p),
+            "{}",
+            p.display(g)
+        );
         // ∇·x = d.
         let dv = c.divergence(xj, j, &p).unwrap();
         assert!(zero(sub(dv, dd, &p), &p), "{}", p.display(dv));

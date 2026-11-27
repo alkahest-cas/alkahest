@@ -52,7 +52,9 @@ use crate::kernel::expr::PredicateKind;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::engine::{simplify, simplify_expanded};
 
-use super::classify::{is_zero, region, sign_of, Linearity, NamedEquation, PdeType, Sign, TypeRegion};
+use super::classify::{
+    is_zero, region, sign_of, Linearity, NamedEquation, PdeType, Sign, TypeRegion,
+};
 use super::error::PdeError;
 use super::jet::{decode_unknown, symbols_of, JetSpace};
 
@@ -132,6 +134,17 @@ fn sub(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
 
 fn div(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
     simp(pool.mul(vec![a, pool.pow(b, pool.integer(-1))]), pool)
+}
+
+/// Rational-function normal form (numerator and denominator cancelled) when
+/// `e` is rational in its symbols, else `simplify_expanded`.
+fn norm(e: ExprId, pool: &ExprPool) -> ExprId {
+    let e = simplify_expanded(e, pool).value;
+    let vars = crate::poly::collect_free_vars(e, pool);
+    match crate::poly::cancel::cancel(e, vars, pool) {
+        Ok(c) => simp(c, pool),
+        Err(_) => e,
+    }
 }
 
 fn mentions_any(e: ExprId, set: &HashSet<ExprId>, pool: &ExprPool) -> bool {
@@ -284,7 +297,9 @@ fn positive_monomial(e: ExprId, pool: &ExprPool) -> bool {
         ExprData::Rational(r) => r.0.cmp0() == std::cmp::Ordering::Greater,
         ExprData::Pow { base, exp } => {
             positive_monomial(base, pool)
-                && pool.with(exp, |d| matches!(d, ExprData::Integer(_) | ExprData::Rational(_)))
+                && pool.with(exp, |d| {
+                    matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+                })
         }
         ExprData::Mul(xs) => xs.iter().all(|&x| positive_monomial(x, pool)),
         _ => false,
@@ -331,13 +346,28 @@ fn solve_char_poly(p: ExprId, lam: ExprId, pool: &ExprPool) -> Vec<Factor> {
     let zero = pool.integer(0);
     let mut out = Vec::new();
     for (f, mult) in factors {
-        let at0 = |e: ExprId| simp(crate::kernel::subs::subs(e, &HashMap::from([(lam, zero)]), pool), pool);
+        let at0 = |e: ExprId| {
+            simp(
+                crate::kernel::subs::subs(e, &HashMap::from([(lam, zero)]), pool),
+                pool,
+            )
+        };
         let Ok(f1) = d(f, lam, pool) else {
-            out.push(Factor { roots: vec![], multiplicity: mult, q: None, solved: false });
+            out.push(Factor {
+                roots: vec![],
+                multiplicity: mult,
+                q: None,
+                solved: false,
+            });
             continue;
         };
         let Ok(f2) = d(f1, lam, pool) else {
-            out.push(Factor { roots: vec![], multiplicity: mult, q: None, solved: false });
+            out.push(Factor {
+                roots: vec![],
+                multiplicity: mult,
+                q: None,
+                solved: false,
+            });
             continue;
         };
         let f3 = d(f2, lam, pool).ok();
@@ -346,7 +376,7 @@ fn solve_char_poly(p: ExprId, lam: ExprId, pool: &ExprPool) -> Vec<Factor> {
         if is_zero(f2, pool) && !symbols_of(f1, pool).contains(&lam) {
             // Linear.
             out.push(Factor {
-                roots: vec![simp(neg(div(c0, c1, pool), pool), pool)],
+                roots: vec![norm(neg(div(c0, c1, pool), pool), pool)],
                 multiplicity: mult,
                 q: None,
                 solved: true,
@@ -354,8 +384,10 @@ fn solve_char_poly(p: ExprId, lam: ExprId, pool: &ExprPool) -> Vec<Factor> {
             continue;
         }
         if f3.is_some_and(|f3| is_zero(f3, pool)) {
-            let c2 = simp(pool.mul(vec![pool.rational(1, 2), f2]), pool);
-            let q = simp(
+            let c2 = norm(pool.mul(vec![pool.rational(1, 2), f2]), pool);
+            let c1 = norm(c1, pool);
+            let c0 = norm(c0, pool);
+            let q = norm(
                 div(
                     sub(
                         pool.pow(c1, pool.integer(2)),
@@ -367,7 +399,10 @@ fn solve_char_poly(p: ExprId, lam: ExprId, pool: &ExprPool) -> Vec<Factor> {
                 ),
                 pool,
             );
-            let centre = simp(neg(div(c1, pool.mul(vec![pool.integer(2), c2]), pool), pool), pool);
+            let centre = norm(
+                neg(div(c1, pool.mul(vec![pool.integer(2), c2]), pool), pool),
+                pool,
+            );
             let roots = if is_zero(q, pool) {
                 vec![centre, centre]
             } else {
@@ -377,10 +412,20 @@ fn solve_char_poly(p: ExprId, lam: ExprId, pool: &ExprPool) -> Vec<Factor> {
                     simp(pool.add(vec![centre, s]), pool),
                 ]
             };
-            out.push(Factor { roots, multiplicity: mult, q: Some(q), solved: true });
+            out.push(Factor {
+                roots,
+                multiplicity: mult,
+                q: Some(q),
+                solved: true,
+            });
             continue;
         }
-        out.push(Factor { roots: vec![], multiplicity: mult, q: None, solved: false });
+        out.push(Factor {
+            roots: vec![],
+            multiplicity: mult,
+            q: None,
+            solved: false,
+        });
     }
     out
 }
@@ -413,7 +458,11 @@ pub fn classify_pde_system(
     for &e in equations {
         let f = simp(big.to_jets(e, pool)?, pool);
         let cs = big.jets_in(f, pool)?;
-        let o = cs.iter().map(|c| c.alpha.iter().sum::<u32>()).max().unwrap_or(0);
+        let o = cs
+            .iter()
+            .map(|c| c.alpha.iter().sum::<u32>())
+            .max()
+            .unwrap_or(0);
         if o == 0 {
             return Err(PdeError::NotADifferentialEquation(format!(
                 "{} has no derivative of the unknowns",
@@ -471,7 +520,10 @@ pub fn classify_pde_system(
     let indep_set: HashSet<ExprId> = indep.iter().copied().collect();
     let (homogeneous, constant_coefficients) = if linear {
         (
-            Some(eqs.iter().all(|&f| is_zero(crate::kernel::subs::subs(f, &at_zero, pool), pool))),
+            Some(
+                eqs.iter()
+                    .all(|&f| is_zero(crate::kernel::subs::subs(f, &at_zero, pool), pool)),
+            ),
             Some(
                 partials
                     .iter()
@@ -511,7 +563,9 @@ pub fn classify_pde_system(
         // Everything returned is written in the unknowns again.
         let back = |e: ExprId| space.from_jets(e, pool);
         let back_m = |m: &Vec<Vec<ExprId>>| -> Vec<Vec<ExprId>> {
-            m.iter().map(|r| r.iter().map(|&e| back(e)).collect()).collect()
+            m.iter()
+                .map(|r| r.iter().map(|&e| back(e)).collect())
+                .collect()
         };
         info.coefficient_matrices = info.coefficient_matrices.iter().map(back_m).collect();
         info.principal_symbol = info.principal_symbol.as_ref().map(back_m);
@@ -616,7 +670,11 @@ fn first_order(
             (0..m)
                 .map(|j| {
                     simp(
-                        pool.add((0..nv).map(|k| pool.mul(vec![xis[k], mats[k][i][j]])).collect()),
+                        pool.add(
+                            (0..nv)
+                                .map(|k| pool.mul(vec![xis[k], mats[k][i][j]]))
+                                .collect(),
+                        ),
                         pool,
                     )
                 })
@@ -629,16 +687,21 @@ fn first_order(
     }
     info.characteristic_determinant = Some(det(&sym, pool));
     // A principal symbol depending on first derivatives: fully nonlinear.
-    if sym.iter().flatten().any(|&e| mentions_any(e, &first_jets, pool)) {
+    if sym
+        .iter()
+        .flatten()
+        .any(|&e| mentions_any(e, &first_jets, pool))
+    {
         info.pde_type = Some(PdeType::SolutionDependent);
         return Ok(());
     }
     // Evolution variable.
     let mut order_k: Vec<usize> = (0..nv).collect();
     order_k.sort_by_key(|&k| {
-        let is_t = pool.with(info.independent[k], |d| {
-            matches!(d, ExprData::Symbol { name, .. } if name == "t" || name == "tau")
-        });
+        let is_t = pool.with(
+            info.independent[k],
+            |d| matches!(d, ExprData::Symbol { name, .. } if name == "t" || name == "tau"),
+        );
         !is_t
     });
     let mut t_idx = None;
@@ -743,7 +806,6 @@ fn decide_type_2d(
         return;
     }
     let indep_set: HashSet<ExprId> = info.independent.iter().copied().collect();
-    let mut real_count = 0usize;
     let mut complex_count = 0usize;
     let mut conditions = Vec::new();
     let mut unknown_q: Vec<ExprId> = Vec::new();
@@ -753,24 +815,20 @@ fn decide_type_2d(
             distinct = false;
         }
         match f.q {
-            None => real_count += f.multiplicity,
+            None => {}
             Some(q) => match sign_of(q, pool) {
-                Some(Sign::Pos) => real_count += 2 * f.multiplicity,
+                Some(Sign::Pos) => {}
                 Some(Sign::Neg) => complex_count += 2 * f.multiplicity,
                 Some(Sign::Zero) => {
-                    real_count += 2 * f.multiplicity;
                     distinct = false;
                 }
                 Some(Sign::NonNeg) => {
-                    real_count += 2 * f.multiplicity;
                     conditions.push(pred(PredicateKind::Ne, q, pool));
                 }
                 _ if is_zero(q, pool) => {
-                    real_count += 2 * f.multiplicity;
                     distinct = false;
                 }
                 _ if positive_monomial(q, pool) && !mentions_any(q, &indep_set, pool) => {
-                    real_count += 2 * f.multiplicity;
                     conditions.push(pred(PredicateKind::Gt, q, pool));
                 }
                 _ => unknown_q.push(q),
@@ -778,7 +836,10 @@ fn decide_type_2d(
         }
     }
     // Repeated roots across factors.
-    let roots: Vec<ExprId> = factors.iter().flat_map(|f| f.roots.iter().copied()).collect();
+    let roots: Vec<ExprId> = factors
+        .iter()
+        .flat_map(|f| f.roots.iter().copied())
+        .collect();
     for i in 0..roots.len() {
         for j in i + 1..roots.len() {
             if is_zero(sub(roots[i], roots[j], pool), pool) {
@@ -835,7 +896,11 @@ fn decide_type_2d(
                 return;
             }
         }
-        if info.characteristic_speeds.len() + factors.iter().filter(|f| f.q.is_some_and(|q| is_zero(q, pool))).count()
+        if info.characteristic_speeds.len()
+            + factors
+                .iter()
+                .filter(|f| f.q.is_some_and(|q| is_zero(q, pool)))
+                .count()
             < roots.len()
             && info.characteristic_speeds.iter().all(|&(_, mu)| mu < 2)
         {
@@ -852,7 +917,12 @@ fn decide_type_2d(
 
 /// Friedrichs: `A_t` constant, diagonal and positive, every other `A_k`
 /// symmetric ⇒ hyperbolic.
-fn symmetric_hyperbolic(info: &mut PdeSystemInfo, mats: &[Vec<Vec<ExprId>>], t: usize, pool: &ExprPool) {
+fn symmetric_hyperbolic(
+    info: &mut PdeSystemInfo,
+    mats: &[Vec<Vec<ExprId>>],
+    t: usize,
+    pool: &ExprPool,
+) {
     let n = info.unknowns.len();
     let at = &mats[t];
     let indep_set: HashSet<ExprId> = info.independent.iter().copied().collect();
@@ -888,10 +958,18 @@ fn symmetric_hyperbolic(info: &mut PdeSystemInfo, mats: &[Vec<Vec<ExprId>>], t: 
 // Named systems
 // ---------------------------------------------------------------------------
 
-fn named(name: &str, params: Vec<(&str, ExprId)>, conds: Vec<ExprId>, time: Option<ExprId>) -> NamedEquation {
+fn named(
+    name: &str,
+    params: Vec<(&str, ExprId)>,
+    conds: Vec<ExprId>,
+    time: Option<ExprId>,
+) -> NamedEquation {
     NamedEquation {
         name: name.to_string(),
-        parameters: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        parameters: params
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
         conditions: conds,
         time,
     }
@@ -935,7 +1013,11 @@ fn match_named(
     let first: Vec<ExprId> = jet_set
         .iter()
         .copied()
-        .filter(|&s| space.decode_jet(s, pool).is_some_and(|(_, a)| a.iter().sum::<u32>() == 1))
+        .filter(|&s| {
+            space
+                .decode_jet(s, pool)
+                .is_some_and(|(_, a)| a.iter().sum::<u32>() == 1)
+        })
         .collect();
     let at_first: HashMap<ExprId, ExprId> = first.iter().map(|&s| (s, zero)).collect();
     let homogeneous = info
@@ -947,11 +1029,15 @@ fn match_named(
     }
     let indep_set: HashSet<ExprId> = info.independent.iter().copied().collect();
     let w: Vec<ExprId> = (0..n)
-        .map(|j| space.jet(j, &vec![0; info.independent.len()], pool).unwrap_or(zero))
+        .map(|j| {
+            space
+                .jet(j, &vec![0; info.independent.len()], pool)
+                .unwrap_or(zero)
+        })
         .collect();
     let time = Some(info.independent[t]);
     let mut out: Vec<NamedEquation> = Vec::new();
-    let mut push = |e: NamedEquation, out: &mut Vec<NamedEquation>| {
+    let push = |e: NamedEquation, out: &mut Vec<NamedEquation>| {
         if !out.iter().any(|o| o.name == e.name) {
             out.push(e);
         }
@@ -982,17 +1068,29 @@ fn match_named(
                     Some(Sign::Neg | Sign::Zero | Sign::NonPos) => continue,
                     _ => vec![pred(PredicateKind::Gt, s2, pool)],
                 };
-                push(named("maxwell_1d", vec![("speed_squared", s2)], conds, time), &mut out);
+                push(
+                    named("maxwell_1d", vec![("speed_squared", s2)], conds, time),
+                    &mut out,
+                );
                 continue;
             }
             // Shallow water, primitive (h, u): M = [[u, h], [g, u]].
             let (h, u) = (wp[0], wp[1]);
-            if same(a, u, pool) && same(dd, u, pool) && same(b, h, pool) && cst(c) && !is_zero(c, pool) {
+            if same(a, u, pool)
+                && same(dd, u, pool)
+                && same(b, h, pool)
+                && cst(c)
+                && !is_zero(c, pool)
+            {
                 push(
                     named(
                         "shallow_water",
                         vec![("gravity", c)],
-                        vec![pred(PredicateKind::Gt, simp(pool.mul(vec![c, h]), pool), pool)],
+                        vec![pred(
+                            PredicateKind::Gt,
+                            simp(pool.mul(vec![c, h]), pool),
+                            pool,
+                        )],
                         time,
                     ),
                     &mut out,
@@ -1003,7 +1101,18 @@ fn match_named(
             // (m, m²/h + g h²/2).
             let mm = wp[1];
             if is_zero(a, pool) && same(b, pool.integer(1), pool) {
-                let g = div(pool.add(vec![c, div(pool.pow(mm, pool.integer(2)), pool.pow(h, pool.integer(2)), pool)]), h, pool);
+                let g = div(
+                    pool.add(vec![
+                        c,
+                        div(
+                            pool.pow(mm, pool.integer(2)),
+                            pool.pow(h, pool.integer(2)),
+                            pool,
+                        ),
+                    ]),
+                    h,
+                    pool,
+                );
                 if cst(g)
                     && !is_zero(g, pool)
                     && same(dd, div(pool.mul(vec![pool.integer(2), mm]), h, pool), pool)
@@ -1012,7 +1121,11 @@ fn match_named(
                         named(
                             "shallow_water",
                             vec![("gravity", g)],
-                            vec![pred(PredicateKind::Gt, simp(pool.mul(vec![g, h]), pool), pool)],
+                            vec![pred(
+                                PredicateKind::Gt,
+                                simp(pool.mul(vec![g, h]), pool),
+                                pool,
+                            )],
                             time,
                         ),
                         &mut out,
@@ -1056,7 +1169,15 @@ fn match_named(
             if cst(gamma) && !is_zero(sub(gamma, pool.integer(1), pool), pool) {
                 let pr = pool.mul(vec![
                     sub(gamma, pool.integer(1), pool),
-                    sub(e, div(pool.pow(m, pool.integer(2)), pool.mul(vec![pool.integer(2), rho]), pool), pool),
+                    sub(
+                        e,
+                        div(
+                            pool.pow(m, pool.integer(2)),
+                            pool.mul(vec![pool.integer(2), rho]),
+                            pool,
+                        ),
+                        pool,
+                    ),
                 ]);
                 let flux = [
                     m,
@@ -1191,7 +1312,10 @@ mod tests {
         let c = p.symbol("c", Domain::Positive);
         let ef = app(&s, "E", &[x, t]);
         let bf = app(&s, "B", &[x, t]);
-        let m1 = p.add(vec![dv(&s, ef, t), p.mul(vec![p.pow(c, p.integer(2)), dv(&s, bf, x)])]);
+        let m1 = p.add(vec![
+            dv(&s, ef, t),
+            p.mul(vec![p.pow(c, p.integer(2)), dv(&s, bf, x)]),
+        ]);
         let m2 = p.add(vec![dv(&s, bf, t), dv(&s, ef, x)]);
         let info = classify_pde_system(&[m1, m2], &[ef, bf], p).unwrap();
         assert_eq!(info.pde_type, Some(PdeType::Hyperbolic));

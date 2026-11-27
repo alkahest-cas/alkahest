@@ -1188,7 +1188,11 @@ impl PyCoordinatesN {
     }
 
     fn __repr__(&self) -> String {
-        format!("CoordinatesN({}, dim={})", self.inner.label(), self.inner.dim())
+        format!(
+            "CoordinatesN({}, dim={})",
+            self.inner.label(),
+            self.inner.dim()
+        )
     }
 }
 
@@ -1250,7 +1254,9 @@ impl PySymbolicCartesian {
             expr_in(f, &self.pool, "SymbolicCartesian.gradient")?,
             expr_in(j, &self.pool, "SymbolicCartesian.gradient")?,
         );
-        one_expr(py, &self.pool, |p| self.inner.gradient_component(fid, jj, p))
+        one_expr(py, &self.pool, |p| {
+            self.inner.gradient_component(fid, jj, p)
+        })
     }
 
     /// ``Σⱼ ∂Fⱼ/∂xⱼ`` for the field whose ``j``-th component is ``component``.
