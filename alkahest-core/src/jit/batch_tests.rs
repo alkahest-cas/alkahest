@@ -565,3 +565,77 @@ fn root_of_is_a_constant_not_a_refusal() {
         assert_eq!(native.call(&[2.0]), want);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The two-lane vector column loop (G5)
+// ---------------------------------------------------------------------------
+
+/// The vector body of the Cranelift column loop must give every point
+/// bitwise what the scalar loop gives (each lane runs the scalar operation
+/// sequence): compare a batch against one-point calls (which run the scalar
+/// tail), over lengths with and without a tail, for every kind of node the
+/// vector body takes.
+#[cfg(feature = "cranelift")]
+#[test]
+fn vector_column_loop_is_bitwise_the_scalar_loop() {
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let y = pool.symbol("y", Domain::Real);
+    let two = pool.integer(2_i32);
+    let exprs = vec![
+        // A WENO-style weight: squares, a reciprocal square, a quotient.
+        pool.mul(vec![
+            pool.rational(3, 10),
+            pool.pow(
+                pool.add(vec![
+                    pool.float(1e-6, 53),
+                    pool.pow(
+                        pool.add(vec![x, pool.mul(vec![pool.integer(-2_i32), y])]),
+                        two,
+                    ),
+                ]),
+                pool.integer(-2_i32),
+            ),
+        ]),
+        // A polynomial the Horner pass rewrites (fused multiply-adds).
+        pool.add(
+            (0..8)
+                .map(|k| pool.mul(vec![pool.integer(k + 1), pool.pow(x, pool.integer(k))]))
+                .collect(),
+        ),
+        // Trampolines, a variable power, sqrt, abs and a high power.
+        pool.add(vec![
+            pool.func("sin", vec![x]),
+            pool.func("exp", vec![pool.mul(vec![pool.rational(-1, 3), y])]),
+            pool.pow(pool.func("abs", vec![x]), y),
+            pool.pow(
+                pool.add(vec![two, pool.mul(vec![x, x])]),
+                pool.rational(1, 2),
+            ),
+            pool.pow(y, pool.integer(7_i32)),
+            pool.func(
+                "abs",
+                vec![pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), y])])],
+            ),
+        ]),
+    ];
+    for &e in &exprs {
+        let f = compile_many(&[e], &[x, y], &pool).unwrap();
+        for n in [1usize, 2, 3, 7, 64, 101] {
+            let xs = grid(n, -2.0, 2.5);
+            let ys = grid(n, 0.1, 3.0);
+            let mut out = vec![0.0; n];
+            f.call_batch(&[&xs, &ys], &mut [&mut out]);
+            for i in 0..n {
+                let mut one = [0.0];
+                f.call(&[xs[i], ys[i]], &mut one);
+                assert!(
+                    same(out[i], one[0]),
+                    "point {i} of {n}: batch {} vs one-point {}",
+                    out[i],
+                    one[0]
+                );
+            }
+        }
+    }
+}

@@ -135,6 +135,12 @@ def _contains(e, syms):
     return any(str(s) in names for s in syms)
 
 
+def _max2(pool, a, b):
+    """``max(a, b)`` as ``(a + b + |a - b|) / 2`` (compiles to straight-line
+    code, and differentiates to the partials of the larger argument)."""
+    return pool.rational(1, 2) * (a + b + _ak().abs(a - b))
+
+
 # ---------------------------------------------------------------------------
 # Problem analysis
 # ---------------------------------------------------------------------------
@@ -588,7 +594,7 @@ def _parse_bcs(problem, ctx):
 # ---------------------------------------------------------------------------
 
 
-_FD_SCHEMES = ("central", "upwind", "weno5")
+_FD_SCHEMES = ("central", "upwind", "weno5", "weno5_fv")
 _SCHEMES = (*_FD_SCHEMES, "chebyshev", "fourier")
 
 
@@ -861,7 +867,21 @@ def _class_ranges(d, a, b, sig):
 class _System:
     """The discretisation: everything needed to build the native program."""
 
-    def __init__(self, problem, grid, scheme, order, bc_mode, params, jacobian, weno_eps):
+    def __init__(
+        self,
+        problem,
+        grid,
+        scheme,
+        order,
+        bc_mode,
+        params,
+        jacobian,
+        weno_eps,
+        flux=None,
+        wave_speed=None,
+        flux_splitting="rusanov",
+        weno_variant="js",
+    ):
         t0 = _time.perf_counter()
         if scheme not in _SCHEMES:
             raise _err("E-PDE-365", f"unknown scheme {scheme!r}; one of {', '.join(_SCHEMES)}")
@@ -890,8 +910,22 @@ class _System:
         if scheme == "weno5" and any(not d.periodic and False for d in self.dims):
             pass
         _setup_grid(self.dims, grid, scheme)
-        if scheme == "weno5" and any(not d.uniform for d in self.dims):
+        if scheme in ("weno5", "weno5_fv") and any(not d.uniform for d in self.dims):
             raise _err("E-PDE-365", "WENO-5 needs a uniform grid")
+        self.fv = {}
+        if scheme == "weno5_fv":
+            self._setup_fv(flux, wave_speed, flux_splitting, weno_variant)
+        elif (
+            flux is not None
+            or wave_speed is not None
+            or flux_splitting != "rusanov"
+            or weno_variant != "js"
+        ):
+            raise _err(
+                "E-PDE-365",
+                "flux=, wave_speed=, flux_splitting= and weno_variant= are options of "
+                "scheme='weno5_fv'",
+            )
         self._check_free_symbols()
         self._reach()
         self._layout()
@@ -962,6 +996,10 @@ class _System:
                         w = max(w, 7)
                     need[k] = max(need[k], r)
                     window[k] = max(window[k], r, w)
+        for spec in self.fv.values():
+            for k in spec["dims"]:
+                need[k] = max(need[k], 3)
+                window[k] = max(window[k], 7)
         for d, r, w in zip(self.dims, need, window):
             d.reach = w if d.kind == "fd" else 0
             d.pad = r if (d.periodic and d.kind == "fd") else 0
@@ -1267,6 +1305,367 @@ class _System:
         a3 = r(3, 10) * (eps + s3) ** m2
         return (a1 * phi1 + a2 * phi2 + a3 * phi3) * (a1 + a2 + a3) ** pool.integer(-1)
 
+    # -- conservative WENO flux (scheme="weno5_fv") ------------------------------
+
+    def _unknown_of(self, key):
+        for u in self.unknowns:
+            if (hasattr(key, "node") and u.expr == key) or (isinstance(key, str) and key == u.name):
+                return u.idx
+        raise _err(
+            "E-PDE-373",
+            f"flux= key {key!r} is not an unknown of the problem "
+            f"({', '.join(str(u.expr) for u in self.unknowns)})",
+        )
+
+    def _flux_per_dim(self, val, what):
+        """``val`` (one expression in 1-D, or a list / dict over the space
+        variables) as a list with one entry (or ``None``) per dimension."""
+        D = len(self.dims)
+        if isinstance(val, dict):
+            out = [None] * D
+            for k2, v in val.items():
+                for k, d in enumerate(self.dims):
+                    if (hasattr(k2, "node") and k2 == d.var) or k2 == d.name:
+                        out[k] = v
+                        break
+                else:
+                    raise _err("E-PDE-373", f"{what}: {k2!r} is not a space variable")
+            return out
+        if isinstance(val, (list, tuple)):
+            if len(val) != D:
+                raise _err("E-PDE-373", f"{what}: give one entry per space dimension ({D})")
+            return list(val)
+        if D != 1:
+            raise _err(
+                "E-PDE-373",
+                f"{what}: in {D} dimensions give a list or a dict over the space variables",
+            )
+        return [val]
+
+    def _fv_jets(self, e, what):
+        """``e`` (an expression in the unknowns, or a number) in jets; it may
+        depend on the unknowns' values only."""
+        pool = self.pool
+        js = self.ctx["js"]
+        if not hasattr(e, "node"):
+            if isinstance(e, float) and not math.isfinite(e):
+                raise _err("E-PDE-373", f"{what} {e!r} is not finite")
+            ex = _exact(e)
+            if ex is None:
+                raise _err("E-PDE-373", f"{what} {e!r} is not an expression or a number")
+            return _const(pool, ex)
+        je = js.to_jets(_subs(e, self.ctx["psubs"]))
+        jets = js.jets_in(je)
+        if any(any(a) for _, a, _ in jets):
+            raise _err(
+                "E-PDE-373",
+                f"{what} {e} involves derivatives; it must be a function of the unknowns",
+            )
+        names = set(expr_free_symbols(je)) - {str(s) for _, _, s in jets}
+        coords = {d.name for d in self.dims} | {str(self.tvar)}
+        if names & coords:
+            raise _err(
+                "E-PDE-373",
+                f"{what} {e} depends on {sorted(names & coords)}; only fluxes of the "
+                "unknowns (no explicit space or time dependence) are supported",
+            )
+        if names:
+            raise _err(
+                "E-PDE-366",
+                f"{what} {e} has free symbols {sorted(names)}",
+                "pass their values with params=",
+            )
+        return je
+
+    def _auto_flux(self):
+        """A scalar conservation law ``u_t + Σ a_k(u) u_{x_k} = rest``: the
+        flux ``F_k = ∫ a_k du``, checked by differentiating it back."""
+        ak = _ak()
+        cand = [u for u in self.unknowns if u.time_order == 1]
+        if len(self.unknowns) != 1 or len(cand) != 1:
+            raise _err(
+                "E-PDE-373",
+                "scheme='weno5_fv' needs flux= for a system (the flux of every "
+                "conservative unknown)",
+                "method_of_lines(..., scheme='weno5_fv', flux={u(x, t): F})",
+            )
+        u = cand[0]
+        f = u.fields[0]
+        g, _ = self.ctx["rhs"][f]
+        u0 = self.ctx["js"].to_jets(u.expr)
+        D = len(self.dims)
+        out = [None] * D
+        for sym, fld, sa in _jet_map(self.ctx, g):
+            if fld != f or sum(sa) != 1:
+                continue
+            k = sa.index(1)
+            a = ak.simplify(self.pool.integer(-1) * _diff(g, sym)).value
+            names = set(expr_free_symbols(a)) - {str(u0)}
+            if names:
+                raise _err(
+                    "E-PDE-373",
+                    f"the advective coefficient {a} of {sym} is not a function of {u.expr} "
+                    "alone; pass flux= explicitly",
+                )
+            try:
+                F = ak.integrate(a, u0).value
+                ok = _is_zero(ak.simplify(_diff(F, u0) - a).value)
+            except Exception:
+                ok = False
+            if not ok:
+                raise _err(
+                    "E-PDE-373",
+                    f"could not integrate the advective coefficient {a} to a flux; "
+                    "pass flux= explicitly",
+                )
+            out[k] = F
+        if all(F is None for F in out):
+            raise _err(
+                "E-PDE-373",
+                f"the equation for {u.expr} has no first-derivative term to write in flux form",
+            )
+        return {u.idx: out}
+
+    def _setup_fv(self, flux, wave_speed, splitting, variant):
+        ak = _ak()
+        pool = self.pool
+        ctx = self.ctx
+        js = ctx["js"]
+        D = len(self.dims)
+        if splitting not in ("rusanov", "lax_friedrichs"):
+            raise _err("E-PDE-365", "flux_splitting is 'rusanov' or 'lax_friedrichs'")
+        if variant not in ("js", "z"):
+            raise _err("E-PDE-365", "weno_variant is 'js' (Jiang–Shu) or 'z' (Borges et al.)")
+        self.fv_splitting = splitting
+        self.fv_variant = variant
+        self.fv_u0 = {u.idx: js.to_jets(u.expr) for u in self.unknowns}
+        if flux is None:
+            per_unknown = self._auto_flux()
+        else:
+            if not isinstance(flux, dict) or not flux:
+                raise _err("E-PDE-373", "flux= must be a dict {unknown: flux}")
+            per_unknown = {}
+            for key, val in flux.items():
+                ui = self._unknown_of(key)
+                u = self.unknowns[ui]
+                if u.time_order != 1:
+                    raise _err(
+                        "E-PDE-373",
+                        f"{u.expr} is not first order in time; only u_t + div F(u) = ... "
+                        "takes a conservative flux",
+                    )
+                per = self._flux_per_dim(val, f"flux of {u.expr}")
+                per_unknown[ui] = [
+                    None if F is None else self._fv_jets(F, f"the flux of {u.expr}") for F in per
+                ]
+        for ui, per in per_unknown.items():
+            u = self.unknowns[ui]
+            f = u.fields[0]
+            g, _ = ctx["rhs"][f]
+            dims = [k for k, F in enumerate(per) if F is not None]
+            if not dims:
+                continue
+            terms = [js.total_derivative(per[k], self.dims[k].var) for k in dims]
+            div = pool.add(terms) if len(terms) > 1 else terms[0]
+            rest = ak.simplify(g + div).value
+            for _sym, _fld, sa in _jet_map(ctx, rest):
+                if sum(sa) == 1 and sa.index(1) in dims:
+                    raise _err(
+                        "E-PDE-373",
+                        f"the equation for {u.expr} is not u_t + div F = (no first "
+                        f"derivatives): with this flux the remainder is {rest}",
+                        "include every advective term in the flux, or use scheme='weno5'",
+                    )
+            self.fv[f] = {"unknown": ui, "F": per, "dims": dims, "rest": rest, "phi": {}}
+        if not self.fv:
+            raise _err("E-PDE-373", "flux= gives no flux in any space dimension")
+        # Wave speeds per dimension: the splitting constant α.
+        fvf = list(self.fv)
+        self.fv_speed = {}
+        user = None if wave_speed is None else self._flux_per_dim(wave_speed, "wave_speed")
+        for k in range(D):
+            if not any(k in s["dims"] for s in self.fv.values()):
+                continue
+            if user is not None and user[k] is not None:
+                s = self._fv_jets(user[k], "wave_speed")
+            elif splitting == "lax_friedrichs":
+                raise _err(
+                    "E-PDE-373",
+                    "flux_splitting='lax_friedrichs' needs a constant wave_speed= "
+                    "(a bound on the largest |eigenvalue| of the flux Jacobian)",
+                    "pass wave_speed=, or use flux_splitting='rusanov' (local speeds)",
+                )
+            else:
+                # Spectral radius of ∂F_k/∂U: |F'| for one field, else the
+                # Gershgorin (max row sum) bound — never below it.
+                rows = []
+                for f in fvf:
+                    F = self.fv[f]["F"][k]
+                    if F is None:
+                        continue
+                    row = []
+                    for f2 in fvf:
+                        dv = _diff(F, self.fv_u0[self.fv[f2]["unknown"]])
+                        if not _is_zero(dv):
+                            row.append(ak.abs(dv))
+                    if row:
+                        rows.append(pool.add(row) if len(row) > 1 else row[0])
+                s = rows[0] if rows else pool.integer(0)
+                for r in rows[1:]:
+                    s = _max2(pool, s, r)
+            if splitting == "lax_friedrichs":
+                v = _num(s)
+                if v is None or not math.isfinite(float(v)) or v < 0:
+                    raise _err(
+                        "E-PDE-373",
+                        "flux_splitting='lax_friedrichs' needs a finite, non-negative "
+                        f"numeric wave_speed (got {s})",
+                    )
+                s = _const(pool, _exact(v) if _exact(v) is not None else v)
+            self.fv_speed[k] = s
+
+    def _fv_sub(self, b, k, o):
+        """Jets of every unknown's value → its builder input at offset ``o``
+        along dim ``k``."""
+        off = [0] * len(self.dims)
+        off[k] = o
+        return {s: b.field(self.unknowns[ui].fields[0], off) for ui, s in self.fv_u0.items()}
+
+    def _weno_recon(self, v):
+        """WENO reconstruction at ``i+1/2`` biased towards ``v[len // 2]``:
+        ``v`` holds 5 values (WENO-5), 3 (WENO-3) or the 2 values next to
+        the interface (their mean: second order, the narrowest consistent
+        choice)."""
+        pool = self.pool
+        if len(v) == 2:
+            return pool.rational(1, 2) * (v[0] + v[1])
+        r = pool.rational
+        two = pool.integer(2)
+        eps = pool.float(self.weno_eps)
+        if len(v) == 3:
+            a, b_, c = v
+            q = [r(-1, 2) * a + r(3, 2) * b_, r(1, 2) * b_ + r(1, 2) * c]
+            beta = [(b_ - a) ** two, (c - b_) ** two]
+            d = [r(1, 3), r(2, 3)]
+            tau = _ak().abs(beta[0] - beta[1])
+        else:
+            v1, v2, v3, v4, v5 = v
+            q = [
+                r(1, 3) * v1 - r(7, 6) * v2 + r(11, 6) * v3,
+                r(-1, 6) * v2 + r(5, 6) * v3 + r(1, 3) * v4,
+                r(1, 3) * v3 + r(5, 6) * v4 - r(1, 6) * v5,
+            ]
+            four, three = pool.integer(4), pool.integer(3)
+            beta = [
+                r(13, 12) * (v1 - two * v2 + v3) ** two
+                + r(1, 4) * (v1 - four * v2 + three * v3) ** two,
+                r(13, 12) * (v2 - two * v3 + v4) ** two + r(1, 4) * (v2 - v4) ** two,
+                r(13, 12) * (v3 - two * v4 + v5) ** two
+                + r(1, 4) * (three * v3 - four * v4 + v5) ** two,
+            ]
+            d = [r(1, 10), r(6, 10), r(3, 10)]
+            tau = _ak().abs(beta[0] - beta[2])
+        m1 = pool.integer(-1)
+        if self.fv_variant == "js":
+            al = [dk * (eps + bk) ** pool.integer(-2) for dk, bk in zip(d, beta)]
+        else:
+            al = [
+                dk * (pool.integer(1) + (tau * (bk + eps) ** m1) ** two) for dk, bk in zip(d, beta)
+            ]
+        num = pool.add([a_ * qk for a_, qk in zip(al, q)])
+        return num * pool.add(al) ** m1
+
+    def _emit_fv_fluxes(self):
+        """Fill one auxiliary field per (conservative field, dimension) with
+        the numerical flux ``F̂_{j+1/2}`` (stored at index ``j``): WENO-5
+        reconstructions of the split fluxes ``F± = (F ± α u)/2`` (Shu–Osher
+        conservative form), WENO-3 and then the two-point mean where the
+        stencil would leave a non-periodic grid. (A one-point, first-order
+        value there would be off by ``O(h)`` at the interface, an ``O(1)``
+        error in the flux difference of the node next to it.)"""
+        if not self.fv:
+            return
+        pool = self.pool
+        D = len(self.dims)
+        half = pool.rational(1, 2)
+        plus = {5: [-2, -1, 0, 1, 2], 3: [-1, 0, 1], 2: [0, 1]}
+        minus = {5: [3, 2, 1, 0, -1], 3: [2, 1, 0], 2: [1, 0]}
+        for f, spec in self.fv.items():
+            for k in spec["dims"]:
+                d = self.dims[k]
+                new = len(self.fields)
+                self.fields.append((None, f"flux{new}"))
+                self.field_names.append(f"_flux_{self.field_names[f]}_{d.name}")
+                spec["phi"][k] = new
+                n = d.n
+                if d.periodic:
+                    classes = [(-1, n, 5, 5)]
+                else:
+                    classes = []
+                    for j in range(n - 1):
+                        po = 5 if j >= 2 and j + 2 <= n - 1 else 3 if j >= 1 else 2
+                        mo = 5 if j >= 1 and j + 3 <= n - 1 else 3 if j + 2 <= n - 1 else 2
+                        if classes and classes[-1][2:] == (po, mo) and classes[-1][1] == j:
+                            classes[-1] = (classes[-1][0], j + 1, po, mo)
+                        else:
+                            classes.append((j, j + 1, po, mo))
+                F = spec["F"][k]
+                for j0, j1, po, mo in classes:
+                    b = _Builder(self)
+                    P, M = plus[po], minus[mo]
+                    offs = sorted(set(P) | set(M))
+                    sub = {o: self._fv_sub(b, k, o) for o in offs}
+                    fv_ = {o: _subs(F, sub[o]) for o in offs}
+                    uv = {}
+                    for o in offs:
+                        off = [0] * D
+                        off[k] = o
+                        uv[o] = b.field(f, off)
+                    s = self.fv_speed[k]
+                    if self.fv_splitting == "rusanov":
+                        alpha = None
+                        for o in offs:
+                            so = _subs(s, sub[o])
+                            alpha = so if alpha is None else _max2(pool, alpha, so)
+                    else:
+                        alpha = s
+                    fp = [half * (fv_[o] + alpha * uv[o]) for o in P]
+                    fm = [half * (fv_[o] - alpha * uv[o]) for o in M]
+                    expr = self._weno_recon(fp) + self._weno_recon(fm)
+                    ranges = [(j0, j1) if e == k else (0, self.dims[e].n) for e in range(D)]
+                    self._emit(b, expr, ("fill", new), ranges, "flux")
+
+    def _fv_rhs(self, b, f, cat, avail, ranges):
+        """``-Σ_k (F̂_{j+1/2} - F̂_{j-1/2}) / h_k`` plus the discretised
+        remainder. At a non-periodic face without a boundary condition the
+        boundary node's control volume is the half cell next to the face: its
+        outer interface carries the physical flux (transmissive), and the flux
+        difference is divided by ``h/2``."""
+        pool = self.pool
+        spec = self.fv[f]
+        D = len(self.dims)
+        terms = []
+        for k in spec["dims"]:
+            d = self.dims[k]
+            phi = spec["phi"][k]
+            h = d.h
+            inv_h = _const(pool, 1 / Fraction(h)) if isinstance(h, Fraction) else pool.float(1 / h)
+            off_l = [0] * D
+            off_l[k] = -1
+
+            def physical(k=k):
+                return _subs(spec["F"][k], self._fv_sub(b, k, 0))
+
+            face = not d.periodic and cat[k] != 1
+            right = physical() if (not d.periodic and cat[k] == 2) else b.field(phi, [0] * D)
+            left = physical() if (not d.periodic and cat[k] == 0) else b.field(phi, off_l)
+            terms.append((right - left) * inv_h * (pool.integer(2) if face else pool.integer(1)))
+        div = pool.add(terms) if len(terms) > 1 else terms[0]
+        rest = spec["rest"]
+        if _is_zero(rest):
+            return pool.integer(-1) * div
+        return self._discretise(b, rest, avail, self._irange_of(ranges)) - div
+
     # -- ops ---------------------------------------------------------------------
 
     def _cat_ranges(self, k, cat):
@@ -1405,6 +1804,8 @@ class _System:
             self._emit_fill(f, cat, owner)
         if any(d.pad for d in self.dims) and fills:
             emit_halos()
+        # 3b. conservative WENO interface fluxes (scheme="weno5_fv")
+        self._emit_fv_fluxes()
         # 4. rhs kernels (dense aux ops get inserted on demand before these)
         for f, cat, role, owner in plan:
             if role == "pde":
@@ -1429,6 +1830,8 @@ class _System:
             if g is None:
                 # u' = u_t: the next level's value.
                 expr = b.field(u.fields[lv + 1], [0] * len(self.dims))
+            elif f in self.fv:
+                expr = self._fv_rhs(b, f, cat, avail, ranges)
             else:
                 expr = self._discretise(b, g, avail, self._irange_of(ranges))
             self._emit(b, expr, ("rhs", f), ranges, "pde")
@@ -1809,6 +2212,10 @@ class MolSystem:
         max_step=math.inf,
         max_steps=10_000_000,
         max_order=5,
+        linear_solver="auto",
+        threads=None,
+        gmres_restart=None,
+        gmres_max_iters=None,
     ):
         """Integrate from :attr:`t0`.
 
@@ -1827,8 +2234,33 @@ class MolSystem:
         * ``"scipy_bdf"``, ``"scipy_radau"``, ``"scipy_rk45"``, ... —
           :func:`scipy.integrate.solve_ivp` with :meth:`rhs` and the sparse
           :meth:`jacobian`.
+
+        ``linear_solver`` (native BDF) is ``"auto"`` (default: the banded
+        direct solver for small or narrow-band systems, ILU(0)-preconditioned
+        restarted GMRES on the exact sparse Jacobian for large 2-D/3-D grids),
+        ``"direct"`` or ``"krylov"``; ``gmres_restart`` / ``gmres_max_iters``
+        tune GMRES. ``threads`` runs a native method on a dedicated pool of
+        that many threads (default: all cores, or ``RAYON_NUM_THREADS``); the
+        result is bitwise identical for every thread count. ``stats`` reports
+        ``linear_solver``, ``linear_solves``, ``krylov_iters``,
+        ``krylov_failures``, ``preconditioner_setups`` and
+        ``direct_fallbacks``.
         """
         np = _np()
+        if linear_solver not in ("auto", "direct", "krylov"):
+            raise _err(
+                "E-PDE-372",
+                f"linear_solver is 'auto', 'direct' or 'krylov', not {linear_solver!r}",
+            )
+        if threads is not None:
+            import operator
+
+            try:
+                ok = not isinstance(threads, bool) and operator.index(threads) >= 1
+            except TypeError:
+                ok = False
+            if not ok:
+                raise _err("E-PDE-372", f"threads must be a positive integer, not {threads!r}")
         if isinstance(t_span, (tuple, list)):
             t0, t1 = float(t_span[0]), float(t_span[1])
         else:
@@ -1861,6 +2293,10 @@ class MolSystem:
                     max_step=max_step,
                     max_steps=max_steps,
                     max_order=max_order,
+                    linear_solver=linear_solver,
+                    threads=None if threads is None else int(threads),
+                    gmres_restart=gmres_restart,
+                    gmres_max_iters=gmres_max_iters,
                 )
             except RuntimeError as exc:
                 msg = str(exc)
@@ -2147,6 +2583,10 @@ def method_of_lines(
     params=None,
     jacobian=True,
     weno_eps=1e-6,
+    flux=None,
+    wave_speed=None,
+    flux_splitting="rusanov",
+    weno_variant="js",
 ):
     """Discretise a PDE problem in space and compile the semi-discrete system.
 
@@ -2167,8 +2607,16 @@ def method_of_lines(
         ``"central"`` (default), ``"upwind"`` (advective first-derivative
         terms biased by the sign of their coefficient), ``"weno5"`` (the
         same, with Jiang–Peng WENO-5 derivatives; uniform grids),
-        ``"chebyshev"`` (Gauss–Lobatto collocation) or ``"fourier"``
-        (periodic collocation).
+        ``"chebyshev"`` (Gauss–Lobatto collocation), ``"fourier"``
+        (periodic collocation) or ``"weno5_fv"`` — a **conservative** WENO-5
+        flux (Shu–Osher flux-difference form, uniform grids) for
+        conservation laws ``u_t + div F(u) = rest``: the semi-discrete update
+        is ``-(F̂_{j+1/2} - F̂_{j-1/2}) / h``, with ``F̂`` the WENO-5
+        reconstructions of the split fluxes ``(F ± α u) / 2``, so the flux
+        part of the discrete total ``Σ h u_j`` changes only through the
+        boundary fluxes (and cancels exactly, to rounding, on a periodic
+        grid). ``rest`` (diffusion, sources) uses central stencils of
+        ``order`` and changes the total by its own discrete sum.
     order : int
         Accuracy order of the finite-difference stencils (any; the stencils
         are exact Fornberg weights, one-sided near boundaries).
@@ -2181,6 +2629,27 @@ def method_of_lines(
         Values of the problem's free symbols.
     jacobian : bool
         Also compile the exact sparse Jacobian kernels (default ``True``).
+    weno_eps : float
+        The ``ε`` of the WENO smoothness weights.
+    flux : dict, optional
+        ``scheme="weno5_fv"``: the flux of every conservative unknown,
+        ``{u(x, t): F}`` in 1-D or ``{u(x, y, t): {x: F, y: G}}`` (a list in
+        domain order also works), each a function of the unknowns' values.
+        The equation minus ``-div F`` must leave no first derivative along a
+        flux direction (checked symbolically; ``E-PDE-373`` otherwise).
+        Default: for a single scalar equation ``u_t + a(u) u_x = ...`` the
+        flux ``∫ a du``, verified by differentiation.
+    wave_speed : expression, number or dict, optional
+        The splitting constant: a bound on the spectral radius of ``∂F/∂u``
+        (per space variable as for ``flux``). Default: ``|F'(u)|`` for one
+        unknown, the Gershgorin bound ``max_i Σ_j |∂F_i/∂u_j|`` for a system.
+    flux_splitting : str
+        ``"rusanov"`` (default; local Lax–Friedrichs: ``α`` is the largest
+        wave speed over the six cells of each interface stencil) or
+        ``"lax_friedrichs"`` (global: ``α = wave_speed``, a number).
+    weno_variant : str
+        ``"js"`` (Jiang–Shu weights, default) or ``"z"`` (Borges et al.
+        WENO-Z, which keeps fifth order at critical points).
 
     Returns
     -------
@@ -2189,9 +2658,22 @@ def method_of_lines(
     Raises
     ------
     NumericPdeError
-        ``E-PDE-359 … E-PDE-372`` (see :class:`alkahest.exceptions.NumericPdeError`).
+        ``E-PDE-359 … E-PDE-373`` (see :class:`alkahest.exceptions.NumericPdeError`).
     """
-    sys = _System(problem, grid, scheme, order, bc_mode, params, jacobian, weno_eps)
+    sys = _System(
+        problem,
+        grid,
+        scheme,
+        order,
+        bc_mode,
+        params,
+        jacobian,
+        weno_eps,
+        flux=flux,
+        wave_speed=wave_speed,
+        flux_splitting=flux_splitting,
+        weno_variant=weno_variant,
+    )
     from alkahest.alkahest import _MolProgram
 
     t0 = _time.perf_counter()
