@@ -16,7 +16,7 @@ pytest.importorskip("alkahest.experimental")
 from corpus_abbasi import ABBASI
 from corpus_sympy import SYMPY
 from corpus_textbook import TEXTBOOK
-from pde_expected import EXPECTED_SOLVED
+from pde_expected import EXPECTED_CLOSED, EXPECTED_SOLVED
 from pde_harness import run_entry
 
 ALL = [("sympy", e) for e in SYMPY] + [("textbook", e) for e in TEXTBOOK]
@@ -38,6 +38,9 @@ def _check(entry):
         assert r["status"] == "refused", f"{entry['id']} must be refused: {r}"
     if entry["id"] in EXPECTED_SOLVED:
         assert r["status"] == "verified", f"{entry['id']} regressed: {r}"
+    if entry["id"] in EXPECTED_CLOSED:
+        assert r["status"] == "verified", f"{entry['id']} regressed: {r}"
+        assert not r["integral"], f"{entry['id']}: closed form regressed to an Integral: {r}"
     return r
 
 

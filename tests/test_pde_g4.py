@@ -161,3 +161,39 @@ def test_symbolic_dimension(P):
     assert zero(c.laplacian(r2) - 2 * d)
     assert zero(c.gradient(r2, j) - 2 * c.coordinate(j))
     assert zero(c.divergence(c.coordinate(j), j) - d)
+
+
+# ---------------------------------------------------------------------------
+# pdsolve: closed-form characteristic quadratures and Riccati linearisation
+# ---------------------------------------------------------------------------
+
+
+def _closed(sol, head):
+    s = str(sol.value)
+    assert sol.verified
+    assert "Integral" not in s, s
+    assert head in s, s
+
+
+def test_gaussian_characteristic_is_erfi(P):
+    a = P.pool.symbol("a")
+    u = Function("u")(P.x, P.y)
+    _closed(akx.pdsolve(D(u, P.x) - ak.exp(a * P.x**2) * D(u, P.y), u), "erfi")
+
+
+def test_symbolic_tan_power_is_hypergeometric(P):
+    n = P.pool.symbol("n")
+    u = Function("u")(P.x, P.y)
+    _closed(akx.pdsolve(D(u, P.x) + ak.tan(P.y) ** n * D(u, P.y), u), "hyper")
+
+
+def test_symbolic_power_exponential_is_upper_gamma(P):
+    a, m, k = (P.pool.symbol(s) for s in ("a", "m", "k"))
+    u = Function("u")(P.x, P.y)
+    eq = D(u, P.x) - P.x**m * ak.exp(-a * P.x**k) * D(u, P.y)
+    _closed(akx.pdsolve(eq, u), "uppergamma")
+
+
+def test_riccati_characteristic_linearised_to_airy(P):
+    u = Function("u")(P.x, P.y)
+    _closed(akx.pdsolve(D(u, P.x) + (P.y**2 + P.x) * D(u, P.y), u), "airy")
