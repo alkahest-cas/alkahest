@@ -915,10 +915,16 @@ class _System:
         self.fv = {}
         if scheme == "weno5_fv":
             self._setup_fv(flux, wave_speed, flux_splitting, weno_variant)
-        elif flux is not None or wave_speed is not None:
+        elif (
+            flux is not None
+            or wave_speed is not None
+            or flux_splitting != "rusanov"
+            or weno_variant != "js"
+        ):
             raise _err(
                 "E-PDE-365",
-                "flux= and wave_speed= are options of scheme='weno5_fv'",
+                "flux=, wave_speed=, flux_splitting= and weno_variant= are options of "
+                "scheme='weno5_fv'",
             )
         self._check_free_symbols()
         self._reach()
@@ -1342,6 +1348,8 @@ class _System:
         pool = self.pool
         js = self.ctx["js"]
         if not hasattr(e, "node"):
+            if isinstance(e, float) and not math.isfinite(e):
+                raise _err("E-PDE-373", f"{what} {e!r} is not finite")
             ex = _exact(e)
             if ex is None:
                 raise _err("E-PDE-373", f"{what} {e!r} is not an expression or a number")
@@ -1507,10 +1515,11 @@ class _System:
                     s = _max2(pool, s, r)
             if splitting == "lax_friedrichs":
                 v = _num(s)
-                if v is None:
+                if v is None or not math.isfinite(float(v)) or v < 0:
                     raise _err(
                         "E-PDE-373",
-                        "flux_splitting='lax_friedrichs' needs a numeric wave_speed",
+                        "flux_splitting='lax_friedrichs' needs a finite, non-negative "
+                        f"numeric wave_speed (got {s})",
                     )
                 s = _const(pool, _exact(v) if _exact(v) is not None else v)
             self.fv_speed[k] = s
@@ -1524,10 +1533,12 @@ class _System:
 
     def _weno_recon(self, v):
         """WENO reconstruction at ``i+1/2`` biased towards ``v[len // 2]``:
-        ``v`` holds 5 values (WENO-5), 3 (WENO-3) or 1 (first order)."""
+        ``v`` holds 5 values (WENO-5), 3 (WENO-3) or the 2 values next to
+        the interface (their mean: second order, the narrowest consistent
+        choice)."""
         pool = self.pool
-        if len(v) == 1:
-            return v[0]
+        if len(v) == 2:
+            return pool.rational(1, 2) * (v[0] + v[1])
         r = pool.rational
         two = pool.integer(2)
         eps = pool.float(self.weno_eps)
@@ -1568,15 +1579,17 @@ class _System:
         """Fill one auxiliary field per (conservative field, dimension) with
         the numerical flux ``F̂_{j+1/2}`` (stored at index ``j``): WENO-5
         reconstructions of the split fluxes ``F± = (F ± α u)/2`` (Shu–Osher
-        conservative form), WENO-3 and then first order where the stencil
-        would leave a non-periodic grid."""
+        conservative form), WENO-3 and then the two-point mean where the
+        stencil would leave a non-periodic grid. (A one-point, first-order
+        value there would be off by ``O(h)`` at the interface, an ``O(1)``
+        error in the flux difference of the node next to it.)"""
         if not self.fv:
             return
         pool = self.pool
         D = len(self.dims)
         half = pool.rational(1, 2)
-        plus = {5: [-2, -1, 0, 1, 2], 3: [-1, 0, 1], 1: [0]}
-        minus = {5: [3, 2, 1, 0, -1], 3: [2, 1, 0], 1: [1]}
+        plus = {5: [-2, -1, 0, 1, 2], 3: [-1, 0, 1], 2: [0, 1]}
+        minus = {5: [3, 2, 1, 0, -1], 3: [2, 1, 0], 2: [1, 0]}
         for f, spec in self.fv.items():
             for k in spec["dims"]:
                 d = self.dims[k]
@@ -1590,8 +1603,8 @@ class _System:
                 else:
                     classes = []
                     for j in range(n - 1):
-                        po = 5 if j >= 2 and j + 2 <= n - 1 else 3 if j >= 1 else 1
-                        mo = 5 if j >= 1 and j + 3 <= n - 1 else 3 if j + 2 <= n - 1 else 1
+                        po = 5 if j >= 2 and j + 2 <= n - 1 else 3 if j >= 1 else 2
+                        mo = 5 if j >= 1 and j + 3 <= n - 1 else 3 if j + 2 <= n - 1 else 2
                         if classes and classes[-1][2:] == (po, mo) and classes[-1][1] == j:
                             classes[-1] = (classes[-1][0], j + 1, po, mo)
                         else:
@@ -1624,8 +1637,10 @@ class _System:
 
     def _fv_rhs(self, b, f, cat, avail, ranges):
         """``-Σ_k (F̂_{j+1/2} - F̂_{j-1/2}) / h_k`` plus the discretised
-        remainder; at a non-periodic face without a boundary condition the
-        outer interface carries the physical flux (transmissive)."""
+        remainder. At a non-periodic face without a boundary condition the
+        boundary node's control volume is the half cell next to the face: its
+        outer interface carries the physical flux (transmissive), and the flux
+        difference is divided by ``h/2``."""
         pool = self.pool
         spec = self.fv[f]
         D = len(self.dims)
@@ -1641,9 +1656,10 @@ class _System:
             def physical(k=k):
                 return _subs(spec["F"][k], self._fv_sub(b, k, 0))
 
+            face = not d.periodic and cat[k] != 1
             right = physical() if (not d.periodic and cat[k] == 2) else b.field(phi, [0] * D)
             left = physical() if (not d.periodic and cat[k] == 0) else b.field(phi, off_l)
-            terms.append((right - left) * inv_h)
+            terms.append((right - left) * inv_h * (pool.integer(2) if face else pool.integer(1)))
         div = pool.add(terms) if len(terms) > 1 else terms[0]
         rest = spec["rest"]
         if _is_zero(rest):
@@ -2236,8 +2252,15 @@ class MolSystem:
                 "E-PDE-372",
                 f"linear_solver is 'auto', 'direct' or 'krylov', not {linear_solver!r}",
             )
-        if threads is not None and (int(threads) != threads or threads < 1):
-            raise _err("E-PDE-372", f"threads must be a positive integer, not {threads!r}")
+        if threads is not None:
+            import operator
+
+            try:
+                ok = not isinstance(threads, bool) and operator.index(threads) >= 1
+            except TypeError:
+                ok = False
+            if not ok:
+                raise _err("E-PDE-372", f"threads must be a positive integer, not {threads!r}")
         if isinstance(t_span, (tuple, list)):
             t0, t1 = float(t_span[0]), float(t_span[1])
         else:
@@ -2589,10 +2612,11 @@ def method_of_lines(
         flux (Shu–Osher flux-difference form, uniform grids) for
         conservation laws ``u_t + div F(u) = rest``: the semi-discrete update
         is ``-(F̂_{j+1/2} - F̂_{j-1/2}) / h``, with ``F̂`` the WENO-5
-        reconstructions of the split fluxes ``(F ± α u) / 2``, so the discrete
-        total ``Σ h u_j`` changes only through the boundary fluxes (exactly
-        conserved, to rounding, on a periodic grid). ``rest`` (diffusion,
-        sources) uses central stencils of ``order``.
+        reconstructions of the split fluxes ``(F ± α u) / 2``, so the flux
+        part of the discrete total ``Σ h u_j`` changes only through the
+        boundary fluxes (and cancels exactly, to rounding, on a periodic
+        grid). ``rest`` (diffusion, sources) uses central stencils of
+        ``order`` and changes the total by its own discrete sum.
     order : int
         Accuracy order of the finite-difference stencils (any; the stencils
         are exact Fornberg weights, one-sided near boundaries).

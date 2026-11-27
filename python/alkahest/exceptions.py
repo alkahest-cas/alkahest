@@ -1119,8 +1119,9 @@ class NumericPdeError(AlkahestError):
     - ``E-PDE-371`` — a SciPy-backed method or format without SciPy.
     - ``E-PDE-372`` — invalid integration arguments.
     - ``E-PDE-373`` — ``scheme="weno5_fv"``: a flux that is missing, not a
-      function of the unknowns, or does not account for every first-derivative
-      term of its equation; a non-numeric ``wave_speed`` for global
+      function of the unknowns, or leaves a first derivative of its equation
+      along a direction the flux covers (``g + div F`` is simplified and
+      checked); a non-numeric or negative ``wave_speed`` for global
       Lax–Friedrichs splitting.
     """
 

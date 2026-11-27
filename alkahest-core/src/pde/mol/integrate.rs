@@ -104,7 +104,7 @@ pub enum MolLinearSolver {
     Auto,
     /// Banded LU after reverse Cuthill–McKee ordering.
     Direct,
-    /// Restarted GMRES, right-preconditioned by ILU(0) of the iteration
+    /// Restarted GMRES, left-preconditioned by ILU(0) of the iteration
     /// matrix, in the integrator's weighted RMS norm.
     Krylov,
 }
@@ -226,6 +226,16 @@ pub fn integrate_with(
     if !(opts.rtol > 0.0 && opts.atol >= 0.0) {
         return Err(MolError::BadArgument(
             "rtol must be > 0 and atol >= 0".into(),
+        ));
+    }
+    if !(solver.krylov_tol_factor > 0.0 && solver.krylov_tol_factor.is_finite())
+        || solver.gmres_restart == 0
+        || solver.gmres_max_iters == 0
+    {
+        return Err(MolError::BadArgument(
+            "krylov_tol_factor must be finite and > 0, and gmres_restart and \
+             gmres_max_iters at least 1"
+                .into(),
         ));
     }
     let has_alg = prog.algebraic().iter().any(|&a| a);

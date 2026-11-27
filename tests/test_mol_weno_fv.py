@@ -250,10 +250,34 @@ def test_shock_tubes_against_the_exact_riemann_solution(P, name, L, R, T, tol, c
     assert rho.min() > 0
     # Discrete conservation: d/dt Σ h U = F(U_0) - F(U_{n-1}), constant while
     # the boundary states are untouched — exact up to rounding.
-    tot0 = np.array([np.sum(ms.field(ms.y0, f)) * h for f in ("rho", "m", "E")])
-    tot1 = np.array([np.sum(res.field(f)) * h for f in ("rho", "m", "E")])
+    # The boundary nodes own half cells (no boundary conditions given).
+    wts = np.full(n, h)
+    wts[[0, -1]] = h / 2
+    tot0 = np.array([wts @ ms.field(ms.y0, f) for f in ("rho", "m", "E")])
+    tot1 = np.array([wts @ res.field(f) for f in ("rho", "m", "E")])
     pred = tot0 + T * (flux_of(L) - flux_of(R))
     assert np.max(np.abs(tot1 - pred)) < ctol, tot1 - pred
+
+
+def test_transmissive_outflow_face_is_consistent(P):
+    # u_t + u_x = 0 on [0, 1], u = x - t: inflow prescribed on the left, the
+    # right face free. Its node owns the half cell [1 - h/2, 1], so the
+    # update there is -(F(u_n) - F̂_{n-1/2}) / (h/2) = -u_x, exactly for
+    # linear data.
+    x, t = P.symbol("x"), P.symbol("t")
+    u = akx.Function("u")
+    U = u(x, t)
+    pr = (
+        akx.PDE(akx.D(U, t) + akx.D(U, x), U)
+        .on(akx.Interval(x, 0, 1))
+        .bc(u(0, t), -t)
+        .ic(u(x, 0), x)
+    )
+    ms = akx.method_of_lines(pr, {x: 41}, scheme="weno5_fv")
+    f = ms.rhs(0.0, ms.y0)
+    assert err_inf(f, -np.ones_like(f)) < 1e-12, f[-3:]
+    res = ms.integrate(0.3, method="rk45", rtol=1e-10, atol=1e-12)
+    assert err_inf(res.field("u"), ms.grid["x"] - 0.3) < 1e-10
 
 
 def test_viscous_burgers_flux_plus_diffusion_with_bdf_and_exact_jacobian(P):
@@ -330,6 +354,21 @@ def test_flux_refusals(P):
     with pytest.raises(NumericPdeError) as e:
         akx.method_of_lines(pr, {x: 40}, scheme="weno5_fv", weno_variant="m")
     assert e.value.code == "E-PDE-365"
+    # Flux-scheme options with another scheme would be silently ignored.
+    for kw in ({"weno_variant": "z"}, {"flux_splitting": "lax_friedrichs"}):
+        with pytest.raises(NumericPdeError) as e:
+            akx.method_of_lines(pr, {x: 40}, scheme="weno5", **kw)
+        assert e.value.code == "E-PDE-365", kw
+    for speed in (-1, float("inf")):
+        with pytest.raises(NumericPdeError) as e:
+            akx.method_of_lines(
+                pr,
+                {x: 40},
+                scheme="weno5_fv",
+                flux_splitting="lax_friedrichs",
+                wave_speed=speed,
+            )
+        assert e.value.code == "E-PDE-373", speed
     ms = akx.method_of_lines(pr, {x: 40}, scheme="weno5_fv")
     assert "skipped" in ms.stability_report()["u"]
 
@@ -398,7 +437,8 @@ def test_results_are_bitwise_identical_across_thread_counts(P):
     runs = [
         ms.integrate(2e-3, rtol=1e-7, atol=1e-9, linear_solver="krylov", threads=k) for k in (1, 4)
     ]
-    assert np.array_equal(runs[0].y, runs[1].y)
+    assert np.array_equal(runs[0].y.view(np.uint64), runs[1].y.view(np.uint64))
     assert runs[0].stats["krylov_iters"] == runs[1].stats["krylov_iters"]
-    with pytest.raises(NumericPdeError):
-        ms.integrate(1e-3, threads=0)
+    for bad in (0, True, float("inf"), 2.5):
+        with pytest.raises(NumericPdeError):
+            ms.integrate(1e-3, threads=bad)

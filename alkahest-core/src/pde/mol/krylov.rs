@@ -1,5 +1,5 @@
 //! Sparse iterative solves for the implicit integrators: an incomplete LU
-//! factorisation with zero fill-in (ILU(0)) used as a right preconditioner
+//! factorisation with zero fill-in (ILU(0)) used as a left preconditioner
 //! for restarted GMRES (Saad & Schultz 1986; Saad, *Iterative Methods for
 //! Sparse Linear Systems*, 2nd ed., Alg. 10.4 and 9.5).
 //!
@@ -186,20 +186,23 @@ impl Ilu0 {
 pub struct GmresOutcome {
     /// Krylov iterations (matrix-vector products) performed.
     pub iterations: usize,
-    /// Whether the weighted residual reached the tolerance.
+    /// Whether the weighted preconditioned residual reached the tolerance.
     pub converged: bool,
-    /// The final weighted RMS residual `rms(w ⊙ (b - A x))`.
+    /// The final weighted RMS preconditioned residual
+    /// `rms(w ⊙ M⁻¹(b - A x))`.
     pub residual: f64,
 }
 
-/// Restarted, right-preconditioned GMRES for `A x = b` in the weighted RMS
+/// Restarted, left-preconditioned GMRES for `A x = b` in the weighted RMS
 /// norm `‖v‖ = rms(w ⊙ v)`: the iteration runs on the scaled system
-/// `(W A M⁻¹ W⁻¹) z = W b`, `x = M⁻¹ W⁻¹ z`, so its residual is measured in the
-/// same norm as the Newton corrections of the integrator.
+/// `(W M⁻¹ A W⁻¹) (W x) = W M⁻¹ b`. Its residual `M⁻¹(b − A x)` approximates
+/// the *error* of `x` (as `M ≈ A`), in the norm of the integrator's Newton
+/// corrections — so a badly scaled row (an algebraic constraint multiplied
+/// by 10⁻¹²) cannot hide a large error behind a small residual.
 ///
 /// `b` is overwritten with the solution (initial guess zero). Stops when the
-/// weighted RMS residual is `≤ tol`, after `max_iters` iterations, or on
-/// breakdown.
+/// weighted RMS preconditioned residual is `≤ tol`, after `max_iters`
+/// iterations (`0`: only the zero guess is tested), or on breakdown.
 pub fn gmres(
     a: &CsrMatrix,
     precond: &Ilu0,
@@ -210,21 +213,18 @@ pub fn gmres(
     max_iters: usize,
 ) -> GmresOutcome {
     let n = a.n_rows;
-    let m = restart.clamp(1, n.max(1));
+    // The basis never needs more vectors than the iteration budget allows.
+    let m = restart.min(max_iters).clamp(1, n.max(1));
     let sqrt_n = (n.max(1) as f64).sqrt();
-    // Scaled right-hand side; x̃ accumulates the scaled solution z-space
-    // correction mapped through M⁻¹ (kept unscaled in `x`).
     let mut x = vec![0.0; n];
-    let mut r: Vec<f64> = (0..n).map(|i| w[i] * b[i]).collect();
+    // r = W M⁻¹ b, the scaled preconditioned residual of the zero guess.
+    let mut r = b.to_vec();
+    precond.solve(&mut r);
+    for i in 0..n {
+        r[i] *= w[i];
+    }
     let mut beta = dot(&r, &r).sqrt();
     let mut total = 0usize;
-    let mut v: Vec<Vec<f64>> = vec![vec![0.0; n]; m + 1];
-    let mut h = vec![vec![0.0; m]; m + 1];
-    let mut cs = vec![0.0; m];
-    let mut sn = vec![0.0; m];
-    let mut g = vec![0.0; m + 1];
-    let mut tmp = vec![0.0; n];
-    let mut av = vec![0.0; n];
     let target = tol * sqrt_n;
     let finish = |x: Vec<f64>, b: &mut [f64], iters, conv, res: f64| {
         b.copy_from_slice(&x);
@@ -240,6 +240,16 @@ pub fn gmres(
     if beta <= target {
         return finish(x, b, 0, true, beta);
     }
+    if max_iters == 0 {
+        return finish(x, b, 0, false, beta);
+    }
+    let mut v: Vec<Vec<f64>> = vec![vec![0.0; n]; m + 1];
+    let mut h = vec![vec![0.0; m]; m + 1];
+    let mut cs = vec![0.0; m];
+    let mut sn = vec![0.0; m];
+    let mut g = vec![0.0; m + 1];
+    let mut tmp = vec![0.0; n];
+    let mut av = vec![0.0; n];
     loop {
         for i in 0..n {
             v[0][i] = r[i] / beta;
@@ -249,12 +259,12 @@ pub fn gmres(
         let mut k_done = 0usize;
         let mut res = beta;
         for k in 0..m {
-            // av = W A M⁻¹ W⁻¹ v_k
+            // av = W M⁻¹ A W⁻¹ v_k
             for i in 0..n {
                 tmp[i] = v[k][i] / w[i];
             }
-            precond.solve(&mut tmp);
             matvec(a, &tmp, &mut av);
+            precond.solve(&mut av);
             for i in 0..n {
                 av[i] *= w[i];
             }
@@ -300,7 +310,7 @@ pub fn gmres(
         if k_done == 0 {
             return finish(x, b, total, false, res);
         }
-        // Back-substitute y from the triangular H, z = V y, x += M⁻¹ W⁻¹ z.
+        // Back-substitute y from the triangular H; x += W⁻¹ V y.
         let mut y = vec![0.0; k_done];
         for i in (0..k_done).rev() {
             let mut s = g[i];
@@ -316,16 +326,16 @@ pub fn gmres(
             }
         }
         for i in 0..n {
-            tmp[i] /= w[i];
+            x[i] += tmp[i] / w[i];
         }
-        precond.solve(&mut tmp);
-        for i in 0..n {
-            x[i] += tmp[i];
-        }
-        // True residual for the restart (and the final report).
+        // The true preconditioned residual for the restart (and the report).
         matvec(a, &x, &mut av);
         for i in 0..n {
-            r[i] = w[i] * (b[i] - av[i]);
+            av[i] = b[i] - av[i];
+        }
+        precond.solve(&mut av);
+        for i in 0..n {
+            r[i] = w[i] * av[i];
         }
         beta = dot(&r, &r).sqrt();
         if !beta.is_finite() {

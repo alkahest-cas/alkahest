@@ -150,10 +150,16 @@ The BDF Newton iterations solve with `M − cJ`. `linear_solver=` chooses how:
   dimension, but an `n × n` grid has a band of about `n` (`O(n⁴)` work per
   factorisation) and an `n³` grid one of about `n²` (`O(n⁷)` work, `O(n⁵)`
   memory).
-* `"krylov"` — restarted GMRES, right-preconditioned by ILU(0) of the exact
+* `"krylov"` — restarted GMRES, left-preconditioned by ILU(0) of the exact
   sparse iteration matrix, in the integrator's own weighted RMS norm (the
   linear tolerance is `0.05 ×` the Newton tolerance, as in SUNDIALS CVODE).
-  Every factorisation and solve costs `O(nnz)`. A GMRES solve that misses its
+  Each matrix product and preconditioner application costs `O(nnz)`, the
+  ILU(0) factorisation about `O(nnz · r)` for rows of `r` entries, and a
+  GMRES iteration adds `O(k · N)` orthogonalisation for a basis of `k`
+  vectors — for stencil matrices far below the band's `O(N · kl²)`.
+  Left preconditioning makes the stopping test bound `M⁻¹(b − Ax)`, an
+  estimate of the error rather than the residual, so badly scaled
+  (algebraic) rows reach the same solution as the direct solver. A GMRES solve that misses its
   tolerance counts as a failed Newton iteration; after three in a row, or on
   an ILU zero pivot, the integration switches to the direct solver when its
   band fits in memory.
@@ -192,8 +198,10 @@ k = ms.integrate(0.05, rtol=1e-8, atol=1e-10)              # auto: GMRES here
 d = ms.integrate(0.05, rtol=1e-8, atol=1e-10, linear_solver="direct")
 assert k.stats["linear_solver"] == "krylov"
 assert np.max(np.abs(k.y[-1] - d.y[-1])) < 1e-8
-one = ms.integrate(0.01, threads=1)
-assert np.array_equal(one.y, ms.integrate(0.01, threads=4).y)
+big = akx.method_of_lines(sq, 131)              # 129² states: chunked kernels
+one = big.integrate(2e-3, threads=1)
+four = big.integrate(2e-3, threads=4)
+assert np.array_equal(one.y.view(np.uint64), four.y.view(np.uint64))   # bitwise
 ```
 
 ## Conservative WENO fluxes
@@ -204,9 +212,11 @@ in Shu–Osher flux-difference form: the update of node `j` is
 reconstruction of the split fluxes `F± = (F ± αu)/2` (left-biased for `F+`,
 right-biased for `F−`). Each interface flux is computed once, into an
 auxiliary field, and differenced, so `Σ_j h u_j` changes only through the
-boundary fluxes — **exactly conserved, to rounding, on a periodic grid** —
-while smooth solutions converge at fifth order. `rest` (viscosity, sources)
-uses the central stencils of `order`.
+boundary fluxes: on a periodic grid the flux part cancels **exactly, to
+rounding**, while smooth solutions converge at fifth order. `rest`
+(viscosity, sources) uses the central stencils of `order` and changes the
+total by its own discrete sum (zero for a periodic diffusion term, not for a
+source).
 
 * `flux={u(x, t): F}` per conservative unknown (a dict or list over the space
   variables in 2-D/3-D). The equation minus `−div F` must leave no first
@@ -223,8 +233,11 @@ uses the central stencils of `order`.
 * `weno_variant="js"` (Jiang–Shu weights) or `"z"` (WENO-Z, which keeps
   fifth order at critical points).
 * Near a non-periodic boundary the reconstructions drop to WENO-3 and then to
-  first order; a face without a boundary condition takes the physical flux of
-  its boundary node (transmissive). Uniform grids only. Systems are
+  the mean of the two nodes next to the interface (second order: a one-point
+  value would make the next node's flux difference inconsistent); a face without a boundary condition takes the physical flux of
+  its boundary node (transmissive), and that node's control volume is the
+  half cell `[x₀, x₀ + h/2]`, so `h/2·u₀ + h·Σ u_j + h/2·u_{n−1}` changes
+  exactly by the two boundary fluxes. Uniform grids only. Systems are
   reconstructed component-wise (no characteristic decomposition).
 
 ```python
@@ -351,4 +364,4 @@ assert "stablehlo" in ms.to_stablehlo()
 | `E-PDE-370` | export needs JAX (or a function has no JAX translation) |
 | `E-PDE-371` | a SciPy-backed method or format without SciPy |
 | `E-PDE-372` | invalid integration arguments (`dt` missing, unknown method, `to_ode` on a large grid) |
-| `E-PDE-373` | `scheme="weno5_fv"`: a flux that is missing, not a function of the unknowns, or does not account for every first-derivative term; a non-numeric `wave_speed` with global Lax–Friedrichs splitting |
+| `E-PDE-373` | `scheme="weno5_fv"`: a flux that is missing, not a function of the unknowns, or that leaves a first derivative along a direction it covers; a non-numeric or negative `wave_speed` with global Lax–Friedrichs splitting |

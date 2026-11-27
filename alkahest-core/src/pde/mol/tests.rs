@@ -568,3 +568,123 @@ fn krylov_integration_is_bitwise_identical_across_thread_counts() {
     assert_eq!(l1, l4);
     assert!(l1.krylov_iters > 0);
 }
+
+/// `y' = 1`, `0 = s (z - y)`: with `s = 1e-12` the algebraic row's residual
+/// is tiny however wrong `z` is, so a residual-based GMRES test would accept
+/// a zero correction and leave `z` at its predictor. The left-preconditioned
+/// test bounds the error instead: both solvers end at `z = y`.
+fn scaled_dae(s: f64) -> MolProgram {
+    let pool = ExprPool::new();
+    let (y, z) = (
+        pool.symbol("y", Domain::Real),
+        pool.symbol("z", Domain::Real),
+    );
+    let sc = pool.float(s, 53);
+    let fz = pool.mul(vec![
+        sc,
+        pool.add(vec![z, pool.mul(vec![pool.integer(-1_i32), y])]),
+    ]);
+    let inputs = vec![
+        MolInput::Field {
+            field: 0,
+            offset: vec![0],
+        },
+        MolInput::Field {
+            field: 1,
+            offset: vec![0],
+        },
+    ];
+    let ky = MolKernelOp {
+        kernel: Arc::new(compile_many(&[pool.integer(1_i32)], &[y, z], &pool).unwrap()),
+        inputs: inputs.clone(),
+        target: MolTarget::Rhs(0),
+        region: vec![(0, 1)],
+        jac_kernel: None,
+        jac_inputs: vec![],
+    };
+    let kz = MolKernelOp {
+        kernel: Arc::new(compile_many(&[fz], &[y, z], &pool).unwrap()),
+        inputs,
+        target: MolTarget::Rhs(1),
+        region: vec![(0, 1)],
+        jac_kernel: Some(Arc::new(
+            compile_many(
+                &[pool.mul(vec![pool.integer(-1_i32), sc]), sc],
+                &[y, z],
+                &pool,
+            )
+            .unwrap(),
+        )),
+        jac_inputs: vec![0, 1],
+    };
+    MolProgram::new(
+        vec![1],
+        2,
+        vec![],
+        vec![(0, 0), (1, 0)],
+        vec![false, true],
+        vec![MolOp::Kernel(ky), MolOp::Kernel(kz)],
+    )
+    .unwrap()
+}
+
+#[test]
+fn krylov_enforces_badly_scaled_algebraic_rows() {
+    for s in [1.0, 1e-12] {
+        let p = scaled_dae(s);
+        let opts = MolIntegrateOptions {
+            method: MolMethod::Bdf,
+            h0: Some(0.1),
+            ..Default::default()
+        };
+        for lin in [MolLinearSolver::Direct, MolLinearSolver::Krylov] {
+            let so = MolSolverOptions {
+                linear_solver: lin,
+                ..Default::default()
+            };
+            let (sol, _) = integrate_with(&p, 0.0, &[1.0, 1.0], &[1.0], &opts, &so).unwrap();
+            assert!(
+                (sol.y[0] - 2.0).abs() < 1e-8,
+                "{s} {lin:?}: y = {}",
+                sol.y[0]
+            );
+            assert!(
+                (sol.y[1] - sol.y[0]).abs() < 1e-6,
+                "{s} {lin:?}: z = {} but y = {}",
+                sol.y[1],
+                sol.y[0]
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_solver_options_are_refused() {
+    let p = heat_program(8, true);
+    let y0 = exact_heat(8, 0.0);
+    let opts = MolIntegrateOptions {
+        method: MolMethod::Bdf,
+        ..Default::default()
+    };
+    for so in [
+        MolSolverOptions {
+            krylov_tol_factor: f64::INFINITY,
+            ..Default::default()
+        },
+        MolSolverOptions {
+            krylov_tol_factor: 0.0,
+            ..Default::default()
+        },
+        MolSolverOptions {
+            gmres_restart: 0,
+            ..Default::default()
+        },
+        MolSolverOptions {
+            gmres_max_iters: 0,
+            ..Default::default()
+        },
+    ] {
+        let r = integrate_with(&p, 0.0, &y0, &[0.1], &opts, &so);
+        assert!(matches!(r, Err(MolError::BadArgument(_))), "{so:?}");
+    }
+}
