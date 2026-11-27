@@ -392,6 +392,11 @@ fn field(
     ))
 }
 
+/// `(scale, shift, c_u, c_lap)` of a nonlocal term, as Python passes it.
+type NonlocalSpec = (Vec<f64>, Vec<f64>, f64, f64);
+/// `(diagonal, [(i, j, a_ij)])` of a second-order form.
+type SecondOrderSpec = (Vec<f64>, Vec<(usize, usize, f64)>);
+
 /// A PDE problem for FEX scoring.
 #[pyclass(name = "_FexProblem", module = "alkahest", frozen)]
 pub struct PyFexProblem {
@@ -432,8 +437,8 @@ impl PyFexProblem {
         bc_weight: f64,
         loss: &str,
         power: f64,
-        nonlocal_terms: Option<Vec<(Vec<f64>, Vec<f64>, f64, f64)>>,
-        second_order: Option<(Vec<f64>, Vec<(usize, usize, f64)>)>,
+        nonlocal_terms: Option<Vec<NonlocalSpec>>,
+        second_order: Option<SecondOrderSpec>,
     ) -> PyResult<Self> {
         let pool: Option<Py<PyExprPool>> = coords
             .as_ref()

@@ -153,7 +153,8 @@ class GaussianJump:
             q = exact_number(v)
             if q is None and not isinstance(v, _ak.Expr):
                 raise _err(f"GaussianJump.{name} must be a number or an Expr, got {v!r}")
-        if exact_number(self.var) is not None and exact_number(self.var) < 0:
+        qv = exact_number(self.var)
+        if qv is not None and qv < 0:
             raise _err("GaussianJump.var must be non-negative")
         if self.nodes < 1 or self.nodes > 200:
             raise _err("GaussianJump.nodes must be between 1 and 200")
@@ -512,7 +513,7 @@ def _term_expectation(term: Any, zs: list[Any], mean: Any, var: Any, pool: Any) 
                 continue
             c2 = c**2 if c2 is None else c2 + c**2
             csum = c if csum is None else csum + c
-        if csum is None:
+        if csum is None or c2 is None:
             return const * term._pool.func(name, [a0])
         return const * _ak.exp(-c2 * var / 2) * term._pool.func(name, [a0 + csum * mean])
     out = const

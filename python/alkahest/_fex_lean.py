@@ -71,7 +71,7 @@ def _num(e: Any) -> Fraction | None:
 
 
 def _kids(e: Any) -> list:
-    from ._fex_finalize import _children
+    from ._fex_expr import _children
 
     return _children(e)
 
@@ -120,7 +120,7 @@ def lean_expr(e: Any, names: dict) -> str:
 
 
 def _mentions(e: Any, s: Any) -> bool:
-    from ._fex_finalize import _symbols_in
+    from ._fex_expr import _symbols_in
 
     return s in _symbols_in(e)
 
@@ -186,7 +186,7 @@ def _pull_exp_constants(e: Any) -> Any:
     """``exp(q·log c + rest) → c^q · exp(rest)`` (integer ``q``): the same
     function, written so the kernel's exponential atoms are rational
     multiples of one another (``exp(−log 3 + S/d)³`` against ``exp(2S/d)``)."""
-    from ._fex_finalize import _children, _number_value, _rebuild
+    from ._fex_expr import _children, _number_value, _rebuild
 
     pool = e._pool
 
@@ -215,7 +215,8 @@ def _pull_exp_constants(e: Any) -> Any:
                 and rest[0].node()[1] == "log"
             ):
                 (c,) = _children(rest[0])
-                if _num(c) is not None and _num(c) > 0:
+                cv = _num(c)
+                if cv is not None and cv > 0:
                     pulled.append(c ** int(q.numerator))
                     continue
             keep.append(t)

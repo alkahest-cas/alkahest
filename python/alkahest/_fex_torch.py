@@ -164,7 +164,7 @@ class TorchEvaluator:
         self.mask = T(mask)
         gc = spec.get("grad_coeffs")
         self.grad_coeffs = None if gc is None else T(gc)
-        self.expr_op = None
+        self.expr_op: dict[str, Any] = {}
         if kind == "expr" and problem.loss != "dirichlet":
             self.expr_op = _split_operator(problem, pts, T, mask)
         from .fex import _shape_tree
@@ -373,7 +373,7 @@ class TorchEvaluator:
     def _loss(self, e: Any, th: Any) -> Any:
         if self.loss_kind == "dirichlet":
             order = 1
-        elif self.expr_op is not None:
+        elif self.expr_op:
             order = 2 if self.expr_op["uses_lap"] else 1
         else:
             order = 1 if (self.loss_kind == "rayleigh" or self.kind == "transport") else 2
@@ -675,7 +675,7 @@ def _split_operator(problem: Any, pts: np.ndarray, T: Any, mask: np.ndarray) -> 
         xenv = {xk: T(pts[:, k]) for k, xk in enumerate(coords)}
         cols = []
         for ai in a:
-            v = 0.0 if ak.is_zero(ai) is True else _torch_fn(ai, xenv)({})
+            v: Any = 0.0 if ak.is_zero(ai) is True else _torch_fn(ai, xenv)({})
             if not hasattr(v, "shape") or v.dim() == 0:
                 v = T(np.full(len(pts), float(v)))
             cols.append(v)
