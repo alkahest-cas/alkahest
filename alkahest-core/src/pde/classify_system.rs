@@ -45,6 +45,8 @@
 //! Every returned expression is written back in the unknowns
 //! (`h(x, t)`, not the jet symbol `h`).
 
+#![allow(clippy::needless_range_loop)]
+
 use std::collections::{HashMap, HashSet};
 
 use crate::diff::diff_impl::diff;
@@ -636,8 +638,7 @@ fn first_order(
     for k in 0..nv {
         let mut a = vec![vec![zero; m]; n_eq];
         for (i, &f) in info.equations_in_jets.iter().enumerate() {
-            for (j, row) in (0..m).zip(std::iter::repeat(())) {
-                let _ = row;
+            for j in 0..m {
                 if !space.depends_on(j, k) {
                     continue;
                 }
