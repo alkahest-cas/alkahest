@@ -100,6 +100,11 @@ PDE milestone M5 (see ``alkahest.experimental._pde_m5``):
 - :func:`image_green_function`, :func:`green_function` (eigenfunction series
   and variation of parameters) → :class:`GreenFunction`; :func:`green_solve`
   → :class:`GreenSolution` (``u = ∫ G f + boundary terms``); ``E-PDE-250…299``
+- :func:`neumann_disk_solve` → :class:`NeumannDiskSolution` (the Neumann
+  problem on a disk: compatibility condition, solution unique up to a
+  constant); :func:`count_lower_eigenvalues` → :class:`LowerEigenvalueCount`
+  (a certified count of the eigenvalues below the threshold of a Robin
+  Sturm–Liouville problem)
 
 Nonlinear PDEs (milestone M6; see ``alkahest.experimental._pde_nonlinear``):
 - :func:`pde_symmetries` → :class:`PointSymmetries` (verified generators,
@@ -877,10 +882,14 @@ from alkahest.experimental._pde_m5 import (
     FundamentalSolution,
     GreenFunction,
     GreenSolution,
+    LowerEigenvalueCount,
+    NeumannDiskSolution,
+    count_lower_eigenvalues,
     fundamental_solution,
     green_function,
     green_solve,
     image_green_function,
+    neumann_disk_solve,
 )
 
 # Nonlinear PDEs (milestone M6): symmetries, conservation laws, reductions.
@@ -1138,6 +1147,7 @@ __all__ = [
     "LinearCode",
     # Probability (continued)
     "LogNormal",
+    "LowerEigenvalueCount",
     # Matrix groups over GF(q) from *arbitrary* generators. The action is on
     # **row** vectors, v -> v @ M, so vectors are 1 x d GfMatrix objects.
     # `order()` is a Schreier-Sims computation, not a formula — the three
@@ -1155,6 +1165,7 @@ __all__ = [
     # Joint laws: multivariate normal, order statistics, negative binomial
     "MultivariateNormal",
     "NegativeBinomial",
+    "NeumannDiskSolution",
     "Normal",
     # M11 — novelty filtering
     "NoveltyMatch",
@@ -1277,6 +1288,7 @@ __all__ = [
     "conservation_multipliers",
     "conserved_flux",
     "consistency",
+    "count_lower_eigenvalues",
     # Joint laws: Cov[e1, e2] under independent blocks
     "covariance",
     # Vector calculus
@@ -1370,6 +1382,7 @@ __all__ = [
     "multilimit",
     # Information theory: 0, under an independence the caller asserts
     "mutual_information_independent",
+    "neumann_disk_solve",
     "norm",
     # M11 — novelty filtering (the module itself, for `novelty.RecordedRecurrence`
     # and the status tables)

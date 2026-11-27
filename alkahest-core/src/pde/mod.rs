@@ -104,6 +104,7 @@ pub use green::{
     GreenOperator, GreenSolution, GreenSolutionKind, GreenTerm, ImageRegion, SeriesKind,
     WallCondition,
 };
+pub use green::{neumann_disk_solve, NeumannDiskSolution};
 pub use integral::{
     combine_integrals, has_integral, indefinite_integral, indefinite_parts, integral,
     integral_parts, INTEGRAL,
@@ -135,6 +136,7 @@ pub use separation::{
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
 };
+pub use sturm_liouville::{count_lower_eigenvalues, LowerCount};
 pub use sturm_liouville::{
     family_enclosures, sturm_liouville, sturm_liouville_with, EigenEnclosure, EigenFamily,
     EigenMode, EigenVerification, Eigensystem, EndCondition, FamilyRef, LowerSpectrum, SlBoundary,

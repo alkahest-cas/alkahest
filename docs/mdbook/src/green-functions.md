@@ -64,9 +64,11 @@ print(sorted({c["what"] for c in fs.checks}))
 The space variables stand for `x − ξ`. The operators are `"laplace"`,
 `"biharmonic"`, `"helmholtz"` and `"modified_helmholtz"` (`k=`), `"heat"`
 (`diffusivity=`), `"wave"` (`speed=`), `"klein_gordon"` (`speed=`, `mass=`)
-and `"telegraph"` (`speed=`, `damping=`, for `u_tt + 2a u_t − c² u_xx`). All
-of them are available in 1 to 3 space dimensions, except Klein–Gordon and
-telegraph, which are 1-D only. For Laplace and heat, `dimension=n,
+and `"telegraph"` (`speed=`, `damping=`, for `u_tt + 2a u_t − c² Δu`). All
+of them are available in 1 to 3 space dimensions. The 2-D Klein–Gordon and
+telegraph kernels (`cos`, `cosh` of `(m/c)√(c²t² − r²)`) are proved by descent
+from the 3-D wave kernel; the 3-D ones (a light-cone `δ` plus a `J₁` / `I₁`
+tail) by the dimension walk `E₃ = −(2πr)⁻¹ ∂ᵣ E₁` from the 1-D kernel. For Laplace and heat, `dimension=n,
 radius=r` gives the radial kernel in `n` dimensions with a symbolic `n`. A 1-D
 kernel is proved by the jump formula:
 
@@ -99,15 +101,64 @@ print(g.method)          # kelvin
 print(g.poisson_kernel)
 ```
 
-When images do not apply, Alkahest refuses with `E-PDE-252`. Examples are the
-Neumann disk (the Neumann function of the disk is not an image sum) and a
-Helmholtz strip:
+A Neumann wall on the disk gives the **Neumann function**
+`N = (1/4π) log(|x − ξ|² Q/R²) − (|x|² + |ξ|²)/(4πR²)`, with
+`ΔN = δ − 1/(πR²)` and `∂N/∂n = 0` (no Green's function with `ΔG = δ` exists
+there). A Helmholtz strip or slab gives the transverse mode series with
+outgoing longitudinal kernels, `κₙ = √(k² − λₙ)` on the principal branch (the
+radiation condition); at a cutoff `k² = λₙ` it refuses with `E-PDE-260`:
 
 ```python
+k = p.symbol("k", "positive")
+L = p.symbol("L", "positive")
+wg = akx.image_green_function("helmholtz", [x, y], [xi, eta], ("strip", 1, L), ["dirichlet", "dirichlet"], k=k)
+assert wg.verified and wg.method == "mode_series"
+```
+
+When images do not apply, Alkahest refuses with `E-PDE-252`, for example on a
+Neumann ball:
+
+```python
+z, zeta = p.symbol("z"), p.symbol("zeta")
 try:
-    akx.image_green_function("laplace", [x, y], [xi, eta], ("disk", p.integer(1)), "neumann")
+    akx.image_green_function("laplace", [x, y, z], [xi, eta, zeta], ("ball", p.integer(1)), "neumann")
 except Exception as e:
     print(e)             # E-PDE-252 …
+```
+
+## The Neumann problem on a disk
+
+`neumann_disk_solve(x, y, R, f, g, theta)` solves `Δu = f` in the disk with
+`∂u/∂r = g(θ)` on the circle, for a polynomial `f` and a trigonometric
+polynomial `g`. A solution exists only when `∫ f dA = ∮ g ds`; this
+compatibility condition is decided exactly, and `E-PDE-257` reports that it
+fails. The solution is unique up to an additive constant, which is returned
+as `constant`:
+
+```python
+th = p.symbol("theta")
+s = akx.neumann_disk_solve(x, y, R, 0, ak.cos(th), th)
+assert s.verified
+print(s.value)           # C + x
+try:
+    akx.neumann_disk_solve(x, y, R, 0, p.integer(1), th)
+except Exception as e:
+    print(e)             # E-PDE-257 …
+```
+
+## Counting eigenvalues below the threshold
+
+`count_lower_eigenvalues(SturmLiouville(...), params)` gives a certified count
+of the eigenvalues below `λ₀ = −q/w` (the negative ones when `q = 0`) for
+constant coefficients and Robin ends. The count comes from the positive roots
+of `G(κ) = A cosh κL + (Bκ² + C) sinh(κL)/κ`, using outward-rounded interval
+arithmetic, a proved tail bound and monotonicity from `G'`. When it cannot
+separate the roots it refuses with `E-PDE-259`; it never guesses:
+
+```python
+two = akx.SturmLiouville(x, (0, 1), (("robin", 3, 1), ("robin", -3, 1)))
+n = akx.count_lower_eigenvalues(two)
+print(n.count, n.enclosures)   # 2 [(0, …), (1, …)]
 ```
 
 ## Two-point problems and eigenfunction series
@@ -227,9 +278,12 @@ mass is `√(4π)` rather than 1. `tests/test_pde_m5.py` documents this.
 
 ## Errors
 
-`E-PDE-250` (no kernel here: Klein–Gordon or telegraph above 1-D, a symbolic
-dimension for another operator), `251` (malformed input), `252` (images do not
+`E-PDE-250` (no kernel here: a symbolic dimension for an operator other than
+Laplace and heat), `251` (malformed input), `252` (images do not
 apply), `253` (the series cannot be assembled), `254` (no Green's function
 exists: `λ = 0` is an eigenvalue), `255` (a construction refuted by its own
-check, withheld), `256` (`green_solve` does not recognise the problem). See
+check, withheld), `256` (`green_solve` does not recognise the problem), `257`
+(the Neumann compatibility condition fails), `258` (Neumann data outside the
+closed-form class), `259` (an eigenvalue count that cannot be certified), `260`
+(a waveguide at a cutoff). See
 [Error handling](./errors.md).

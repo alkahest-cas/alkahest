@@ -15,7 +15,8 @@ Fundamental solutions
 ---------------------
 :func:`fundamental_solution` (``"laplace"``, ``"biharmonic"``,
 ``"helmholtz"``, ``"modified_helmholtz"``, ``"heat"``, ``"wave"``,
-``"klein_gordon"``, ``"telegraph"``) in 1–3 space dimensions, or with a
+``"klein_gordon"``, ``"telegraph"``) in 1–3 space dimensions (the
+light-cone kernels of Klein–Gordon and telegraph too), or with a
 symbolic ``dimension=n`` for Laplace and heat::
 
     >>> import alkahest as ak, alkahest.experimental as akx
@@ -27,7 +28,12 @@ symbolic ``dimension=n`` for Laplace and heat::
 Boundary-value problems
 -----------------------
 :func:`image_green_function` (half- and quarter-spaces, strips as an image
-``Sum``, the disk and ball by Kelvin inversion with Poisson kernels),
+``Sum``, Helmholtz waveguides as an outgoing mode ``Sum``, the disk and ball
+by Kelvin inversion with Poisson kernels, the Neumann function of the disk),
+:func:`neumann_disk_solve` (the Neumann problem on a disk, with its
+compatibility condition, unique up to a constant),
+:func:`count_lower_eigenvalues` (a certified count of the eigenvalues below
+the threshold of a Robin :class:`SturmLiouville` problem),
 :func:`green_function` (a :class:`SturmLiouville` problem: the eigenfunction
 series — static, heat or wave — or the closed form by variation of
 parameters) and :func:`green_solve` (``u = ∫ G f + boundary terms`` for a
@@ -37,9 +43,11 @@ parameters) and :func:`green_solve` (``u = ∫ G f + boundary terms`` for a
 from __future__ import annotations
 
 from alkahest.alkahest import (
+    _pde_count_lower,
     _pde_fundamental_solution,
     _pde_green_solve,
     _pde_image_green,
+    _pde_neumann_disk,
     _pde_sl_green,
 )
 
@@ -47,10 +55,14 @@ __all__ = [
     "FundamentalSolution",
     "GreenFunction",
     "GreenSolution",
+    "LowerEigenvalueCount",
+    "NeumannDiskSolution",
+    "count_lower_eigenvalues",
     "fundamental_solution",
     "green_function",
     "green_solve",
     "image_green_function",
+    "neumann_disk_solve",
 ]
 
 
@@ -262,4 +274,125 @@ def green_solve(pde) -> GreenSolution:
         raise ValueError("declare the domain: pde.on(Interval(x, 0, L))")
     return GreenSolution(
         _pde_green_solve(pde.equations, pde.unknowns, pde.domain.spec(), list(pde._conditions))
+    )
+
+
+class NeumannDiskSolution(_Record):
+    """The result of :func:`neumann_disk_solve`.
+
+    ``value`` (``u(x, y)``, including the arbitrary constant ``constant``),
+    ``polar`` and ``polar_vars`` (``u(r, θ)``), ``compatibility`` (the mean of
+    the effective boundary data, proved zero), ``coefficients``
+    (``(j, a_j, b_j)``), ``particular`` (the polynomial ``v`` with
+    ``Δv = f``), ``green`` (the Neumann function ``N(x, ξ)`` in ``space`` and
+    ``green_source``), ``boundary_kernel`` (``−N`` on ``|ξ| = R``), ``checks``,
+    ``status``, ``side_conditions``, ``notes`` and ``references``.
+    """
+
+    def __init__(self, d: dict):
+        super().__init__(d)
+        self.value = d.get("value")
+        self.constant = d.get("constant")
+        self.polar = d.get("polar")
+        self.polar_vars = d.get("polar_vars")
+        self.compatibility = d.get("compatibility")
+        self.coefficients = d.get("coefficients")
+        self.particular = d.get("particular")
+        self.green = d.get("green")
+        self.green_source = d.get("green_source")
+        self.boundary_kernel = d.get("boundary_kernel")
+        self.green_verified = d.get("green_verified")
+        self.checks = d.get("checks")
+        self.status = d.get("status")
+        self.side_conditions = d.get("side_conditions")
+        self.notes = d.get("notes")
+        self.references = d.get("references")
+
+    def __repr__(self) -> str:
+        return f"NeumannDiskSolution(u = {self.value})"
+
+
+class LowerEigenvalueCount(_Record):
+    """The result of :func:`count_lower_eigenvalues`.
+
+    ``count`` (eigenvalues strictly below the threshold ``λ₀ = −q/w``),
+    ``threshold``, ``threshold_is_eigenvalue``, ``negative`` (the number of
+    negative eigenvalues when it follows, else ``None``), ``enclosures``
+    (``(i, lo, hi)`` of the eigenvalues below ``λ₀``, increasing), ``kappa``,
+    ``characteristic`` (``G(κ)``: its positive roots are the eigenvalues
+    ``λ₀ − (p/w)κ²``), ``eigenfunction``, ``method`` (``"rayleigh"`` or
+    ``"interval_cover"``), ``tail_bound``, ``cells``, ``checks``,
+    ``status`` and ``certificate``.
+    """
+
+    def __init__(self, d: dict):
+        super().__init__(d)
+        self.count = d.get("count")
+        self.threshold = d.get("threshold")
+        self.threshold_is_eigenvalue = d.get("threshold_is_eigenvalue")
+        self.negative = d.get("negative")
+        self.enclosures = d.get("enclosures")
+        self.kappa = d.get("kappa")
+        self.characteristic = d.get("characteristic")
+        self.eigenfunction = d.get("eigenfunction")
+        self.method = d.get("method")
+        self.tail_bound = d.get("tail_bound")
+        self.cells = d.get("cells")
+        self.checks = d.get("checks")
+        self.status = d.get("status")
+        self.certificate = d.get("certificate")
+
+    def __repr__(self) -> str:
+        return f"LowerEigenvalueCount({self.count} below {self.threshold}, {self.method})"
+
+
+def neumann_disk_solve(x, y, radius, f, g, theta) -> NeumannDiskSolution:
+    """Solve ``Δu = f`` in the disk ``x² + y² < radius²`` with
+    ``∂u/∂r = g(θ)`` on the circle ``x = R cos θ``, ``y = R sin θ``.
+
+    ``f`` is a polynomial in ``x``, ``y`` (or ``0``) and ``g`` a
+    trigonometric polynomial in ``theta``.  The compatibility condition
+    ``∫ f dA = ∮ g ds`` is decided exactly (``E-PDE-257`` when it fails); the
+    solution carries an arbitrary additive constant, which is its whole
+    non-uniqueness.
+    """
+    from alkahest.experimental._pde_m3 import _as_expr
+
+    pool = x._pool
+    radius, f, g = (_as_expr(e, pool) for e in (radius, f, g))
+    return NeumannDiskSolution(_pde_neumann_disk(x, y, radius, f, g, theta))
+
+
+def count_lower_eigenvalues(problem, params=None) -> LowerEigenvalueCount:
+    """A certified count of the eigenvalues below the threshold ``λ₀ = −q/w``
+    (and of the negative ones, when that follows) of a regular
+    :class:`SturmLiouville` problem with constant coefficients and
+    Dirichlet / Neumann / Robin ends.
+
+    ``params`` maps parameters to numbers.  The count is a proof (exact
+    identities plus outward-rounded interval arithmetic) or the call refuses
+    with ``E-PDE-259``.
+    """
+    if getattr(problem, "var", None) is None:
+        raise ValueError("count_lower_eigenvalues needs a SturmLiouville problem with its variable")
+    bc = problem.bc
+    if isinstance(bc, str):
+        raise ValueError("count_lower_eigenvalues takes separated end conditions")
+    left, right = bc
+    from alkahest.experimental._pde_m3 import _end
+
+    pool = problem.var._pool
+    a, b = problem.interval
+    return LowerEigenvalueCount(
+        _pde_count_lower(
+            problem.var,
+            problem.p,
+            problem.q,
+            problem.w,
+            a,
+            b,
+            _end(left, pool),
+            _end(right, pool),
+            params or None,
+        )
     )

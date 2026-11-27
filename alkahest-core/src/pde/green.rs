@@ -19,8 +19,10 @@
 //!   Laplace (1–3 D and `n` D with symbolic `n`), heat (1–3 D and symbolic
 //!   `n`), wave (d'Alembert, Poisson and Kirchhoff kernels in 1, 2, 3 D),
 //!   Helmholtz and modified Helmholtz (1–3 D; Hankel `H₀⁽¹⁾` and `K₀` in the
-//!   plane), biharmonic (1–3 D), Klein–Gordon and telegraph in 1 D (the
-//!   light-cone Bessel kernels `J₀`, `I₀`).  Each entry carries its
+//!   plane), biharmonic (1–3 D), Klein–Gordon and telegraph in 1–3 D (the
+//!   light-cone kernels: `J₀`, `I₀` in 1 D; `cos`, `cosh` in 2 D by descent
+//!   from the 3-D wave kernel; the light-cone `δ` plus a `J₁` / `I₁` tail in
+//!   3 D by the dimension walk).  Each entry carries its
 //!   derivation, the distributional identity it satisfies, references, and
 //!   exact checks (below).
 //! * [`image_green_function`] — the method of images: half- and
@@ -77,12 +79,16 @@ use super::verify::VerificationStatus;
 
 mod fundamental;
 mod images;
+mod light_cone_nd;
+mod neumann_disk;
 mod represent;
 mod series;
+mod waveguide;
 
 pub(crate) use fundamental::light_cone;
 pub use fundamental::{fundamental_solution, fundamental_solution_nd};
 pub use images::{image_green_function, ImageRegion, WallCondition};
+pub use neumann_disk::{neumann_disk_solve, NeumannDiskSolution};
 pub use represent::{green_solve, GreenSolution, GreenSolutionKind, GreenTerm};
 pub(crate) use series::ode_green_parts;
 pub use series::{eigen_green_function, ode_green_function, SeriesKind};
@@ -120,14 +126,14 @@ pub enum GreenOperator {
         /// The speed `c`.
         speed: ExprId,
     },
-    /// `∂ₜₜ − c² ∂ₓₓ + m²` (1-D).
+    /// `∂ₜₜ − c² Δ + m²`.
     KleinGordon {
         /// `c`.
         speed: ExprId,
         /// `m`.
         mass: ExprId,
     },
-    /// `∂ₜₜ + 2a ∂ₜ − c² ∂ₓₓ` (1-D).
+    /// `∂ₜₜ + 2a ∂ₜ − c² Δ`.
     Telegraph {
         /// `c`.
         speed: ExprId,
@@ -328,7 +334,9 @@ pub struct GreenCheck {
     /// `"characteristic"`, `"laplacian"`, `"bc"`, `"pde"`, `"kelvin"`,
     /// `"poisson_kernel"`, `"symmetry"`, `"term_ode"`, `"term_bc"`,
     /// `"term_pde"`, `"jump"`, `"continuity"`, `"coefficients"`,
-    /// `"pairing"`, `"radiation"`, `"reduction"`, `"solution"`.
+    /// `"pairing"`, `"radiation"`, `"reduction"`, `"solution"`,
+    /// `"descent"`, `"dimension_walk"`, `"commutation"`, `"longitudinal"`,
+    /// `"source"`, `"boundary_kernel"`, `"compatibility"`, `"data"`.
     pub what: &'static str,
     /// The verdict (`proved_zero` for a passed check).
     pub status: ZeroStatus,

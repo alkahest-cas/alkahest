@@ -260,16 +260,6 @@ fn validate(
         }
         _ => {}
     }
-    if matches!(
-        op,
-        GreenOperator::KleinGordon { .. } | GreenOperator::Telegraph { .. }
-    ) && space.len() != 1
-    {
-        return Err(PdeError::GreenUnsupported(format!(
-            "the {} kernel is implemented in one space dimension",
-            op.name()
-        )));
-    }
     Ok(())
 }
 
@@ -284,7 +274,10 @@ fn validate(
 ///
 /// # Errors
 ///
-/// * `E-PDE-250` — Klein–Gordon or telegraph in more than one dimension;
+/// Klein–Gordon and telegraph kernels in 2 and 3 dimensions are built by
+/// descent from the 3-D wave kernel and by the dimension walk from the 1-D
+/// kernel (see `light_cone_nd`).
+///
 /// * `E-PDE-251` — no / too many variables, a repeated or non-symbol
 ///   variable, a missing or spurious time variable;
 /// * `E-PDE-255` — a check refuted the kernel (a bug: never returned).
@@ -296,6 +289,15 @@ pub fn fundamental_solution(
 ) -> Result<FundamentalSolution, PdeError> {
     validate(&op, space, time, pool)?;
     let n = space.len();
+    if n >= 2
+        && matches!(
+            op,
+            GreenOperator::KleinGordon { .. } | GreenOperator::Telegraph { .. }
+        )
+    {
+        let t = time.expect("validated: a time variable");
+        return super::light_cone_nd::light_cone_nd(op, space, t, pool);
+    }
     let mut avoid: Vec<ExprId> = space.to_vec();
     avoid.extend(time);
     avoid.extend(op.parameters().iter().map(|&(_, v)| v));
@@ -968,14 +970,18 @@ pub fn fundamental_solution(
                     pool,
                 ));
             }
-            let m0 = at(smooth, m, int(0, pool), pool);
-            checks.push(check(
-                "reduction",
-                sub(m0, div(int(1, pool), pool.mul(vec![two, c]), pool), pool),
-                "substitution",
-                "m = 0 gives the d'Alembert kernel 1/(2c)",
-                pool,
-            ));
+            // The reduction m → 0 is a substitution for a symbolic mass only
+            // (substituting a number would rewrite unrelated literals).
+            if is_symbol(m, pool) {
+                let m0 = at(smooth, m, int(0, pool), pool);
+                checks.push(check(
+                    "reduction",
+                    sub(m0, div(int(1, pool), pool.mul(vec![two, c]), pool), pool),
+                    "substitution",
+                    "m = 0 gives the d'Alembert kernel 1/(2c)",
+                    pool,
+                ));
+            }
         }
         GreenOperator::Telegraph {
             speed: c,

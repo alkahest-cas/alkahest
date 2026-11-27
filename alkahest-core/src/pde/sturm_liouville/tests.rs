@@ -450,3 +450,141 @@ fn error_codes_in_m3_range() {
         assert!(e.remediation().is_some(), "{}", e.code());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Certified count of eigenvalues below the threshold (gap round G7)
+// ---------------------------------------------------------------------------
+
+fn robin(alpha: ExprId, beta: ExprId) -> EndCondition {
+    EndCondition::Robin { alpha, beta }
+}
+
+#[test]
+fn count_lower_one_negative() {
+    let c = Ctx::new();
+    let p = &c.pool;
+    // X(0) = 0, X'(1) − 2X(1) = 0: one negative eigenvalue, κ ≈ 1.91501.
+    let pr = SturmLiouvilleProblem::interval(
+        c.x(),
+        c.int(0),
+        c.int(1),
+        c.sep(EndCondition::Dirichlet, robin(p.integer(-2), p.integer(1))),
+        p,
+    )
+    .unwrap();
+    let n = count_lower_eigenvalues(&pr, &HashMap::new(), p).unwrap();
+    assert_eq!(n.count, 1);
+    assert_eq!(n.negative, Some(1));
+    assert_eq!(n.method, "interval_cover");
+    assert_eq!(n.status, VerificationStatus::ExactlyVerified);
+    let e = &n.enclosures[0];
+    let want = -(1.915_008_048_154_f64.powi(2));
+    assert!(e.lo.to_f64() <= want + 1e-9 && e.hi.to_f64() >= want - 1e-9);
+    assert!(e.hi.to_f64() - e.lo.to_f64() < 1e-9);
+    let sys = sturm_liouville(&pr, p).unwrap();
+    assert!(matches!(
+        sys.lower,
+        LowerSpectrum::Present { count: Some(1), .. }
+    ));
+}
+
+#[test]
+fn count_lower_two_and_zero() {
+    let c = Ctx::new();
+    let p = &c.pool;
+    // X'(0) = −3X(0), X'(1) = 3X(1): two negative eigenvalues.
+    let two = SturmLiouvilleProblem::interval(
+        c.x(),
+        c.int(0),
+        c.int(1),
+        c.sep(
+            robin(p.integer(3), p.integer(1)),
+            robin(p.integer(-3), p.integer(1)),
+        ),
+        p,
+    )
+    .unwrap();
+    let n = count_lower_eigenvalues(&two, &HashMap::new(), p).unwrap();
+    assert_eq!(n.count, 2, "{:?}", n.certificate);
+    assert!(n.enclosures[0].hi < n.enclosures[1].lo);
+    // h = 1 at both ends: one.
+    let one = SturmLiouvilleProblem::interval(
+        c.x(),
+        c.int(0),
+        c.int(1),
+        c.sep(
+            robin(p.integer(1), p.integer(1)),
+            robin(p.integer(-1), p.integer(1)),
+        ),
+        p,
+    )
+    .unwrap();
+    assert_eq!(
+        count_lower_eigenvalues(&one, &HashMap::new(), p)
+            .unwrap()
+            .count,
+        1
+    );
+    // X(0) = 0, X'(1) = X(1)/2: the Rayleigh test fails but there is none
+    // (h L < 1); the eigensystem's lower spectrum is upgraded to None.
+    let none = SturmLiouvilleProblem::interval(
+        c.x(),
+        c.int(0),
+        c.int(1),
+        c.sep(
+            EndCondition::Dirichlet,
+            robin(p.rational(-1, 2), p.integer(1)),
+        ),
+        p,
+    )
+    .unwrap();
+    let n = count_lower_eigenvalues(&none, &HashMap::new(), p).unwrap();
+    assert_eq!(n.count, 0);
+    assert_eq!(n.method, "interval_cover");
+    let sys = sturm_liouville(&none, p).unwrap();
+    assert_eq!(sys.lower, LowerSpectrum::None);
+    // Neumann–Neumann: Rayleigh, and λ₀ = 0 is an eigenvalue.
+    let nn = SturmLiouvilleProblem::interval(
+        c.x(),
+        c.int(0),
+        c.int(1),
+        c.sep(EndCondition::Neumann, EndCondition::Neumann),
+        p,
+    )
+    .unwrap();
+    let n = count_lower_eigenvalues(&nn, &HashMap::new(), p).unwrap();
+    assert_eq!((n.count, n.method), (0, "rayleigh"));
+    assert!(n.threshold_is_eigenvalue);
+    assert_eq!(n.negative, Some(0));
+}
+
+#[test]
+fn count_lower_with_potential_and_params() {
+    let c = Ctx::new();
+    let p = &c.pool;
+    // X'' + (λ − 1)X = 0 (p = w = 1, q = −1, λ₀ = 1) with X(0) = 0,
+    // X'(1) = 2X(1): one eigenvalue below 1, at 1 − 1.91501² < 0.
+    let h = p.symbol("h", Domain::Real);
+    let pr = SturmLiouvilleProblem::new(
+        c.x(),
+        p.integer(1),
+        p.integer(-1),
+        p.integer(1),
+        c.int(0),
+        c.int(1),
+        c.sep(EndCondition::Dirichlet, robin(neg(h, p), p.integer(1))),
+        p,
+    )
+    .unwrap();
+    // Symbolic h: refuse.
+    let e = count_lower_eigenvalues(&pr, &HashMap::new(), p).unwrap_err();
+    assert_eq!(crate::errors::AlkahestError::code(&e), "E-PDE-259");
+    let mut params = HashMap::new();
+    params.insert(h, p.integer(2));
+    let n = count_lower_eigenvalues(&pr, &params, p).unwrap();
+    assert_eq!(n.count, 1);
+    assert_eq!(n.negative, Some(1));
+    params.insert(h, p.rational(1, 2));
+    let n = count_lower_eigenvalues(&pr, &params, p).unwrap();
+    assert_eq!((n.count, n.negative), (0, Some(0)));
+}

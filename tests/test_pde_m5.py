@@ -424,8 +424,6 @@ def test_fundamental_refusals():
     with pytest.raises(Exception, match="E-PDE-251"):
         akx.fundamental_solution("heat", [x], diffusivity=c)  # no time
     with pytest.raises(Exception, match="E-PDE-250"):
-        akx.fundamental_solution("klein_gordon", [x, y], t, speed=c, mass=c)
-    with pytest.raises(Exception, match="E-PDE-250"):
         akx.fundamental_solution("wave", time=t, dimension=p.symbol("n"), radius=y, speed=c)
     with pytest.raises(ValueError):
         akx.fundamental_solution("nonsense", [x])
@@ -435,11 +433,14 @@ def test_image_refusals():
     p = ak.ExprPool()
     x, y, xi, eta = (p.symbol(n) for n in ("x", "y", "xi", "eta"))
     k = p.symbol("k", "positive")
-    with pytest.raises(Exception, match="E-PDE-252"):
-        akx.image_green_function("laplace", [x, y], [xi, eta], ("disk", p.integer(1)), "neumann")
+    z, zeta = p.symbol("z"), p.symbol("zeta")
     with pytest.raises(Exception, match="E-PDE-252"):
         akx.image_green_function(
-            "helmholtz", [x, y], [xi, eta], ("strip", 1, k), ["dirichlet", "dirichlet"], k=k
+            "laplace", [x, y, z], [xi, eta, zeta], ("ball", p.integer(1)), "neumann"
+        )
+    with pytest.raises(Exception, match="E-PDE-252"):
+        akx.image_green_function(
+            "laplace", [x, y], [xi, eta], ("strip", 1, k), ["neumann", "neumann"]
         )
     with pytest.raises(Exception, match="E-PDE-251"):
         akx.image_green_function("laplace", [x, y], [xi], ("half_space", 1), "dirichlet")

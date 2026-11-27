@@ -265,6 +265,7 @@ mod linprog;
 mod matgroup;
 mod mol;
 mod pde;
+mod pde_green_gaps;
 mod pde_m3;
 mod pde_m4;
 mod pde_m5;
@@ -24226,6 +24227,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pde_m4::register(m)?;
     pde_m5::register(m)?;
     pde_m6::register(m)?;
+    pde_green_gaps::register(m)?;
     lattice::register(m)?;
     linprog::register(m)?;
     fex::register(m)?;
