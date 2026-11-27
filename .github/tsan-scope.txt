@@ -95,3 +95,11 @@ poly::groebner::multimodular::
 # workers can race to initialise the same table. `fex::fit` runs candidate
 # fits and the normal-equation reduction in parallel.
 fex::
+
+# ── Method of lines: chunked kernels, copies and GMRES on a Rayon pool ─────
+# `pde::mol` evaluates long kernel runs, the state scatter/gather (raw-pointer
+# copies into disjoint runs), box row copies and the Jacobian rows of `Rhs`
+# kernels in parallel chunks; `pde::mol::krylov` chunks GMRES's products and
+# reductions on large systems. Its tests run the same work on 1–8 threads
+# (`with_threads`) and compare the results bitwise.
+pde::mol::
