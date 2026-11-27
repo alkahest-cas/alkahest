@@ -69,6 +69,20 @@ pub enum PdeDomain {
     },
     /// A product of domains in disjoint coordinates (space × time, …).
     Product(Vec<PdeDomain>),
+    /// A coordinate box in polar `(r, θ)`, cylindrical `(r, θ, z)` or
+    /// spherical `(r, θ, φ)` coordinates (milestone M4): a disk, annulus or
+    /// sector, a cylinder, a ball or spherical shell.  `coords[i]` is `None`
+    /// for a coordinate the problem does not depend on (a radial or
+    /// axisymmetric problem); `bounds[i]` is that coordinate's range (an
+    /// angular range of length `2π` is periodic).
+    Curvilinear {
+        /// The coordinate system.
+        system: super::separation::CoordinateSystem,
+        /// The coordinates (`None` where the unknown does not depend on one).
+        coords: Vec<Option<ExprId>>,
+        /// `(lo, hi)` per coordinate.
+        bounds: Vec<(ExprId, ExprId)>,
+    },
 }
 
 fn is_symbol(e: ExprId, pool: &ExprPool) -> bool {
@@ -225,6 +239,100 @@ impl PdeDomain {
         })
     }
 
+    /// A coordinate box in curvilinear coordinates: `coords` / `bounds` per
+    /// coordinate of `system` (see [`PdeDomain::Curvilinear`]).
+    ///
+    /// `E-PDE-010` for the wrong number of entries, a coordinate that is not
+    /// a symbol, a negative inner radius, a polar / azimuthal range longer
+    /// than `2π`, or a polar angle outside `[0, π]` (literal bounds).
+    pub fn curvilinear(
+        system: super::separation::CoordinateSystem,
+        coords: &[Option<ExprId>],
+        bounds: &[(ExprId, ExprId)],
+        pool: &ExprPool,
+    ) -> Result<Self, PdeError> {
+        use super::separation::CoordinateSystem as C;
+        let n = system.dimension();
+        if coords.len() != n || bounds.len() != n {
+            return Err(PdeError::InvalidDomain(format!(
+                "{} coordinates need {n} coordinates and {n} ranges",
+                system.as_str()
+            )));
+        }
+        if coords[0].is_none() {
+            return Err(PdeError::InvalidDomain(
+                "a curvilinear domain needs its radial coordinate".into(),
+            ));
+        }
+        let mut seen = Vec::new();
+        for (c, &(lo, hi)) in coords.iter().zip(bounds) {
+            if let Some(v) = c {
+                check_var(*v, pool)?;
+                if seen.contains(v) {
+                    return Err(PdeError::InvalidDomain(format!(
+                        "coordinate {} repeated",
+                        pool.display(*v)
+                    )));
+                }
+                seen.push(*v);
+            }
+            check_order(lo, hi, pool)?;
+        }
+        if literal(bounds[0].0, pool).is_some_and(|r| r < 0) {
+            return Err(PdeError::InvalidDomain("a negative inner radius".into()));
+        }
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let width = |(lo, hi): (ExprId, ExprId)| -> Option<f64> {
+            let w = pool.add(vec![hi, pool.mul(vec![pool.integer(-1), lo])]);
+            crate::eval::eval_f64(w, pool, &std::collections::HashMap::new()).ok()
+        };
+        let angular: Vec<usize> = match system {
+            C::Polar | C::Cylindrical => vec![1],
+            C::Spherical => vec![2],
+        };
+        for i in angular {
+            if width(bounds[i]).is_some_and(|w| w > two_pi + 1e-12) {
+                return Err(PdeError::InvalidDomain(
+                    "an angular range longer than 2π".into(),
+                ));
+            }
+        }
+        if system == C::Spherical {
+            let ev = |e| crate::eval::eval_f64(e, pool, &std::collections::HashMap::new()).ok();
+            if ev(bounds[1].0).is_some_and(|v| v < -1e-12)
+                || ev(bounds[1].1).is_some_and(|v| v > std::f64::consts::PI + 1e-12)
+            {
+                return Err(PdeError::InvalidDomain(
+                    "the polar angle θ ranges within [0, π]".into(),
+                ));
+            }
+        }
+        Ok(PdeDomain::Curvilinear {
+            system,
+            coords: coords.to_vec(),
+            bounds: bounds.to_vec(),
+        })
+    }
+
+    /// The disk `0 ≤ r < radius` in polar coordinates `(r, θ)`, `θ ∈ (−π, π)`.
+    pub fn polar_disk(
+        r: ExprId,
+        theta: Option<ExprId>,
+        radius: ExprId,
+        pool: &ExprPool,
+    ) -> Result<Self, PdeError> {
+        let pi = pool.symbol("pi", crate::kernel::Domain::Real);
+        Self::curvilinear(
+            super::separation::CoordinateSystem::Polar,
+            &[Some(r), theta],
+            &[
+                (pool.integer(0), radius),
+                (pool.mul(vec![pool.integer(-1), pi]), pi),
+            ],
+            pool,
+        )
+    }
+
     /// The product of domains in disjoint coordinates.
     pub fn product(parts: Vec<PdeDomain>, pool: &ExprPool) -> Result<Self, PdeError> {
         let mut seen: Vec<ExprId> = Vec::new();
@@ -261,11 +369,12 @@ impl PdeDomain {
             PdeDomain::Box { vars, .. } | PdeDomain::Ball { vars, .. } => vars.clone(),
             PdeDomain::Disk { vars, .. } => vars.to_vec(),
             PdeDomain::Product(ps) => ps.iter().flat_map(|p| p.vars()).collect(),
+            PdeDomain::Curvilinear { coords, .. } => coords.iter().flatten().copied().collect(),
         }
     }
 
     /// Short stable name: `"interval"`, `"half_line"`, `"line"`, `"box"`,
-    /// `"disk"`, `"ball"`, `"product"`.
+    /// `"disk"`, `"ball"`, `"product"`, `"curvilinear"`.
     pub fn kind(&self) -> &'static str {
         match self {
             PdeDomain::Interval { .. } => "interval",
@@ -275,6 +384,7 @@ impl PdeDomain {
             PdeDomain::Disk { .. } => "disk",
             PdeDomain::Ball { .. } => "ball",
             PdeDomain::Product(_) => "product",
+            PdeDomain::Curvilinear { .. } => "curvilinear",
         }
     }
 
@@ -328,6 +438,16 @@ impl PdeDomain {
                 radius,
             } => lt(r2(vars, center), pool.pow(*radius, pool.integer(2))),
             PdeDomain::Product(ps) => and(ps.iter().map(|p| p.condition(pool)).collect()),
+            PdeDomain::Curvilinear { coords, bounds, .. } => {
+                let mut parts = Vec::new();
+                for (c, &(lo, hi)) in coords.iter().zip(bounds) {
+                    if let Some(v) = c {
+                        parts.push(lt(lo, *v));
+                        parts.push(lt(*v, hi));
+                    }
+                }
+                and(parts)
+            }
         }
     }
 }

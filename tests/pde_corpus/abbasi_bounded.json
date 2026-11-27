@@ -1,0 +1,1937 @@
+[
+ {
+  "id": "abbasi-150",
+  "number": 150,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "General initial conditions",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]]; sol = sol /. {K[1] -> n}"
+ },
+ {
+  "id": "abbasi-151",
+  "number": 151,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Specific initial condition",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k=1/100; L=10; f=100; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]]; sol = sol /. {K[1] -> n}"
+ },
+ {
+  "id": "abbasi-152",
+  "number": 152,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "IC \n \n \n =\n u\n \n x\n \n \n \n (\n \n -\n 1\n x\n \n )",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == 1/100*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == x*(1-x); sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]]; sol = sol /. {K[1] -> n}"
+ },
+ {
+  "id": "abbasi-153",
+  "number": 153,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.3.3 (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; NumericQ[L] =. ; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 6*Sin[(9*Pi*x)/L]; NumericQ[L] = True; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; NumericQ[L] =. ;"
+ },
+ {
+  "id": "abbasi-154",
+  "number": 154,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "IC hat function",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; f = Piecewise[{{x, Inequality[0, LessEqual, x, Less, 20]}, {40 - x, 20 <= x <= 40}}]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[40, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-155",
+  "number": 155,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.3.3 (b)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; NumericQ[L] =. ; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 3*Sin[(Pi*x)/L] - Sin[(3*Pi*x)/L]; NumericQ[L] = True; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; NumericQ[L] =. ;"
+ },
+ {
+  "id": "abbasi-156",
+  "number": 156,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.3.3 (c)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == 2*Cos[(3*Pi*x)/L]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L > 0], 60*10]]; sol = sol/. K[1]->n;"
+ },
+ {
+  "id": "abbasi-157",
+  "number": 157,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.3.3 (d)",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == Piecewise[{{1, Inequality[0, Less, x, LessEqual, L/2]}, {2, L/2 < x < L}}]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L > 0], 60*10]]; sol = sol /. K[1] -> n; $Aborted"
+ },
+ {
+  "id": "abbasi-158",
+  "number": 158,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "domain from -1 to +1",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 1}] == D[u[x, t], {x, 2}]; ic = u[x, 0] == f[x]; bc = {u[-1, t] == 0, u[1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-159",
+  "number": 159,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "domain from -1 to +1",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 1}] == D[u[x, t], {x, 2}]; ic = u[x, 0] == 1-x^2; bc = {u[-1, t] == 0, u[1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-160",
+  "number": 160,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "with source that depends on space only (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-161",
+  "number": 161,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "with source that depends on space only (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=5; k=1/10; f=x*(5-x); Q=x; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-162",
+  "number": 162,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "with source that depends on space and time (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x,t]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-163",
+  "number": 163,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "with source that depends on space and time (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=Pi; f=x*(Pi-x); k=1/300; Q=Exp[-t]*Sin[3*x]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-164",
+  "number": 164,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Math 4567 Exam",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + t*(Pi-x); bc = {u[0,t] == 0, u[Pi,t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> t > 0], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-165",
+  "number": 165,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "With source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x, t]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {k > 0, t > 0, x > 0, x < 1}], 60*10]];"
+ },
+ {
+  "id": "abbasi-166",
+  "number": 166,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "special initial condition",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] - 9*D[u[x, t], x]; ic = u[x, 0] == Exp[45/10 x]*(5 Sin[Pi*x] + 9 Sin[2*Pi*x] + 2 Sin[3*Pi*x]); bc = {u[0, t] == 0, u[1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-167",
+  "number": 167,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction and Euler-Cauchy Sturm-Liouville",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == x^2*D[u[x, t], {x, 2}] + x*D[u[x, t], x]; ic = u[x, 0] == f[x]; bc = {u[1, t] == 0, u[b, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}, Assumptions -> b > 1], 60*10]];"
+ },
+ {
+  "id": "abbasi-168",
+  "number": 168,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction. Using growth form reaction term",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k = 1/10; r = 1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + r*u[x, t]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 1; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-169",
+  "number": 169,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction, using logistic form for reaction term",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; k = 1/100; r = 1/10; alpha = 10; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + r*u[x, t]*(1 - u[x, t]/alpha); bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 1; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-170",
+  "number": 170,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction, using Aleee form for reaction term",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; k = 1/1000; alpha = 1/10; beta = 1/100; gamma = 5/1000; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + alpha*u[x, t] + beta*u[x, t]^2 - gamma*u[x, t]^3; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == 1; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-171",
+  "number": 171,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction. Haberman 2.3.8",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] - alpha*u[x, t]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0, alpha > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-172",
+  "number": 172,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] + u[x, t] == D[u[x, t], {x, 2}]; ic = u[x, 0] == f[x]; bc = {u[0, t] == 0, u[L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-173",
+  "number": 173,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == 100*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[1, t] == 0}; ic = u[x, 0] == Sin[2*Pi*x] - Sin[5*Pi*x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-174",
+  "number": 174,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] - u[x,t]*x; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = u[x, 0] == Sin[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> k > 0], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-175",
+  "number": 175,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion convection (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + a*D[u[x, t], x]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0,a>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-176",
+  "number": 176,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion convection (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; f=Sin[x]; L=Pi; k=1; a=5; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + a*D[u[x, t], x]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-177",
+  "number": 177,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.4.2 (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0 && k > 0}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> x};"
+ },
+ {
+  "id": "abbasi-178",
+  "number": 178,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Left end zero, right end insulated, no source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0 && k > 0}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> x};"
+ },
+ {
+  "id": "abbasi-179",
+  "number": 179,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "One end insulated",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1,0][u][0, t] == 0, u[1, t] == T0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{T0>0,k>0,L>0}], 60*10]]; sol= sol/.{K[1]->n};"
+ },
+ {
+  "id": "abbasi-180",
+  "number": 180,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.3.7 (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0, k > 0, t > 0}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> x};"
+ },
+ {
+  "id": "abbasi-181",
+  "number": 181,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "specific case",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k=1/100; L=5; f=x; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> x};"
+ },
+ {
+  "id": "abbasi-182",
+  "number": 182,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.4.1 (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == Piecewise[{{0, x < L/2}, {1, x > L/2}}]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0 && k > 0}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-183",
+  "number": 183,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Both ends insulated, no source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=1; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == Piecewise[{{x, 0<x < L/2}, {1-x, L/2<=x<L}}]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> k > 0], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-184",
+  "number": 184,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.4.1 (b) (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; NumericQ[L] =. ; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == 6 + 4*Cos[(3*Pi*x)/L]; NumericQ[L] = True; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; sol = sol /. {K[1] -> n}; NumericQ[L] =. ;"
+ },
+ {
+  "id": "abbasi-185",
+  "number": 185,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.4.1 (c) (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == -2*Sin[(Pi*x)/L]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {L > 0 && k > 0}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-186",
+  "number": 186,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 2.4.1 (d)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; NumericQ[L] =. ; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == -3*Cos[(8*Pi*x)/L]; NumericQ[L] = True; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; sol = sol /. {K[1] -> n}; NumericQ[L] =. ;"
+ },
+ {
+  "id": "abbasi-187",
+  "number": 187,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "both ends insulated",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == 13*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] == 1}; ic = u[x, 0] == (1*x^2)/2 + x; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-188",
+  "number": 188,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "convection heat loss",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; ic = u[x, 0] == 1 - (1*x^3)/4; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] == -u[1, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, t > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-189",
+  "number": 189,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Pinchover and Rubinstein 6.25",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Cos[w*t]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == x; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {L > 0, t > 0, k > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-190",
+  "number": 190,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "external source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Exp[-(c*t)]*Sin[(2*Pi*x)/L]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {L > 0, k > 0, t > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-191",
+  "number": 191,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] - beta*u[x, t]; bc = {Derivative[1,0][u][0, t] == 0, Derivative[1,0][u][Pi, t] == 0}; ic = u[x, 0] == x; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {beta > 0,k>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-192",
+  "number": 192,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Pinchover and Rubinstein 6.23",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; f[x] := 3*Cos[42*Pi*x]; g[x, t] := Exp[3*t]*Cos[17*x*Pi]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + g[x, t]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-193",
+  "number": 193,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Pinchover and Rubinstein 6.21",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + t*Cos[2001*x]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][Pi, t] == 0}; ic = u[x, 0] == Pi*Cos[2*x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-194",
+  "number": 194,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Diffusion Reaction. Euler-Cauchy Sturm-Liouville",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == x^2*D[u[x, t], {x, 2}] + x*D[u[x, t], x]; ic = u[x, 0] == Log[x]; bc = {Derivative[1, 0][u][1, t] == 0, h*u[b, t] + Derivative[1, 0][u][b, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}, Assumptions -> {b > 1, t > 0, h > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-195",
+  "number": 195,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "convection heat loss",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; ic = u[x, 0] == f[x]; bc = {u[0, t] == 0, Derivative[1, 0][u][1, t] == -h u[1, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, t > 0, h > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-196",
+  "number": 196,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Mixed BC",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] + u[0, t] == 0, Derivative[1, 0][u][L, t] + u[L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> {k > 0, x > 0, x < L}], 60*10]];"
+ },
+ {
+  "id": "abbasi-197",
+  "number": 197,
+  "section": "3.1.1 Finite domain (bar), Both ends homogeneous BC",
+  "title": "Haberman 8.2.1 (f)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Sin[(2*Pi*x)/L]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {L > 0, k > 0, t > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-198",
+  "number": 198,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "left end insulated (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] ; bc = {Derivative[1, 0][u][0, t] == 0, u[L, t] == T0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {L > 0, k > 0, t > 0}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-199",
+  "number": 199,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "left end insulated (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=5; k=1/100; f=0; T0=10; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] ; bc = {Derivative[1, 0][u][0, t] == 0, u[L, t] == T0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-200",
+  "number": 200,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "right end nonhomogeneous BC (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == T0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->k>0], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-201",
+  "number": 201,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "right end nonhomogeneous BC (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k=1/100; L=100; T0=100; f=x; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == T0}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-202",
+  "number": 202,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "right end nonhomogeneous BC, special case",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[1, t] == 1}; ic = u[x, 0] == Piecewise[{{1, x == 1}, {0, True}}]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-203",
+  "number": 203,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "convection heat loss",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; ic = u[x, 0] == 0; bc = {Derivative[1, 0][u][0, t] == h * u[0,t], u[1, t] == 1}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions->h>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-204",
+  "number": 204,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "nonhomogeneous BC",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], x] == 13*D[u[x, t], {x, 2}]; bc = {Derivative[1, 0][u][0, t] == 0, Derivative[1, 0][u][1, t] == 1}; ic = u[x, 0] == (1*x^2)/2 + x; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-205",
+  "number": 205,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "nonhomogeneous BC",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] ; ic = u[x, 0] == 0; bc = {u[0,t] == 0, Derivative[1, 0][u][Pi, t] == A}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->A>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-206",
+  "number": 206,
+  "section": "3.1.2 Finite domain (bar), left end homogeneous, right end not",
+  "title": "nonhomogeneous BC",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == k*D[u[r, t], {r, 2}] ; ic = u[r, 0] == r*f[r]; bc = {u[0, t] == 0, u[a, t] == a*phi[t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-207",
+  "number": 207,
+  "section": "3.1.3 Finite domain (bar), right end homogeneous, left end not",
+  "title": "left end BC depends on time (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1,0][u][0, t] == A[t], u[L, t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-208",
+  "number": 208,
+  "section": "3.1.3 Finite domain (bar), right end homogeneous, left end not",
+  "title": "left end BC depends on time (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=5; k=1/100; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1,0][u][0, t] == Exp[t], u[L, t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-209",
+  "number": 209,
+  "section": "3.1.3 Finite domain (bar), right end homogeneous, left end not",
+  "title": "left end BC depends on time (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=5; k=1/100; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {Derivative[1,0][u][0, t] == Sin[t], u[L, t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-210",
+  "number": 210,
+  "section": "3.1.3 Finite domain (bar), right end homogeneous, left end not",
+  "title": "Haberman 8.3.6 (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + Sin[5*x]*Exp[-2*t]; bc = {u[0, t] == 1, u[Pi, t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-211",
+  "number": 211,
+  "section": "3.1.3 Finite domain (bar), right end homogeneous, left end not",
+  "title": "BC depends on time (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 1}] == D[u[x, t], {x, 2}]; bc = {u[0, t] == t, u[Pi, t] == 0}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-212",
+  "number": 212,
+  "section": "3.1.4 Finite domain (bar), Periodic BC",
+  "title": "Periodic BC (general case). IC given",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[-L, t] == u[L, t], Derivative[1, 0][u][-L, t] == Derivative[1, 0][u][L, t]}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-213",
+  "number": 213,
+  "section": "3.1.4 Finite domain (bar), Periodic BC",
+  "title": "Periodic BC (general case). No IC given",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[-Pi, t] == u[Pi, t], Derivative[1, 0][u][-Pi, t] == Derivative[1, 0][u][Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-214",
+  "number": 214,
+  "section": "3.1.4 Finite domain (bar), Periodic BC",
+  "title": "Periodic BC (general case). Damped heat PDE. No IC given",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] -u[x,t]; bc = {u[-Pi, t] == u[Pi, t], Derivative[1, 0][u][-Pi, t] == Derivative[1, 0][u][Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, t], {x, t}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-215",
+  "number": 215,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "both ends non-homogeneous BC (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0,t>0}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-216",
+  "number": 216,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "non-homogeneous BC (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 20, u[1, t] == 50}; ic = u[x, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-217",
+  "number": 217,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Articolo 8.4.1 (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k = 1/20; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == 10, u[1, t] == 20}; ic = u[x, 0] == 60*x - 50*x^2 + 10; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-218",
+  "number": 218,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "With source that depends on space only (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x]; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-219",
+  "number": 219,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "With source that depends on space only (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; A=20; B=50; f=60-2*x; L=30; k=1/10; Q=x/10; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-220",
+  "number": 220,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "With source that depends on space and time only (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x,t]; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-221",
+  "number": 221,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == A[t], u[L, t] == B[t]}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{k>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-222",
+  "number": 222,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; f=x; L=2; k=1/10; A=Sin[t]; B=2*Cos[t]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-223",
+  "number": 223,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "both ends nonhomogeneous",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + (x - (1*x^2)/Pi); ic = u[x, 0] == Sin[x]; bc = {Derivative[1, 0][u][0, t] == 1, Derivative[1, 0][u][Pi, t] == -1}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-224",
+  "number": 224,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Haberman 8.2.1 (a) (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}]; bc = {u[0, t] == A, Derivative[1, 0][u][L, t] == B}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> L > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-225",
+  "number": 225,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Haberman 8.2.1 (d) (general solution)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + k; bc = {u[0, t] == A0, u[L0, t] == B0}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-226",
+  "number": 226,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time with source that depends on space only (general solution)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x]; bc = {u[0, t] == A[t], u[L, t] == B[t]}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{L>0,k>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-227",
+  "number": 227,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time with source that depends on space only (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=2; k=1/10; A=Sin[t]; B=Cos[t]; f=x; Q=x; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-228",
+  "number": 228,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time with source that depends on time and space (general solution)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x,t]; bc = {u[0, t] == A[t], u[L, t] == B[t]}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t},Assumptions->{L>0,k>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-229",
+  "number": 229,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Both ends depend on time with source present (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=2; k=1/10; A=Sin[t]; B=Cos[t]; f=x; Q=x*t*Exp[-t]*Cos[t]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q; bc = {u[0, t] == A, u[L, t] == B}; ic = u[x, 0] == f; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-230",
+  "number": 230,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Pinchover and Rubinstein 6.17",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], x] == D[u[x, t], {x, 2}] + 1 + x*Cos[t]; bc = {Derivative[1, 0][u][0, t] == Sin[t], Derivative[1, 0][u][1, t] == Sin[t]}; ic = u[x, 0] == 1 + Cos[2*Pi*x]; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, ic, bc}, u[x, t], x, t]], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-231",
+  "number": 231,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "nonhomogeneous BC",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == D[u[x, t], {x, 2}] + x; bc = {u[0, t] == (t*Sin[t])/5, u[Pi, t] == (t*Cos[t])/10}; ic = u[x, 0] == 60 - 2*x; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> {t > 0, x > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-232",
+  "number": 232,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Haberman 8.2.2. (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + Q[x, t]; bc = {Derivative[1, 0][u][0, t] == A[t], Derivative[1, 0][u][L, t] == B[t]}; ic = u[x, 0] == f[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t, Assumptions -> L > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-233",
+  "number": 233,
+  "section": "3.1.5 Finite domain (bar), Both ends nonhomogeneous BC",
+  "title": "Articolo 8.4.3",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k = 1/20; pde = D[u[x, t], t] == k*D[u[x, t], {x, 2}] + t; bc = {u[0, t] == 5, u[1, t] + Derivative[1, 0][u][1, t] == 10}; ic = u[x, 0] == (-40*x^2)/3 + (45*x)/2 + 5; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-255",
+  "number": 255,
+  "section": "3.2.1 Cartesian coordinates (Rectangle, Square)",
+  "title": "No source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], t] == (1*(D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]))/10; ic = u[x, y, 0] == x*(1 - x)*(1 - y)*y; bc = {u[0, y, t] == 0, u[1, y, t] == 0, u[x, 0, t] == 0, u[x, 1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-256",
+  "number": 256,
+  "section": "3.2.1 Cartesian coordinates (Rectangle, Square)",
+  "title": "Internal source term",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], t] == (1*(D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]))/10 - (1*u[x, y, t])/5; ic = u[x, y, 0] == (-x^2 + 1)*(1 - (1/2)*y)*y; bc = {Derivative[1, 0, 0][u][0, y, t] == 0, u[1, y, t] == 0, u[x, 0, t] == 0, Derivative[0, 1, 0][u][x, 1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-257",
+  "number": 257,
+  "section": "3.2.1 Cartesian coordinates (Rectangle, Square)",
+  "title": "Articolo 6.6.3",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k = 1/50; pde = D[u[x, y, t], t] == k*(D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]); bc = {Derivative[1, 0, 0][u][0, y, t] == 0, Derivative[1, 0, 0][u][1, y, t] + u[1, y, t] == 0, u[x, 0, t] == 0, u[x, 1, t] == 0}; ic = u[x, y, 0] == (1 - (1/3)*x^2)*y*(1 - y); sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-258",
+  "number": 258,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "no \n \n θ\n \n dependency, insulated (General solution)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = u[r, 0] == f[r]; bc = Derivative[1,0][u][L, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions->{r<L,L>0,k>0,t>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-259",
+  "number": 259,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "no \n \n θ\n \n dependency, insulated (Specific solution)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k=1; L=1; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = u[r, 0] == 2*L*r-r^2; bc = Derivative[1,0][u][L, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-260",
+  "number": 260,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "no \n \n θ\n \n dependency",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = u[r, 0] == f[r]; bc = L*Derivative[1,0][u][L, t] == -h*u[L,t]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions->{r<L,L>0,k>0,t>0,h>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-261",
+  "number": 261,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "no \n \n θ\n \n dependency",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == D[u[r, t], {r, 2}] + (1*D[u[r, t], r])/r; ic = u[r, 0] == 1 - r; bc = u[1, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-262",
+  "number": 262,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Haberman 8.3.5 (General solution)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + D[u[r, t], r]/r) + f[r, t]; ic = u[r, 0] == 0; bc = u[a, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions -> r < a], 60*10]];"
+ },
+ {
+  "id": "abbasi-263",
+  "number": 263,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Specific example of the above",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; a=2; k=1/100; f=Sin[t]; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + D[u[r, t], r]/r) + f; ic = u[r, 0] == 0; bc = u[a, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions -> r < a], 60*10]];"
+ },
+ {
+  "id": "abbasi-264",
+  "number": 264,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Specific example of the above",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; a=2; k=1/100; f=r*t*Exp[-t]; pde = D[u[r, t], t] == k*(D[u[r, t], {r, 2}] + D[u[r, t], r]/r) + f; ic = u[r, 0] == 0; bc = u[a, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions -> r < a], 60*10]];"
+ },
+ {
+  "id": "abbasi-265",
+  "number": 265,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Articolo 6.9.1",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; k = 1/50; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + (1*D[u[r, theta, t], {theta, 2}])/r^2); bcOnR = u[1, theta, t] == 0; bcOnTheta = {u[r, 0, t] == 0, Derivative[0, 1, 0][u][r, Pi/2, t] == 0}; ic = u[r, theta, 0] == (r - (1*r^3)/3)*Sin[theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t},Assumptions -> t > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-266",
+  "number": 266,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Articolo 6.9.2",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; k = 1/25; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + (1*D[u[r, theta, t], {theta, 2}])/r^2); bcOnR = Derivative[1, 0, 0][u][1, theta, t] == 0; bcOnTheta = {u[r, 0, t] == 0, u[r, Pi, t] == 0}; ic = u[r, theta, 0] == (r - (1*r^3)/3)*Sin[theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-267",
+  "number": 267,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Haberman 8.2.5 with \n \n θ\n \n dependency (General case)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = u[a, theta, t] == g[theta]; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == f[r, theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t}, Assumptions -> {a > 0, r<a, k > 0,t>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-268",
+  "number": 268,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "With \n \n θ\n \n dependency (Specific example)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; k=1; a=1; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = u[a, theta, t] == 0; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == 1-r^2; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-269",
+  "number": 269,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "With \n \n θ\n \n dependency (specific example)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; k=1; a=1; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = u[a, theta, t] == 0; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == (r-r^3)*Sin[theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-270",
+  "number": 270,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Insulated with \n \n θ\n \n dependency (General solution)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = Derivative[1,0,0][u][L, theta, t] == 0; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == f[r,theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t},Assumptions->{L>0,r>0,r<L,t>0,k>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-271",
+  "number": 271,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Insulated with \n \n θ\n \n dependency (Specific example)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; L=1; k=1; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = Derivative[1,0,0][u][L, theta, t] == 0; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == (2*L*r-r^2)*Cos[theta]*Sin[theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t},Assumptions->{r>0,r<L,t>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-272",
+  "number": 272,
+  "section": "3.2.2 Polar coordinates (disk, sector, annulus)",
+  "title": "Insulated with \n \n θ\n \n dependency (Specific example)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; L=1; k=1; pde = D[u[r, theta, t], t] == k*(D[u[r, theta, t], {r, 2}] + D[u[r, theta, t], r]/r + D[u[r, theta, t], {theta, 2}]/r^2); bcOnR = Derivative[1,0,0][u][L, theta, t] == 0; bcOnTheta = {u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; ic = u[r, theta, 0] == (2*L*r - r^2)*theta*Sin[theta]*Exp[Cos[theta]]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta, ic}, u[r, theta, t], {r, theta, t},Assumptions->{r>0,r<L,t>0}], 60*10]]; $Aborted"
+ },
+ {
+  "id": "abbasi-273",
+  "number": 273,
+  "section": "3.3.1 Spherical coordinates",
+  "title": "No angle dependencies",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], t] == (k*D[r*u[r, t], {r, 2}])/r; ic = u[r, 0] == 0; bc = u[1, t] == t; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}, Assumptions -> {t > 0, k > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-274",
+  "number": 274,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.4 (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, 0, t] == 0, u[r, H, t] == 0, u[a, z,t] == 0}; ic = u[r, z, 0] == f[r,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,z,t],t]==k*lap, bc, ic}, u[r, z,t], {r, z,t}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-275",
+  "number": 275,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.4 (b)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {Derivative[0,1,0][u][r,0, t] == 0, Derivative[0,1,0][u][r, H, t] == 0, Derivative[1,0,0][u][a, z,t] == 0}; ic = u[r,z, 0] == f[r,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,z,t],t]==k*lap, bc, ic}, u[r, z,t], {r, z,t}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-276",
+  "number": 276,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.4 (c)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, 0, t] == 0, u[r, H, t] == 0, Derivative[1,0,0][u][a, z,t] == 0}; ic = u[r, z, 0] == f[r,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,z,t],t]==k*lap, bc, ic}, u[r, z,t], {r, z,t}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-277",
+  "number": 277,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.3 (a)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0, t] == 0, u[r, theta, H, t] == 0, u[r, 0, z,t] == 0,u[r,Pi/2,z,t]==0,u[a,Pi,z,t]==0}; ic = u[r, theta, z, 0] == f[r,theta,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,theta,z,t],t]==k*lap, bc, ic}, u[r, theta, z,t], {r, theta, z,t}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi/2}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-278",
+  "number": 278,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.3 (b)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {Derivative[0,0,1,0][u][r, theta, 0, t] == 0, Derivative[0,0,1,0][u][r, theta, H, t] == 0, Derivative[0,1,0,0][u][r, 0, z,t] == 0,Derivative[0,1,0,0][u][r,Pi/2,z,t]==0,Derivative[1,0,0,0][u][a,theta,z,t]==0}; ic = u[r, theta, z, 0] == f[r,theta,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,theta,z,t],t]==k*lap, bc}, u[r, theta, z,t], {r, theta, z,t}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi/2}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-279",
+  "number": 279,
+  "section": "3.3.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.3 (c)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z, t], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0, t] == 0, u[r, theta, H, t] == 0, u[r, 0, z,t] == 0,u[r,Pi/2,z,t]==0,u[a,Pi,z,t]==0}; ic = u[r, theta, z, 0] == f[r,theta,z]; sol = AbsoluteTiming[TimeConstrained[DSolve[{D[u[r,theta,z,t],t]==k*lap, bc}, u[r, theta, z,t], {r, theta, z,t}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi/2}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-280",
+  "number": 280,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Rectangle, 3 edges zero, buttom edge not",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[x,0]==f[x], u[x, H] == 0, u[0, y] == 0,u[L,y]==0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-281",
+  "number": 281,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Rectangle, 3 edges zero, right edge not",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; a=1;b=1; pde = Laplacian[u[x,y],{x,y}] == 0; bc = {u[x,0]==0, u[x, b] == 0, u[0, y] == 0,u[a,y]==y*(1-y)}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-282",
+  "number": 282,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Rectangle, 3 edges zero, buttom edge has impulse",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; f[x_] := DiracDelta[x - zeta]; bc = {u[x, 0] == f[x], u[x, b] == 0, u[0, y] == 0, u[a, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= a && 0 <= y <= b && 0 < zeta < a}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-283",
+  "number": 283,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Haberman 2.5.1 (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {Derivative[1, 0][u][0, y] == 0, Derivative[1, 0][u][L, y] == 0, u[x, 0] == 0, u[x, H] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-284",
+  "number": 284,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Haberman 2.5.1 (b)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {Derivative[1, 0][u][0, y] == g[y], Derivative[1, 0][u][L, y] == 0, u[x, 0] == 0, u[x, H] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]]; sol = sol /. {K[1] -> n};"
+ },
+ {
+  "id": "abbasi-285",
+  "number": 285,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Haberman 2.5.1 (c)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {Derivative[1, 0][u][0, y] == 0, u[L, y] == g[y], u[x, 0] == 0, u[x, H] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]];"
+ },
+ {
+  "id": "abbasi-286",
+  "number": 286,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Haberman 2.5.1 (d)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == g[y], u[L, y] == 0, Derivative[0, 1][u][x, 0] == 0, u[x, H] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-287",
+  "number": 287,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Haberman 2.5.1 (e)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[0, y] == 0, u[L, y] == 0, u[x, 0] - Derivative[0, 1][u][x, 0] == 0, u[x, H] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 <= x <= L && 0 <= y <= H}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-288",
+  "number": 288,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Unit triangle B.C.",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; L0 = 1; H0 = 2; bc = DirichletCondition[u[x, y] == Piecewise[{{UnitTriangle[2*x - L0], y == 0 || y == H0}}, 0], True]; domain = Rectangle[{0, 0}, {L0, H0}]; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], Element[{x, y}, domain]]], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-289",
+  "number": 289,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Top edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == A, u[L, y] == 0, u[x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {x > 0, y > 0, L > 0}]], 60*10]];"
+ },
+ {
+  "id": "abbasi-290",
+  "number": 290,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Top edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == 0, u[L, y] == A, u[x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {x > 0, y > 0, L > 0}]], 60*10]];"
+ },
+ {
+  "id": "abbasi-291",
+  "number": 291,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Right edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == 0, u[x, 0] == A, u[x, L] == 0}; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {x > 0, y > 0, L > 0}]], 60*10]];"
+ },
+ {
+  "id": "abbasi-292",
+  "number": 292,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Right edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == 0, u[x, L] == Exp[-x], u[x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {x > 0, y > 0, L > 0}]], 60*10]];"
+ },
+ {
+  "id": "abbasi-293",
+  "number": 293,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Right edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == 0, u[x, 1] == f[x], u[x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {x > 0, y > 0}]], 60*10]];"
+ },
+ {
+  "id": "abbasi-294",
+  "number": 294,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Laplace PDE in 2D Cartessian with boundary condition as Dirac function",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = u[x, 0] == DiracDelta[x]; sol = AbsoluteTiming[TimeConstrained[Simplify[DSolve[{pde, bc}, u[x, y], x, y]], 60*10]];"
+ },
+ {
+  "id": "abbasi-295",
+  "number": 295,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "One side homogeneous",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[0, y] == 0, u[Pi, y] == Sinh[Pi]*Cos[y], u[x, 0] == Sin[x], u[x, Pi] == -Sinh[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], x, y], 60*10]];"
+ },
+ {
+  "id": "abbasi-296",
+  "number": 296,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "In right half plane",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = u[0, y] == Sin[y]/y; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> 0 < x], 60*10]];"
+ },
+ {
+  "id": "abbasi-297",
+  "number": 297,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Right edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}] + D[u[x, y], {y, 2}] == 0; bc = {u[x, 0] == 0, u[x, a] == 0, u[0, y] == Sin[y]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> a > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-298",
+  "number": 298,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Dirichlet problem Upper half",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = u[x, 0] == UnitBox[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y},Assumptions -> {y > 0, -Infinity < x < Infinity}], 60*10]];"
+ },
+ {
+  "id": "abbasi-299",
+  "number": 299,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Right half-plane",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = u[0, y] == Sinc[y]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y},Assumptions -> {x > 0, -Infinity < y < Infinity}], 60*10]];"
+ },
+ {
+  "id": "abbasi-300",
+  "number": 300,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "First quadrant",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[x, 0] == -((x - 2)^2 + 3)^(-1), u[0, y] == 1/((y - 3)^2 + 1)}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y},Assumptions -> {x > 0, y > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-301",
+  "number": 301,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Neumann problem upper half-plane",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = Derivative[0, 1][u][x, 0] == UnitBox[x]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y},Assumptions -> y>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-302",
+  "number": 302,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Dirichlet problem in a rectangle",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[x, 0] == x^2*(1 - x), u[x, 2] == 0, u[0, y] == 0, u[1, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-303",
+  "number": 303,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "Strip in upper half",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[x, 0] == 0, u[x, b] == h[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> {0 < y < b, b > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-304",
+  "number": 304,
+  "section": "4.1.1 Cartesian coordinates",
+  "title": "in Rectangle, right edge at infinity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 0; bc = {u[x, 0] == 0, u[x, a] == 0, u[0, y] == Sin[y]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> a > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-305",
+  "number": 305,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Laplace PDE inside quarter disk, Neumann BC at edge",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (1*D[u[r, theta], r])/r + (1*D[u[r, theta], {theta, 2}])/r^2 == 0; bcOnR = {Derivative[1, 0][u][1, theta] == f[theta]}; bcOnTheta = {u[r, 0] == 0, u[r, Pi/2] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bcOnR, bcOnTheta}, u[r, theta], {r, theta}, Assumptions -> {r > 0, r < 1, theta > 0, theta < Pi/2}], 60*10]];"
+ },
+ {
+  "id": "abbasi-306",
+  "number": 306,
+  "section": "4.1.2 Polar coordinates",
+  "title": "=\n r\n 4\n \n \n and \n \n \n =\n u\n \n \n x\n 4\n \n \n \n at boundary of disk",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (D[u[r, theta], r])/r + (D[u[r, theta], {theta, 2}])/r^2 == 0; bc = u[4, theta] == (4*Cos[theta])^4; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-307",
+  "number": 307,
+  "section": "4.1.2 Polar coordinates",
+  "title": "=\n r\n 1\n \n \n and \n \n \n =\n \n \n u\n r\n \n x\n \n \n at boundary of disk",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[r, theta], {r, theta}, \"Polar\"] == 0; bc = {Derivative[1, 0][u][1, theta] == Cos[theta], u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-308",
+  "number": 308,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Laplace inside disk. General solution",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (1*D[u[r, theta], r])/r + (1*D[u[r, theta], {theta, 2}])/r^2 == 0; bc = u[a, theta] == f[theta]; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> a < r && a > 0 && Inequality[0, Less, theta, LessEqual, 2*Pi]], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-309",
+  "number": 309,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Laplace inside disk. Specific boundary conditions",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; a = 1; pde = Laplacian[u[r, theta], {r, theta}, \"Polar\"] == 0; f[theta_] := 1/4*(Cos[theta] - Cos[3*theta]); bc = {u[a, theta] == f[theta], u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}], 60*10]];"
+ },
+ {
+  "id": "abbasi-310",
+  "number": 310,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Haberman 2.5.5 (c)",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (1*D[u[r, theta], r]*1*D[u[r, theta], {theta, 2}])/(r*r^2) == 0; bc = {Derivative[1, 0][u][1, theta] == f[theta], u[r, Pi/2] == 0, u[r, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {0 <= r <= 1 && 0 <= theta <= Pi/2}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-311",
+  "number": 311,
+  "section": "4.1.2 Polar coordinates",
+  "title": "semi-circle",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (1/r) D[u[r, theta], r] + 1/r^2*D[u[r, theta], {theta, 2}] == 0; bc = {u[r, 0] == 0, u[r, Pi] == 0, u[1, theta] == f[theta]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {0 < r <= 1 && 0 < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-312",
+  "number": 312,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Haberman 2.5.8 (b)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + 1/r*D[u[r, theta], r] + 1/r^2*D[u[r, theta], {theta, 2}] == 0; bc = {Derivative[1, 0][u][a, theta] == 0, u[b, theta] == g[theta]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> a < r < b], 60*10]];"
+ },
+ {
+  "id": "abbasi-313",
+  "number": 313,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Circular annulus",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + (1*D[u[r, theta], r])/r + (1*D[u[r, theta], {theta, 2}])/r^2 == 0; bc = {u[1, theta] == 0, u[2, theta] == Sin[theta]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}], 60*10]];"
+ },
+ {
+  "id": "abbasi-314",
+  "number": 314,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Outside a disk",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta], {r, 2}] + 1/r*D[u[r, theta], r] + 1/r^2*D[u[r, theta], {theta, 2}] == 0; bc = {u[a, theta] == f[theta], u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> {a > 0, r > a}], 60*10]];"
+ },
+ {
+  "id": "abbasi-315",
+  "number": 315,
+  "section": "4.1.2 Polar coordinates",
+  "title": "Outside a disk",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; a=1; pde = Laplacian[u[r, theta], {r, theta}, \"Polar\"] == 0; f[theta_] := 1/4*(Cos[theta] - Cos[3*theta]); bc = {u[a, theta] == f[theta], u[r, -Pi] == u[r, Pi], Derivative[0, 1][u][r, -Pi] == Derivative[0, 1][u][r, Pi]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[r, theta], {r, theta}, Assumptions -> r > a], 60*10]];"
+ },
+ {
+  "id": "abbasi-316",
+  "number": 316,
+  "section": "4.2.1 Spherical coordinates",
+  "title": "In a sphere",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[f[r, theta, phi], {r, theta, phi}, \"Spherical\"]; sol = AbsoluteTiming[TimeConstrained[DSolve[lap == 0, f[r, theta, phi], {r, theta, phi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-317",
+  "number": 317,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.1 (a)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == f[r, theta], u[r, theta, H] == 0, u[a, theta, z] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-318",
+  "number": 318,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.1 (b)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == f[r]*Sin[7*theta], u[r, theta, H] == 0, u[a, theta, z] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-319",
+  "number": 319,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.1 (c)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == 0, u[r, theta, H] == f[r]*Cos[3*theta], Derivative[1,0,0][u][a, theta, z] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-320",
+  "number": 320,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.1 (d)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {Derivative[0,0,1][u][r, theta, 0] == f[r]*Sin[3*theta], Derivative[0,0,1][u][r, theta, H] == 0, Derivative[1,0,0][u][a, theta, z] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-321",
+  "number": 321,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.1 (e)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {Derivative[0,0,1][u][r, theta, 0] == f[r,theta], Derivative[0,0,1][u][r, theta, H] == 0, Derivative[1,0,0][u][a, theta, z] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-322",
+  "number": 322,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.2 (a)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == 0, u[r, theta, H] == f[r,theta], u[r, 0, z] == 0,u[r,Pi,z]==0,u[a,theta,z]==0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-323",
+  "number": 323,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.2 (b)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == 0, Derivative[0,0,1][u][r, theta, H] == 0, u[r, 0, z] == 0,u[r,Pi,z]==0,u[a,theta,z]==g[theta,z]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-324",
+  "number": 324,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.2 (c)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {Derivative[0,0,1][u][r, theta, 0] == 0, Derivative[0,0,1][u][r, theta, H] == 0, Derivative[0,1,0][u][r, 0, z] == 0,Derivative[1,0,0][u][r,Pi,z]==0,Derivative[1,0,0][u][a,theta,z]==g[theta,z]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-325",
+  "number": 325,
+  "section": "4.2.2 Cylinderical coordinates",
+  "title": "Haberman 7.9.2 (d)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, z], {r, theta, z}, \"Cylindrical\"]; bc = {u[r, theta, 0] == 0, u[r, 0, z] == 0, u[a, theta, z] == 0,u[r,theta,H]==0,Derivative[0,1,0][u][r,Pi,z]==f[r,z]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{lap == 0, bc}, u[r, theta, z], {r, theta, z}, Assumptions -> {a > 0, r < a, H > 0,theta>0,theta<Pi}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-326",
+  "number": 326,
+  "section": "4.3.1 Cartesian coordinates",
+  "title": "All boundaries at zero",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y], {x, 2}]/A + D[u[x, y], {y, 2}]/B == -2*theta; bc = {u[x, -b] == 0, u[x, b] == 0, u[-a, y] == 0, u[a, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-327",
+  "number": 327,
+  "section": "4.3.1 Cartesian coordinates",
+  "title": "Dirichlet problem in a rectangle",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 6*x - 6*y; bc = {u[x, 0] == 1 + 11*x + x^3, u[x, 2] == -7 + 11*x + x^3, u[0, y] == 1 - y^3, u[4, y] == 109 - y^3}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}], 60*10]];"
+ },
+ {
+  "id": "abbasi-328",
+  "number": 328,
+  "section": "4.3.1 Cartesian coordinates",
+  "title": "Poisson PDE in whole 2D plane",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] == 6*y; sol = AbsoluteTiming[TimeConstrained[DSolve[pde, u[x, y], {x, y}], 60*10]];"
+ },
+ {
+  "id": "abbasi-329",
+  "number": 329,
+  "section": "4.4 Helmholtz in 2D",
+  "title": "In rectangle",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = {Laplacian[u[x, y], {x, y}] + 5*u[x, y] == 0}; bc = {u[x, 0] == Piecewise[{{-1 + x, x > 1 && x < 2}, {3 - x, x > 2 && x < 3}}], u[x, 2] == 0, u[0, y] == 0, u[4, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}], 60*10]]; sol = sol /. K[1] -> n"
+ },
+ {
+  "id": "abbasi-330",
+  "number": 330,
+  "section": "4.4 Helmholtz in 2D",
+  "title": "On whole plane",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = {Laplacian[u[x, y], {x, y}] + 5*u[x, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[pde, u[x, y], {x, y}], 60*10]];"
+ },
+ {
+  "id": "abbasi-331",
+  "number": 331,
+  "section": "4.4 Helmholtz in 2D",
+  "title": "Reduced Helmholtz Inside square",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = Laplacian[u[x, y], {x, y}] - k*u[x, y] == 0; bc = {u[x, 0] == 0, u[x, Pi] == 0, u[0, y] == 1, u[Pi, y] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, y], {x, y}, Assumptions -> k > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-332",
+  "number": 332,
+  "section": "4.5.1 Spherical coordinates",
+  "title": "Chain reaction PDE",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; U = u[r, theta, t]; pde = D[U, t] == k*(lambda*U + (1/r^2)*D[r^2*D[U, r], r] + (1/(r^2*Sin[theta]))*D[Sin[theta]*D[U, theta], theta]); bc = u[R, theta, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, U, {r, theta, t}, Assumptions -> {k > 0, r < R}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-333",
+  "number": 333,
+  "section": "5.1.1 Finite length string",
+  "title": "General solution for both ends fixed. Domain is \n \n \n ⁢\n 0\n …\n L",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; ic = {u[x, 0] == f[x], Derivative[0, 1][u][x, 0] == g[x]}; bc = {u[0, t] == 0, u[L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}, Assumptions->L>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-334",
+  "number": 334,
+  "section": "5.1.1 Finite length string",
+  "title": "both ends fixed, inital position zero (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=10; c=2; f=0; g=(8*x*(L-x)^2)/L^3; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; ic = {u[x, 0] == f, Derivative[0, 1][u][x, 0] == g}; bc = {u[0, t] == 0, u[L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-335",
+  "number": 335,
+  "section": "5.1.1 Finite length string",
+  "title": "both ends fixed, inital velocity zero (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=10; c=2; g=0; f=(8*x*(L-x)^2)/L^3; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; ic = {u[x, 0] == f, Derivative[0, 1][u][x, 0] == g}; bc = {u[0, t] == 0, u[L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]]; sol = sol/.K[1]->n;"
+ },
+ {
+  "id": "abbasi-336",
+  "number": 336,
+  "section": "5.1.1 Finite length string",
+  "title": "both ends fixed but domain is \n \n \n -\n \n ⁢\n π\n …\n π\n \n \n \n . zero intial position, non zero initial velocity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == Sin[x]^2}; bc = {u[-Pi, t] == 0, u[Pi, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-337",
+  "number": 337,
+  "section": "5.1.1 Finite length string",
+  "title": "both ends fixed but domain is \n \n \n -\n \n ⁢\n 1\n …\n 1\n \n \n \n . intial position is an impulse, zero initial velocity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}]; bc = {u[-1, t] == 0, u[1, t] == 0}; ic = {u[x, 0] == DiracDelta[x], Derivative[0, 1][u][x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-338",
+  "number": 338,
+  "section": "5.1.1 Finite length string",
+  "title": "Logan book, page 28. Both ends fixed",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc}, u[x, t], {x, t}, Assumptions -> {L > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-339",
+  "number": 339,
+  "section": "5.1.1 Finite length string",
+  "title": "non-zero initial velocity. Both ends fixed",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] - u[x, t]; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 1}; bc = {u[0, t] == 0, u[Pi, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-340",
+  "number": 340,
+  "section": "5.1.1 Finite length string",
+  "title": "Logan book page 149)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}] + p[x, t]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-341",
+  "number": 341,
+  "section": "5.1.1 Finite length string",
+  "title": "Haberman 8.5.2 (a)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}] + Q[x, t]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == f[x], Derivative[0, 1][u][x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-342",
+  "number": 342,
+  "section": "5.1.1 Finite length string",
+  "title": "Haberman 8.5.2 (b)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}] + g[x]*Cos[w*t]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == f[x], Derivative[0, 1][u][x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-343",
+  "number": 343,
+  "section": "5.1.1 Finite length string",
+  "title": "Both I.C. not zero",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[v[x, t], {t, 2}] == D[v[x, t], {x, 2}]; bc = {v[0, t] == 0, v[1, t] == 0}; ic = {v[x, 0] == -((Exp[2]*x - Exp[x + 1] - x + Exp[1 - x])/(Exp[2] - 1)), Derivative[0, 1][v][x, 0] == 1 + (Exp[2]*x - Exp[x + 1] - x + Exp[1 - x])/(Exp[2] - 1)}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, v[x, t], {x, t}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-344",
+  "number": 344,
+  "section": "5.1.1 Finite length string",
+  "title": "With constant source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}] + 1; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == f[x], Derivative[0, 1][u][x, 0] == g[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L > 0], 60*10]];"
+ },
+ {
+  "id": "abbasi-345",
+  "number": 345,
+  "section": "5.1.1 Finite length string",
+  "title": "Logan page 213",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}] + A*x; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-346",
+  "number": 346,
+  "section": "5.1.1 Finite length string",
+  "title": "Telegraphy PDE",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] + 2*D[u[x, t], t] == D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], x, t], 60*10]];"
+ },
+ {
+  "id": "abbasi-347",
+  "number": 347,
+  "section": "5.1.1 Finite length string",
+  "title": "Dispersion term present (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] + gamma^2*u[x, t] == c^2 D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t},Assumptions->L>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-348",
+  "number": 348,
+  "section": "5.1.1 Finite length string",
+  "title": "Dispersion term present",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] + gamma^2*u[x, t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[Pi, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == Sin[x]^2}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-349",
+  "number": 349,
+  "section": "5.1.1 Finite length string",
+  "title": "Dispersion term present (specific case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; gamma=1/8; c=1; L=10; f=Piecewise[{{x-4,4<=x<=5},{6-x,5<x<=6},{0,True}}]; pde = D[u[x, t], {t, 2}] + gamma^2*u[x, t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, u[L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-350",
+  "number": 350,
+  "section": "5.1.1 Finite length string",
+  "title": "non-zero initial position",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == 4*D[u[x, t], {x, 2}]; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == Sin[x]^2}; bc = {u[0, t] == 0, u[Pi, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-351",
+  "number": 351,
+  "section": "5.1.1 Finite length string",
+  "title": "With source",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] + x*Exp[-t]; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; bc = {u[0, t] == 0, u[1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-352",
+  "number": 352,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == g[x], u[x, 0] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-353",
+  "number": 353,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions -> L>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-354",
+  "number": 354,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity (special case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=3; c=4; h=1/10; f=Piecewise[{{3*h/L*x,0<x<L/3},{h,L/3<x<L}}]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-355",
+  "number": 355,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity, damping present (general case)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] + b*D[u[x,t],t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f[x]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}, Assumptions->{b>0,L>0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-356",
+  "number": 356,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity, damping present (special case, underdamped)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=3; c=4; h=1/10; b=1/2*(Pi*c/L); f=Piecewise[{{3*h/L*x,0<x<L/3},{h,L/3<x<L}}]; pde = D[u[x, t], {t, 2}] + b*D[u[x,t],t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-357",
+  "number": 357,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity, damping present (special case, critical damped)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=3; c=4; h=1/10; b=Pi*c/L; f=Piecewise[{{3*h/L*x,0<x<L/3},{h,L/3<x<L}}]; pde = D[u[x, t], {t, 2}] + b*D[u[x,t],t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-358",
+  "number": 358,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end free, zero initial velocity, damping present (special case, over damped)",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=3; c=4; h=1/10; b=3/2*Pi*c/L; f=Piecewise[{{3*h/L*x,0<x<L/3},{h,L/3<x<L}}]; pde = D[u[x, t], {t, 2}] + b*D[u[x,t],t] == c^2*D[u[x, t], {x, 2}]; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == 0}; ic = {Derivative[0, 1][u][x, 0] == 0, u[x, 0] == f}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-359",
+  "number": 359,
+  "section": "5.1.1 Finite length string",
+  "title": "I.C. at different times, right end free, with source",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = -D[u[x, t], {t, 2}] + u[x, t] == D[u[x, t], {x, 2}] + 2*Exp[-t]*(x - (1/2)*x^2 + (1/2)*t - 1); bc = {u[0, t] == 0, Derivative[1, 0][u][1, t] == 0}; ic = {u[x, 0] == x^2 - 2*x, u[x, 1] == u[x, 1/2] + ((1/2)*x^2 - x)*Exp[-1] - ((3*x^2)/4 - (3/2)*x)*Exp[-2^(-1)]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, t], x, t], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-360",
+  "number": 360,
+  "section": "5.1.1 Finite length string",
+  "title": "Right end oscillates",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == 4*D[u[x, t], {x, 2}] + (1 + t)*x; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; bc = {u[0, t] == 0, u[Pi, t] == Sin[t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-361",
+  "number": 361,
+  "section": "5.1.1 Finite length string",
+  "title": "Perioidic B.C.",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] ; ic = {u[x, 0] == x, Derivative[0, 1][u][x, 0] == 0}; bc = {u[-Pi, t] == u[Pi,t], Derivative[1, 0][u][-Pi, t] ==Derivative[1, 0][u][Pi, t] }; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-362",
+  "number": 362,
+  "section": "5.1.1 Finite length string",
+  "title": "Mixed B.C.",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == D[u[x, t], {x, 2}] ; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 1}; bc = u[0, t] == Derivative[1, 0][u][Pi, t] ; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-363",
+  "number": 363,
+  "section": "5.1.1 Finite length string",
+  "title": "Left end fixed, right end non-homogeneous Neumann BC. Zero initial conditions",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, t], {t, 2}] == c^2*D[u[x, t], {x, 2}]; ic = {u[x, 0] == 0, Derivative[0, 1][u][x, 0] == 0}; bc = {u[0, t] == 0, Derivative[1, 0][u][L, t] == C0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, t], {x, t},Assumptions->L>0], 60*10]];"
+ },
+ {
+  "id": "abbasi-394",
+  "number": 394,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "Rectangular membrane. Fixed on all edges, General solution",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == c^2*Laplacian[u[x, y, t], {x, y}]; ic = {Derivative[0, 0, 1][u][x, y, 0] == g[x, y], u[x, y, 0] == f[x, y]}; bc = {u[0, y, t] == 0, u[0, H, t] == 0, u[x, 0, t] == 0, u[x, L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, y, t], {x, y, t},Assumptions -> {H > 0, L > 0, c > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-395",
+  "number": 395,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "Rectangular membrane. Fixed on all edges, zero velocity. Specific example",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=1;H=2;c=1/10; f[x_,y_]:=x*Cos[y]; g[x_,y_]:=0; pde = D[u[x, y, t], {t, 2}] == c^2*Laplacian[u[x, y, t], {x, y}]; ic = {Derivative[0, 0, 1][u][x, y, 0] == g[x, y], u[x, y, 0] == f[x, y]}; bc = {u[0, y, t] == 0, u[0, H, t] == 0, u[x, 0, t] == 0, u[x, L, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-396",
+  "number": 396,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "All 4 edges fixed, zero initial velocity, Specific example",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L=2; H=3; c=1/3; f1[x_] :=Piecewise[{{x, x < L/2}, {L - x, x > L/2}}]; f2[y_] := Piecewise[{{y, y < H/2}, {H - y, y > H/2}}]; pde = D[u[x, y, t], {t, 2}] == c^2 * Laplacian[u[x, y, t], {x, y}]; ic = {u[x, y, 0] == 3*f1[x]*f2[y], Derivative[0, 0, 1][u][x, y, 0] == 0}; bc = {u[x, 0, t] == 0, u[0, y, t] == 0, u[L, y, t] == 0, u[x, H, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> m};"
+ },
+ {
+  "id": "abbasi-397",
+  "number": 397,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "All 4 edges fixed, zero initial velocity, Specific example, delta in center",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; L = 20; H = 30; c = 1/3; f1[x] := Piecewise[{{1,45/100*L <= x<= 55/100*L},{0,True}}]; f2[y] := Piecewise[{{1,45/100*H<= y<= 55/100*H},{0,True}}]; pde = D[u[x, y, t], {t, 2}] == c^2 * Laplacian[u[x, y, t], {x, y}]; ic = {u[x, y, 0] == f1[x]*f2[y], Derivative[0, 0, 1][u][x, y, 0] == 0}; bc = {u[x, 0, t] == 0, u[0, y, t] == 0, u[L, y, t] == 0, u[x, H, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> m};"
+ },
+ {
+  "id": "abbasi-398",
+  "number": 398,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "All 4 edges fixed",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == Laplacian[u[x, y, t], {x, y}]; ic = {u[x, y, 0] == (1/10)*(x - x^2)*(2*y - y^2), Derivative[0, 0, 1][u][x, y, 0] == 0}; bc = {u[x, 0, t] == 0, u[0, y, t] == 0, u[1, y, t] == 0, u[x, 2, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> m}; sol = Assuming[Element[{n, m}, Integers], FullSimplify[sol]];"
+ },
+ {
+  "id": "abbasi-399",
+  "number": 399,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "All edges fixed (Haberman 8.5.5 (a)",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == c^2*Laplacian[u[x, y, t], {x, y}] + Q[x, y, t]; ic = {u[x, y, 0] == f[x, y], Derivative[0, 0, 1][u][x, y, 0] == 0}; bc = {u[0, y, t] == 0, u[L, y, t] == 0, u[x, 0, t] == 0, u[x, H, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}, Assumptions -> {L > 0, H > 0, t > 0, c > 0}], 60*10]];"
+ },
+ {
+  "id": "abbasi-400",
+  "number": 400,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "2 edgs fixed, 2 free, zero initial velocity",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == (1*(D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]))/4; ic = {Derivative[0, 0, 1][u][x, y, 0] == 0, u[x, y, 0] == x*y*(Pi - y)}; bc = {Derivative[1, 0, 0][u][0, y, t] == 0, Derivative[1, 0, 0][u][Pi, y, t] == 0, u[x, 0, t] == 0, u[x, Pi, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-401",
+  "number": 401,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "All 4 edges fixed, zero initial velocity, general solution",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == c^2 * Laplacian[u[x, y, t], {x, y}]; ic = {u[x, y, 0] == f[x,y], Derivative[0, 0, 1][u][x, y, 0] == 0}; bc = {u[x, 0, t] == 0, u[0, y, t] == 0, u[L, y, t] == 0, u[x, H, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[x, y, t], {x, y, t}], 60*10]]; sol = sol /. {K[1] -> n, K[2] -> m};"
+ },
+ {
+  "id": "abbasi-402",
+  "number": 402,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "With damping",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[x, y, t], {t, 2}] == (1*(D[u[x, y, t], {x, 2}] + D[u[x, y, t], {y, 2}]))/4 - (1*D[u[x, y, t], t])/10; ic = {u[x, y, 0] == 0, Derivative[0, 0, 1][u][x, y, 0] == x*(1 - (1/2)*x)*(1 - (1/2)*y)*y}; bc = {u[0, y, t] == 0, Derivative[1, 0, 0][u][1, y, t] == 0, u[x, 0, t] == 0, Derivative[0, 1, 0][u][x, 1, t] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, bc, ic}, u[x, y, t], {x, y, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-403",
+  "number": 403,
+  "section": "5.2.1 Cartesian coordinates",
+  "title": "On the whole plane",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; ode = D[u[x, y], {x, 2}] - 2*Sin[x]*D[u[x, y], x, y] - Cos[x]^2*D[u[x, y], {y, 2}] - Cos[x]*D[u[x, y], y] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[ode, u[x, y], {x, y}], 60*10]];"
+ },
+ {
+  "id": "abbasi-404",
+  "number": 404,
+  "section": "5.2.2 Polar coordinates",
+  "title": "no \n \n θ\n \n dependency, fixed boundary, general case",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], {t, 2}] == c^2*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = {u[r, 0] == f[r], Derivative[0, 1][u][r, 0] == g[r]}; bc = u[a, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t},Assumptions->{t>0,r>0,r<a}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-405",
+  "number": 405,
+  "section": "5.2.2 Polar coordinates",
+  "title": "no \n \n θ\n \n dependency. Specific example. Both initial conditions not zero",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], {t, 2}] == c^2*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = {u[r, 0] == 1, Derivative[0, 1][u][r, 0] == r/3}; bc = u[1, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t}], 60*10]]; sol = sol /. K[1] -> n; sol = FullSimplify[sol];"
+ },
+ {
+  "id": "abbasi-406",
+  "number": 406,
+  "section": "5.2.2 Polar coordinates",
+  "title": "no \n \n θ\n \n dependency. Specific example. Both initial conditions not zero",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; c=2/10; a=1; g[r_]:=0; f[r_]:=r; pde = D[u[r, t], {t, 2}] == c^2*(D[u[r, t], {r, 2}] + 1/r*D[u[r, t], r]); ic = {u[r, 0] == f[r], Derivative[0, 1][u][r, 0] == g[r]}; bc = u[a, t] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, t], {r, t},Assumptions->{t>0,r>0}], 60*10]]; sol = sol /. K[1] -> n;"
+ },
+ {
+  "id": "abbasi-407",
+  "number": 407,
+  "section": "5.2.2 Polar coordinates",
+  "title": "no \n \n θ\n \n dependency. Using integral transforms. Source present. Specific example",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, t], {r, 2}] + D[u[r, t], r]/r + D[u[r, t], {t, 2}] == -Q0*q[r]; ic = u[r, 0] == 0; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic}, u[r, t], {r, t}], 60*10]];"
+ },
+ {
+  "id": "abbasi-408",
+  "number": 408,
+  "section": "5.2.2 Polar coordinates",
+  "title": "no \n \n θ\n \n dependency. Using integral transforms. Source present. Specific example",
+  "mma_published": false,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; pde = c^2*(D[u[r, t], {r, 2}] + D[u[r, t], r]/r) == D[u[r, t], {t, 2}]; ic = {u[r, 0] == A*a*(a^2 + r^2)^(-1/2), Derivative[0, 1][u][r, 0] == 0}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic}, u[r, t], {r, t}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-409",
+  "number": 409,
+  "section": "5.2.2 Polar coordinates",
+  "title": "θ\n \n dependency, fixed on edges, general solution",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta, t], {t, 2}] == c^2*Laplacian[u[r,theta,t],{r,theta},\"Polar\"]; ic = {u[r, theta, 0] == f[r, theta], Derivative[0, 0, 1][u][r, theta, 0] == g[r,theta]}; bc = {u[a, theta, t] == 0, u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, theta, t], {r, theta, t}, Assumptions -> {0 < r < a, a > 0, t > 0, -Pi < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-410",
+  "number": 410,
+  "section": "5.2.2 Polar coordinates",
+  "title": "θ\n \n dependency, fixed on edges, zero initial velocity, general solution",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta, t], {t, 2}] == c^2*Laplacian[u[r,theta,t],{r,theta},\"Polar\"]; ic = {u[r, theta, 0] == f[r, theta], Derivative[0, 0, 1][u][r, theta, 0] == 0}; bc = {u[a, theta, t] == 0, u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, theta, t], {r, theta, t}, Assumptions -> {0 < r < a, a > 0, t > 0, -Pi < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-411",
+  "number": 411,
+  "section": "5.2.2 Polar coordinates",
+  "title": "θ\n \n dependency, fixed on edges, zero initial velocity, specific example",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; f[r_,theta_]:=r*theta; c=2/10; a=1; pde = D[u[r, theta, t], {t, 2}] == c^2*Laplacian[u[r,theta,t],{r,theta},\"Polar\"]; ic = {u[r, theta, 0] == f[r, theta], Derivative[0, 0, 1][u][r, theta, 0] == 0}; bc = {u[a, theta, t] == 0, u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, theta, t], {r, theta, t}, Assumptions -> {0 < r < a,t > 0, -Pi < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-412",
+  "number": 412,
+  "section": "5.2.2 Polar coordinates",
+  "title": "θ\n \n dependency, fixed on edges, zero initial position, specific example",
+  "mma_published": true,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; a=1; c=1; epsilon=1/2; f[r_,theta_]:=0; g[r_,theta_]:=Piecewise[{{1/(Pi*epsilon^2),r<epsilon},{0,True}}]; c=1; a=1; pde = D[u[r, theta, t], {t, 2}] == c^2*Laplacian[u[r,theta,t],{r,theta},\"Polar\"]; ic = {u[r, theta, 0] == f[r, theta], Derivative[0, 0, 1][u][r, theta, 0] == g[r,theta]}; bc = {u[a, theta, t] == 0, u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, theta, t], {r, theta, t}, Assumptions -> {0 < r < a,t > 0, -Pi < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-413",
+  "number": 413,
+  "section": "5.2.2 Polar coordinates",
+  "title": "θ\n \n dependency, fixed on edges, zero initial position with internal source (Haberman 8.5.5. (b)",
+  "mma_published": false,
+  "maple_published": false,
+  "code": "ClearAll[\"Global`*\"]; pde = D[u[r, theta, t], {t, 2}] == c^2*Laplacian[u[r,theta,t],{r,theta},\"Polar\"]+Q[r,theta,t]; ic = {u[r, theta, 0] == f[r, theta], Derivative[0, 0, 1][u][r, theta, 0] == 0}; bc = {u[a, theta, t] == 0, u[r, -Pi, t] == u[r, Pi, t], Derivative[0, 1, 0][u][r, -Pi, t] == Derivative[0, 1, 0][u][r, Pi, t]}; sol = AbsoluteTiming[TimeConstrained[DSolve[{pde, ic, bc}, u[r, theta, t], {r, theta, t}, Assumptions -> {0 < r < a,t > 0, -Pi < theta < Pi}], 60*10]]; Failed"
+ },
+ {
+  "id": "abbasi-414",
+  "number": 414,
+  "section": "5.3.1 Spherical coordinates",
+  "title": "No I.C. no B.C.",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, theta, phi, t], {r, theta, phi}, \"Spherical\"]; pde = D[u[r, theta, phi, t], {t, 2}] == c^2*lap; sol = AbsoluteTiming[TimeConstrained[DSolve[pde, u[r, theta, phi, t], {r, theta, phi, t}, Assumptions -> {0 < theta < Pi}], 60*10]];"
+ },
+ {
+  "id": "abbasi-415",
+  "number": 415,
+  "section": "5.3.2 Cylindrical coordinates",
+  "title": "No I.C. no B.C.",
+  "mma_published": true,
+  "maple_published": true,
+  "code": "ClearAll[\"Global`*\"]; lap = Laplacian[u[r, phi, z, t], {r, phi, z}, \"Cylindrical\"]; pde = D[u[r, phi, z, t], {t, 2}] == c^2*lap; sol = AbsoluteTiming[TimeConstrained[DSolve[pde, u[r, phi, z, t], {r, phi, z, t}], 60*10]];"
+ }
+]

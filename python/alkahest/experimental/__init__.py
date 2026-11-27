@@ -69,6 +69,20 @@ PDE milestone M3 (see ``alkahest.experimental._pde_m3``):
   :func:`fourier_sine_transform` / :func:`fourier_cosine_transform` and their
   inverses; ``E-PDE-150…199``, ``E-TRANSFORM-021…024``
 
+PDE milestone M4 (see ``alkahest.experimental._pde_m4``):
+- :func:`separate` / :func:`is_separable` → :class:`Separation`: product or
+  additive separation through the jets of the factors, with the classical
+  multipliers (polar, cylindrical, spherical); the separated ODEs and constants
+- :func:`separation_solve` → :class:`SeriesSolution`: heat, wave, Laplace,
+  Poisson, Helmholtz, Schrödinger and telegraph equations on intervals, boxes,
+  :class:`PolarDisk`, :class:`Annulus`, :class:`Sector`, :class:`Cylinder`,
+  :class:`SphericalBall` (or :class:`Curvilinear`) and Cartesian ``Disk`` /
+  ``Ball``; Dirichlet, Neumann, Robin, periodic and mixed conditions; lifting /
+  steady states, Duhamel, superposition; a nested ``Sum`` with closed-form or
+  unevaluated coefficients, every mode verified exactly, projections checked
+  numerically; ``truncate`` / ``compile``; :func:`curvilinear_laplacian`;
+  ``E-PDE-200…249``
+
 PDE milestone M5 (see ``alkahest.experimental._pde_m5``):
 - :func:`fundamental_solution` → :class:`FundamentalSolution`: Laplace, heat
   (also in ``n`` D with symbolic ``n``), wave (d'Alembert, Poisson,
@@ -816,6 +830,21 @@ from alkahest.experimental._pde_m3 import (
     sturm_liouville,
     transform_solve,
 )
+from alkahest.experimental._pde_m4 import (
+    Annulus,
+    Curvilinear,
+    Cylinder,
+    ModeGroup,
+    PolarDisk,
+    Sector,
+    Separation,
+    SeriesSolution,
+    SphericalBall,
+    curvilinear_laplacian,
+    is_separable,
+    separate,
+    separation_solve,
+)
 
 # PDE milestone M5: Green's functions, fundamental solutions, images.
 from alkahest.experimental._pde_m5 import (
@@ -944,6 +973,7 @@ __all__ = [
     # `order()` returns None exactly when the group is infinite — a proof, not
     # a failure to decide.
     "AbelianInvariants",
+    "Annulus",
     "ArbitraryFunctions",
     "ArithmeticError",
     "Assumptions",
@@ -988,6 +1018,8 @@ __all__ = [
     "CosetTable",
     "CssCode",
     "CudaCompiledFn",
+    "Curvilinear",
+    "Cylinder",
     "D",
     "DelsarteBound",
     "Disk",
@@ -1062,6 +1094,7 @@ __all__ = [
     "MatGroupError",
     "MatSiftResult",
     "MatrixGroup",
+    "ModeGroup",
     "MolResult",
     "MolStabilityWarning",
     "MolSystem",
@@ -1106,6 +1139,7 @@ __all__ = [
     "Place",
     # Probability (continued)
     "Poisson",
+    "PolarDisk",
     # Puiseux (fractional-exponent) expansion
     "Product",
     "PuiseuxExpansion",
@@ -1126,10 +1160,14 @@ __all__ = [
     "RootOfFamily",
     "Scheme",
     "SecondOrderSolution",
+    "Sector",
+    "Separation",
+    "SeriesSolution",
     "SiegelMatrix",
     "SiegelReduction",
     # Sifting an element through a stabilizer chain
     "SiftResult",
+    "SphericalBall",
     "StabilizerCode",
     "StabilizerError",
     "StabilizerGroup",
@@ -1181,6 +1219,7 @@ __all__ = [
     # Information theory: H(P, Q) = H(P) + D(P||Q), checked against -E_P[log q]
     "cross_entropy",
     "curl",
+    "curvilinear_laplacian",
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
     "cyclotomic_polynomial_coeffs",
@@ -1228,6 +1267,7 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    "is_separable",
     "is_symplectic",
     "j_invariant",
     "jacobi_theta",
@@ -1287,6 +1327,8 @@ __all__ = [
     "riemann_theta_squared",
     "root_family_enclosure",
     "root_family_member",
+    "separate",
+    "separation_solve",
     "series_solve",
     "siegel_is_reduced",
     "siegel_reduce",

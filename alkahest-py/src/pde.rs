@@ -627,6 +627,32 @@ pub(crate) fn domain_from_spec(
             let center = exprs_in(&t.get_item(2)?, pool, "PDE.on")?;
             PdeDomain::ball(&vars, &center, e(3)?, pl)
         }
+        "curvilinear" => {
+            let system: String = t.get_item(1)?.extract()?;
+            let sys =
+                alkahest_core::pde::CoordinateSystem::from_name(&system).ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown coordinate system {system:?}"
+                    ))
+                })?;
+            let mut coords = Vec::new();
+            for c in t.get_item(2)?.try_iter()? {
+                let c = c?;
+                coords.push(if c.is_none() {
+                    None
+                } else {
+                    Some(expr_in(&c, pool, "PDE.on")?)
+                });
+            }
+            let mut bounds = Vec::new();
+            for b in t.get_item(3)?.try_iter()? {
+                let b = b?;
+                let lo = expr_in(&b.get_item(0)?, pool, "PDE.on")?;
+                let hi = expr_in(&b.get_item(1)?, pool, "PDE.on")?;
+                bounds.push((lo, hi));
+            }
+            PdeDomain::curvilinear(sys, &coords, &bounds, pl)
+        }
         "product" => {
             drop(p);
             let mut parts = Vec::new();

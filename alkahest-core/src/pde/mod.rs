@@ -51,6 +51,10 @@
 //! * [`transform_methods`] — (M3) [`fourier_method`], [`laplace_method`],
 //!   [`image_method`] (sine / cosine transforms) and [`transform_solve`]:
 //!   closed forms or verified kernel representations.
+//! * [`separation`] — (milestone M4) separability tests ([`separate`](fn@separate)) and
+//!   eigenfunction-series solutions on bounded domains
+//!   ([`separation_solve`] → [`SeriesSolution`]): intervals, boxes, disks,
+//!   annuli, sectors, cylinders and balls; lifting, Duhamel, superposition.
 //! * [`green`] — (milestone M5) Green's functions: the fundamental-solution
 //!   table ([`fundamental_solution`]), the method of images
 //!   ([`image_green_function`], Kelvin inversion for the disk and ball),
@@ -58,7 +62,8 @@
 //!   ([`eigen_green_function`], [`ode_green_function`]) and the
 //!   representation `u = ∫ G f + boundary terms` ([`green_solve`]).
 //! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0),
-//!   `E-PDE-150 … E-PDE-199` (M3) and `E-PDE-250 … E-PDE-299` (M5).
+//!   `E-PDE-150 … E-PDE-199` (M3), `E-PDE-200 … E-PDE-249` (M4) and
+//!   `E-PDE-250 … E-PDE-299` (M5).
 
 pub mod classify;
 pub mod error;
@@ -70,6 +75,7 @@ pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
 pub mod second_order;
+pub mod separation;
 pub mod solve;
 pub mod sturm_liouville;
 pub mod sum;
@@ -101,6 +107,12 @@ pub use second_order::{
     canonical_form, canonical_forms, laplace_cascade, laplace_invariants, solve_second_order,
     solve_second_order_with, CanonicalForm, SecondOrderOptions, SecondOrderSolution,
     DEFAULT_CASCADE_STEPS,
+};
+pub use separation::{
+    is_separable, laplacian as curvilinear_laplacian, numeric_truncation, separate, separate_with,
+    separation_solve, separation_solve_with, CoordinateSystem, ModeGroup, ProjectionCheck,
+    SeparateOptions, SeparatedOde, Separation, SeparationKind, SeparationOptions, SeriesCheck,
+    SeriesSolution,
 };
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
