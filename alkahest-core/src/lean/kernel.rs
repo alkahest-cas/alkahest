@@ -2101,12 +2101,18 @@ pub fn emit_pde_kernel_cert(
     }
     let fr = frame(&coord_names, &[], mode);
     let stmt = op_ae.lean_string(&names);
+    let rec_depth = 512 + 400 * d;
+    let heartbeats = 400_000 * d.max(1);
     finish(format!(
         "{}-- PDE: {} = 0 for u = {} at every point of ℝ^{d}\n\
          -- Certified by the Alkahest reflective kernel: `pde_sound` (proved in\n\
          -- `Alkahest.Kernel.Pde`) turns `checkPde u op n w = true` into the\n\
          -- statement; {}.\n\
          noncomputable def fexU ({binders} : ℝ) : ℝ :=\n  {}\n\n\
+         -- The statement unfolds `d` nested sums and list lookups: give the\n\
+         -- elaborator room proportional to `d`.\n\
+         set_option maxRecDepth {rec_depth} in\n\
+         set_option maxHeartbeats {heartbeats} in\n\
          open Alkahest.Kernel in\n\
          theorem fex_pde ({binders} : ℝ) :\n    \
          {stmt} = 0 :=\n  \
