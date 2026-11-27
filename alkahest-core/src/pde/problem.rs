@@ -652,8 +652,8 @@ impl PdeProblem {
     ///
     /// # Errors
     ///
-    /// `E-PDE-012` for a system (more than one equation or unknown); as
-    /// [`classify_pde`].
+    /// `E-PDE-012` for a system (more than one equation or unknown) — use
+    /// [`Self::classify_system`] for those; as [`classify_pde`].
     pub fn classify(&self, pool: &ExprPool) -> Result<PdeInfo, PdeError> {
         if self.equations.len() != 1 || self.unknowns.len() != 1 {
             return Err(PdeError::ClassificationUnsupported(format!(
@@ -663,6 +663,19 @@ impl PdeProblem {
             )));
         }
         classify_pde(self.equations[0], self.unknowns[0], pool)
+    }
+
+    /// [`super::classify_pde_system`] of the problem's equations and
+    /// unknowns (any number of each, a scalar problem included).
+    ///
+    /// # Errors
+    ///
+    /// As [`super::classify_pde_system`].
+    pub fn classify_system(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<super::classify_system::PdeSystemInfo, PdeError> {
+        super::classify_system::classify_pde_system(&self.equations, &self.unknowns, pool)
     }
 }
 

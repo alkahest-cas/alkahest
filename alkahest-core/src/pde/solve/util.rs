@@ -42,7 +42,26 @@ pub(crate) fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
     if s == pool.integer(0) {
         return true;
     }
-    zero_test(s, pool, None).status == ZeroStatus::ProvedZero
+    let s = if names_in(&[s], pool).contains(crate::specfun::hyper::HYPER) {
+        simp(crate::pde::verify::contract_hyper(s, pool), pool)
+    } else {
+        s
+    };
+    if zero_test(s, pool, None).status == ZeroStatus::ProvedZero {
+        return true;
+    }
+    // The same expression with powers merged (identities only; see
+    // `normalize_powers`), which the normal form does not do for symbolic
+    // exponents.
+    if !SPECIAL_QUADRATURE.with(|c| c.get().0) {
+        return false;
+    }
+    let n = crate::pde::verify::normalize_powers(s, pool);
+    let ok = n != s && zero_test(n, pool, None).status == ZeroStatus::ProvedZero;
+    if ok {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, true)));
+    }
+    ok
 }
 
 /// [`is_zero`] for expressions that may contain `Integral` nodes: the
@@ -126,6 +145,25 @@ pub(crate) fn names_in(exprs: &[ExprId], pool: &ExprPool) -> HashSet<String> {
         push_children(n, pool, &mut stack);
     }
     out
+}
+
+/// Whether `e` contains a function application named `head`.
+pub(crate) fn contains_head(e: ExprId, head: &str, pool: &ExprPool) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![e];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if pool.with(
+            n,
+            |d| matches!(d, ExprData::Func { name, .. } if name == head),
+        ) {
+            return true;
+        }
+        push_children(n, pool, &mut stack);
+    }
+    false
 }
 
 /// A fresh real symbol `{stem}{k}` whose name is not in `taken` (which is
@@ -400,6 +438,12 @@ fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<
     if has_undefined(e, pool) {
         return None;
     }
+    // An integrand holding a `₂F₁` from an inner special quadrature: the
+    // integrator does not close these and can spend long declining; the
+    // caller falls back to an unevaluated integral.
+    if contains_head(e, crate::specfun::hyper::HYPER, pool) {
+        return None;
+    }
     if let Some(r) = integrate_core(e, v, pool) {
         return Some(r);
     }
@@ -410,6 +454,9 @@ fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<
         if let Some(r) = integrate_core(t, v, pool) {
             return Some(r);
         }
+    }
+    if let Some(r) = special_quadrature(t, v, pool) {
+        return Some(r);
     }
     if depth > 0 && pool.depth(t) < 14 {
         let ex = crate::simplify::engine::simplify_expanded(t, pool).value;
@@ -600,6 +647,452 @@ fn replace_apps(e: ExprId, name: &str, params: &[ExprId], body: ExprId, pool: &E
         ),
         _ => e,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Special-function quadratures with symbolic parameters
+// ---------------------------------------------------------------------------
+
+/// Closed forms the integrator declines when a parameter's sign or a power is
+/// symbolic.  Every one is a *candidate*: the callers verify the PDE answer
+/// (or the first integral) exactly, so a form the zero test cannot confirm is
+/// discarded, never returned.
+///
+/// * `∫ P(v) e^{αv²+βv+γ}`, `P` a polynomial of degree ≤ 4, `α` symbolic:
+///   `√π/(2√α) e^{γ−β²/4α} erfi(√α (v + β/2α))` and the moment recursion;
+/// * `∫ vᵐ e^{a vᵖ + γ}` (symbolic `m`, `p`):
+///   `−e^γ v^{m+1} (−a vᵖ)^{−(m+1)/p} Γ((m+1)/p, −a vᵖ)/p`;
+/// * `∫ e^{βv + c e^{λv} + γ}` through `w = e^{λv}`, which is the previous
+///   form in `w`;
+/// * `∫ Wᵏ` for `W′ = λ(1 + σW²)`, `σ = ±1` (`W = tan, cot, tanh, coth` of a
+///   linear argument), symbolic `k`:
+///   `W^{k+1}/(λ(k+1)) ₂F₁(1, (k+1)/2; (k+3)/2; −σW²)`.
+fn special_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if !SPECIAL_QUADRATURE.with(|c| c.get().0) {
+        return None;
+    }
+    let r = gaussian_quadrature(e, v, pool)
+        .or_else(|| incomplete_gamma_quadrature(e, v, pool))
+        .or_else(|| exp_of_exp_quadrature(e, v, pool))
+        .or_else(|| tangent_power_quadrature(e, v, pool));
+    if r.is_some() {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, true)));
+    }
+    r
+}
+
+thread_local! {
+    /// `(enabled, used since the last reset)` for [`special_quadrature`] and
+    /// the power-normalising retry of [`is_zero`].
+    static SPECIAL_QUADRATURE: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((true, false)) };
+}
+
+/// Clear the "a special quadrature was used" mark (the dispatcher does this
+/// before each tier).
+pub(crate) fn reset_special_quadrature_used() {
+    SPECIAL_QUADRATURE.with(|c| c.set((c.get().0, false)));
+}
+
+/// Whether [`special_quadrature`] produced a closed form since the last
+/// reset.
+pub(crate) fn special_quadrature_used() -> bool {
+    SPECIAL_QUADRATURE.with(|c| c.get().1)
+}
+
+/// Disables the special-function quadratures (and the power-normalising
+/// retry of [`is_zero`]) until dropped: a tier whose candidates all failed
+/// verification after either was used is re-run without them, so a closed
+/// form or first integral the final zero test cannot confirm never displaces
+/// an unevaluated integral that verifies.
+pub(crate) struct WithoutSpecialQuadrature;
+
+impl WithoutSpecialQuadrature {
+    pub(crate) fn new() -> Self {
+        SPECIAL_QUADRATURE.with(|c| c.set((false, c.get().1)));
+        WithoutSpecialQuadrature
+    }
+}
+
+impl Drop for WithoutSpecialQuadrature {
+    fn drop(&mut self) {
+        SPECIAL_QUADRATURE.with(|c| c.set((true, c.get().1)));
+    }
+}
+
+/// `(rest, Σ args)` of a product whose exponential factors in `v` are
+/// `exp(argᵢ)`; `None` when there is no such factor.
+fn split_exp(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let xs = match pool.get(e) {
+        ExprData::Mul(xs) => xs,
+        _ => vec![e],
+    };
+    let mut rest = Vec::new();
+    let mut args = Vec::new();
+    for x in xs {
+        match pool.get(x) {
+            ExprData::Func { name, args: a }
+                if name == "exp" && a.len() == 1 && contains(a[0], v, pool) =>
+            {
+                args.push(a[0])
+            }
+            _ => rest.push(x),
+        }
+    }
+    if args.is_empty() {
+        return None;
+    }
+    Some((simp(pool.mul(rest), pool), simp(pool.add(args), pool)))
+}
+
+/// Taylor coefficients `[p₀, …, p_d]` of a polynomial `p` in `v` of degree
+/// `d ≤ max`; `None` when `p` is not one.
+fn poly_coeffs(p: ExprId, v: ExprId, max: usize, pool: &ExprPool) -> Option<Vec<ExprId>> {
+    let zero = pool.integer(0);
+    let mut out = Vec::new();
+    let mut cur = p;
+    let mut fact = rug::Integer::from(1);
+    for k in 0..=max + 1 {
+        if is_zero(cur, pool) {
+            return Some(out);
+        }
+        if k == max + 1 {
+            return None;
+        }
+        let c = simp(subs1(cur, v, zero, pool), pool);
+        out.push(simp(
+            pool.mul(vec![c, pool.rational(rug::Integer::from(1), fact.clone())]),
+            pool,
+        ));
+        cur = d(cur, v, pool)?;
+        fact *= k as u32 + 1;
+    }
+    None
+}
+
+fn gaussian_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (p, q) = split_exp(e, v, pool)?;
+    if contains(p, v, pool) && has_undefined(p, pool) {
+        return None;
+    }
+    let q1 = d(q, v, pool)?;
+    let q2 = d(q1, v, pool)?;
+    if contains(q2, v, pool) || is_zero(q2, pool) {
+        return None;
+    }
+    let zero = pool.integer(0);
+    let alpha = simp(pool.mul(vec![pool.rational(1, 2), q2]), pool);
+    let beta = simp(subs1(q1, v, zero, pool), pool);
+    let gamma = simp(subs1(q, v, zero, pool), pool);
+    let coeffs = poly_coeffs(p, v, 4, pool)?;
+    if coeffs.iter().any(|&c| contains(c, v, pool)) {
+        return None;
+    }
+    let pi = pool.symbol("pi", Domain::Real);
+    let s = pool.func("sqrt", vec![alpha]);
+    let two_a = pool.mul(vec![pool.integer(2), alpha]);
+    let shift = pool.add(vec![v, div(beta, two_a, pool)]);
+    let pref = pool.mul(vec![
+        pool.func("sqrt", vec![pi]),
+        recip(pool.mul(vec![pool.integer(2), s]), pool),
+        pool.func(
+            "exp",
+            vec![sub(
+                gamma,
+                div(
+                    pool.pow(beta, pool.integer(2)),
+                    pool.mul(vec![pool.integer(4), alpha]),
+                    pool,
+                ),
+                pool,
+            )],
+        ),
+    ]);
+    let i0 = pool.mul(vec![
+        pref,
+        pool.func("erfi", vec![pool.mul(vec![s, shift])]),
+    ]);
+    let eq = pool.func("exp", vec![q]);
+    let mut ik: Vec<ExprId> = vec![i0];
+    for k in 1..coeffs.len() {
+        let mut num = vec![pool.mul(vec![pool.pow(v, pool.integer(k as i64 - 1)), eq])];
+        if k >= 2 {
+            num.push(neg(
+                pool.mul(vec![pool.integer(k as i64 - 1), ik[k - 2]]),
+                pool,
+            ));
+        }
+        num.push(neg(pool.mul(vec![beta, ik[k - 1]]), pool));
+        ik.push(div(pool.add(num), two_a, pool));
+    }
+    let terms: Vec<ExprId> = coeffs
+        .iter()
+        .zip(&ik)
+        .map(|(&c, &i)| pool.mul(vec![c, i]))
+        .collect();
+    Some(simp(pool.add(terms), pool))
+}
+
+/// `(K, m)` with `r = K·vᵐ`, `K` and `m` free of `v` (by the logarithmic
+/// derivative `v r′/r`).
+fn monomial(r: ExprId, v: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    if !contains(r, v, pool) {
+        return Some((r, pool.integer(0)));
+    }
+    if let Some(km) = monomial_syntactic(r, v, pool) {
+        return Some(km);
+    }
+    let m = simp(div(pool.mul(vec![v, d(r, v, pool)?]), r, pool), pool);
+    if contains(m, v, pool) {
+        return None;
+    }
+    let k = simp(div(r, pool.pow(v, m), pool), pool);
+    if contains(k, v, pool) {
+        let k = simp(super::tidy(k, pool), pool);
+        if contains(k, v, pool) {
+            return None;
+        }
+        return Some((k, m));
+    }
+    Some((k, m))
+}
+
+/// `(K, m)` read off the factors of `r`: factors free of `v`, `v`, `vᵉ`, and
+/// integer powers of such products (`(a vⁿ)⁻¹ = a⁻¹ v⁻ⁿ`).
+fn monomial_syntactic(r: ExprId, v: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    fn walk(
+        x: ExprId,
+        k: ExprId,
+        v: ExprId,
+        pool: &ExprPool,
+        ks: &mut Vec<ExprId>,
+        ms: &mut Vec<ExprId>,
+    ) -> Option<()> {
+        // x^k with k an integer (or 1 at the top).
+        if !contains(x, v, pool) {
+            ks.push(pool.pow(x, k));
+            return Some(());
+        }
+        if x == v {
+            ms.push(k);
+            return Some(());
+        }
+        match pool.get(x) {
+            ExprData::Mul(ys) => {
+                for y in ys {
+                    walk(y, k, v, pool, ks, ms)?;
+                }
+                Some(())
+            }
+            ExprData::Pow { base, exp } if !contains(exp, v, pool) => {
+                if base == v {
+                    ms.push(pool.mul(vec![exp, k]));
+                    return Some(());
+                }
+                // Only an integer power distributes over a product.
+                as_rational(exp, pool).filter(|q| q.denom() == &1u32)?;
+                walk(base, simp(pool.mul(vec![exp, k]), pool), v, pool, ks, ms)
+            }
+            _ => None,
+        }
+    }
+    let mut ks = Vec::new();
+    let mut ms = Vec::new();
+    walk(r, pool.integer(1), v, pool, &mut ks, &mut ms)?;
+    Some((simp(pool.mul(ks), pool), simp(pool.add(ms), pool)))
+}
+
+/// `q = a vᵖ + γ` read off the terms of `q`: one term `a·vᵖ` (or `a·v`), the
+/// others free of `v`.
+fn power_term(q: ExprId, v: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, ExprId)> {
+    let q = crate::simplify::engine::simplify_expanded(q, pool).value;
+    let terms = match pool.get(q) {
+        ExprData::Add(xs) => xs,
+        _ => vec![q],
+    };
+    let (with, without): (Vec<ExprId>, Vec<ExprId>) =
+        terms.into_iter().partition(|&t| contains(t, v, pool));
+    if with.len() != 1 {
+        return None;
+    }
+    let (a, p) = monomial_syntactic(with[0], v, pool)?;
+    if is_zero(p, pool) {
+        return None;
+    }
+    Some((a, p, simp(pool.add(without), pool)))
+}
+
+/// `∫ wᵐ e^{a w} dw = −w^{m+1}(−a w)^{−(m+1)} Γ(m+1, −a w)` generalised to
+/// `∫ K vᵐ e^{a vᵖ + γ}`.
+fn upper_gamma_form(
+    k: ExprId,
+    m: ExprId,
+    a: ExprId,
+    p: ExprId,
+    gamma: ExprId,
+    v: ExprId,
+    pool: &ExprPool,
+) -> ExprId {
+    let m1 = pool.add(vec![m, pool.integer(1)]);
+    let s = div(m1, p, pool);
+    let z = neg(pool.mul(vec![a, pool.pow(v, p)]), pool);
+    simp(
+        pool.mul(vec![
+            pool.integer(-1),
+            k,
+            pool.func("exp", vec![gamma]),
+            pool.pow(v, m1),
+            pool.pow(z, neg(s, pool)),
+            pool.func("uppergamma", vec![s, z]),
+            recip(p, pool),
+        ]),
+        pool,
+    )
+}
+
+fn incomplete_gamma_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (r, q) = split_exp(e, v, pool)?;
+    if has_undefined(r, pool) {
+        return None;
+    }
+    let (k, m) = monomial(r, v, pool)?;
+    if let Some((a, p, gamma)) = power_term(q, v, pool) {
+        return Some(upper_gamma_form(k, m, a, p, gamma, v, pool));
+    }
+    // q = a vᵖ + γ: p = 1 + v q″/q′.
+    let q1 = d(q, v, pool)?;
+    if is_zero(q1, pool) {
+        return None;
+    }
+    let q2 = d(q1, v, pool)?;
+    let p = simp(
+        pool.add(vec![pool.integer(1), div(pool.mul(vec![v, q2]), q1, pool)]),
+        pool,
+    );
+    if contains(p, v, pool) || is_zero(p, pool) {
+        return None;
+    }
+    // A linear exponent with an integer power is the integrator's (it
+    // declined for a reason), a quadratic one the Gaussian rule's.
+    let a = simp(
+        super::tidy(
+            div(
+                pool.mul(vec![q1, pool.pow(v, sub(pool.integer(1), p, pool))]),
+                p,
+                pool,
+            ),
+            pool,
+        ),
+        pool,
+    );
+    if contains(a, v, pool) || is_zero(a, pool) {
+        return None;
+    }
+    let gamma = simp(sub(q, pool.mul(vec![a, pool.pow(v, p)]), pool), pool);
+    if contains(gamma, v, pool) {
+        return None;
+    }
+    Some(upper_gamma_form(k, m, a, p, gamma, v, pool))
+}
+
+fn exp_of_exp_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (r, s) = split_exp(e, v, pool)?;
+    if contains(r, v, pool) {
+        return None;
+    }
+    // s = βv + γ + T, T = c e^{λv + μ}: λ = T‴/T″ on s.
+    let s1 = d(s, v, pool)?;
+    let s2 = d(s1, v, pool)?;
+    if is_zero(s2, pool) {
+        return None;
+    }
+    let s3 = d(s2, v, pool)?;
+    let lam = simp(div(s3, s2, pool), pool);
+    if contains(lam, v, pool) || is_zero(lam, pool) {
+        return None;
+    }
+    let t = simp(div(s2, pool.pow(lam, pool.integer(2)), pool), pool);
+    let beta = simp(sub(s1, pool.mul(vec![lam, t]), pool), pool);
+    if contains(beta, v, pool) {
+        return None;
+    }
+    let gamma = simp(
+        sub(s, pool.add(vec![pool.mul(vec![beta, v]), t]), pool),
+        pool,
+    );
+    if contains(gamma, v, pool) {
+        return None;
+    }
+    let ev = pool.func("exp", vec![pool.mul(vec![lam, v])]);
+    let c = simp(super::tidy(div(t, ev, pool), pool), pool);
+    if contains(c, v, pool) {
+        return None;
+    }
+    // ∫ r e^γ e^{βv} e^{c w} dv = (r e^γ/λ) ∫ w^{β/λ − 1} e^{c w} dw at w = e^{λv}.
+    let mut taken = names_in(&[e, v], pool);
+    let w = fresh_symbol("__pde_w", &mut taken, pool);
+    let m = simp(sub(div(beta, lam, pool), pool.integer(1), pool), pool);
+    let iw = upper_gamma_form(div(r, lam, pool), m, c, pool.integer(1), gamma, w, pool);
+    Some(simp(subs1(iw, w, ev, pool), pool))
+}
+
+fn tangent_power_quadrature(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let xs = match pool.get(e) {
+        ExprData::Mul(xs) => xs,
+        _ => vec![e],
+    };
+    let (with, without): (Vec<ExprId>, Vec<ExprId>) =
+        xs.into_iter().partition(|&x| contains(x, v, pool));
+    if with.len() != 1 {
+        return None;
+    }
+    let c = pool.mul(without);
+    // W^k, also (W^a)^b written as W^(ab) when a = −1 is not involved.
+    let (w, k) = match pool.get(with[0]) {
+        ExprData::Pow { base, exp } if !contains(exp, v, pool) => match pool.get(base) {
+            // (Wⁿ)⁻¹ = W⁻ⁿ exactly.
+            ExprData::Pow { base: b2, exp: e2 }
+                if !contains(e2, v, pool) && exp == pool.integer(-1) =>
+            {
+                (b2, simp(neg(e2, pool), pool))
+            }
+            _ => (base, exp),
+        },
+        _ => return None,
+    };
+    if as_rational(k, pool).is_some() {
+        // A literal power is the integrator's business.
+        return None;
+    }
+    let wp = d(w, v, pool)?;
+    let w2 = pool.pow(w, pool.integer(2));
+    for sigma in [1i64, -1] {
+        let den = pool.add(vec![
+            pool.integer(1),
+            pool.mul(vec![pool.integer(sigma), w2]),
+        ]);
+        let lam = simp(super::tidy(div(wp, den, pool), pool), pool);
+        if contains(lam, v, pool) || is_zero(lam, pool) {
+            continue;
+        }
+        let k1 = simp(pool.add(vec![k, pool.integer(1)]), pool);
+        if is_zero(k1, pool) {
+            return None;
+        }
+        let b = simp(pool.mul(vec![pool.rational(1, 2), k1]), pool);
+        let b1 = simp(pool.add(vec![b, pool.integer(1)]), pool);
+        let z = simp(pool.mul(vec![pool.integer(-sigma), w2]), pool);
+        let f = crate::specfun::hyper::raw_node(&[pool.integer(1), b], &[b1], z, pool);
+        return Some(simp(
+            pool.mul(vec![
+                c,
+                pool.pow(w, k1),
+                recip(pool.mul(vec![lam, k1]), pool),
+                f,
+            ]),
+            pool,
+        ));
+    }
+    None
 }
 
 fn integrate_core(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
@@ -886,4 +1379,50 @@ pub(crate) fn free_symbols(exprs: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
         s.extend(symbols(e, pool));
     }
     s.into_iter().collect()
+}
+
+#[cfg(test)]
+mod special_quadrature_tests {
+    use super::*;
+
+    /// `F′ − f` is proved zero for each rule's antiderivative.
+    #[test]
+    fn special_quadratures_differentiate_back() {
+        let pool = ExprPool::new();
+        let mut syms = HashMap::new();
+        let t = pool.symbol("t", Domain::Real);
+        syms.insert("t".to_string(), t);
+        let mut failures = Vec::new();
+        for (src, head) in [
+            ("exp(a*t^2)", "erfi"),
+            ("(s + b*t^2 + c*t)*exp(-k*t - a*t^2/2)", "erfi"),
+            ("exp(a*t^3)", "uppergamma"),
+            // Γ(1, z) = e^{−z}: the rule's answer simplifies to elementary.
+            ("t^n*exp(a*t^(n+1))", "exp"),
+            ("t^m*exp(-c*t^(k+1)/(k+1))", "uppergamma"),
+            ("exp(b*t + 2*a*exp(lamda*t)/lamda)", "uppergamma"),
+            ("tan(lamda*t)^k", "hyper"),
+            ("tanh(lamda*t)^k", "hyper"),
+            ("(tan(mu*t)^n)^(-1)", "hyper"),
+        ] {
+            let f = simp(crate::parse::parse(src, &pool, &mut syms).unwrap(), &pool);
+            let Some(r) = special_quadrature(super::super::tidy(f, &pool), t, &pool) else {
+                failures.push(format!("{src}: no special quadrature"));
+                continue;
+            };
+            if !names_in(&[r], &pool).contains(head) {
+                failures.push(format!("{src}: {} has no {head}", pool.display(r)));
+                continue;
+            }
+            let dr = d(r, t, &pool).unwrap();
+            if !is_zero(sub(dr, f, &pool), &pool) {
+                failures.push(format!(
+                    "{src}: d/dt[{}] − f = {} not proved zero",
+                    pool.display(r),
+                    pool.display(simp(sub(dr, f, &pool), &pool))
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }

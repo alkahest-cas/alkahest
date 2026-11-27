@@ -190,6 +190,7 @@ pub fn verify_solution(
         let r = super::sum::simplify_sums(r, &[], pool);
         let r = super::sum::alpha_normalize(r, pool);
         let r = super::integral::alpha_normalize_integrals(r, pool);
+        let r = contract_hyper(r, pool);
         let r = crate::simplify::engine::simplify(r, pool).value;
         let r = if super::integral::has_integral(r, pool) {
             // Distribute first so every integral is a term `c·∫…` of one sum.
@@ -211,6 +212,17 @@ pub fn verify_solution(
                 if z2.status == ZeroStatus::ProvedZero {
                     zt = z2;
                     zt.method = "exact_identities";
+                }
+            }
+        }
+        if zt.status != ZeroStatus::ProvedZero && zt.status != ZeroStatus::ProvedNonzero {
+            // Merged powers (identities only) can let the normal form close
+            // symbolic-exponent residuals; only a proof is taken from it.
+            let n = normalize_powers(r, pool);
+            if n != r {
+                let zn = zero_test(n, pool, None);
+                if zn.status == ZeroStatus::ProvedZero {
+                    zt = zn;
                 }
             }
         }
@@ -253,6 +265,308 @@ pub fn verify_solution(
     })
 }
 
+/// Whether `e` is real for every real value of its symbols: real symbols and
+/// numbers closed under `+`, `·`, integer powers, real powers of a positive
+/// base, and `exp`, `sin`, `cos`, `sinh`, `cosh`, `tanh`, `atan`.
+fn surely_real(e: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::{Domain, ExprData};
+    match pool.get(e) {
+        ExprData::Integer(_) | ExprData::Rational(_) => true,
+        ExprData::Symbol { domain, name, .. } => {
+            domain != Domain::Complex && name != "I" && name != "i"
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().all(|&x| surely_real(x, pool)),
+        ExprData::Pow { base, exp } => {
+            let int_exp = pool.with(exp, |d| matches!(d, ExprData::Integer(_)));
+            surely_real(base, pool)
+                && surely_real(exp, pool)
+                && (int_exp || surely_positive(base, pool))
+        }
+        ExprData::Func { name, args } => {
+            matches!(
+                name.as_str(),
+                "exp" | "sin" | "cos" | "sinh" | "cosh" | "tanh" | "atan"
+            ) && args.len() == 1
+                && surely_real(args[0], pool)
+        }
+        _ => false,
+    }
+}
+
+fn surely_positive(e: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::{Domain, ExprData};
+    match pool.get(e) {
+        ExprData::Integer(n) => n.0 > 0,
+        ExprData::Rational(r) => r.0 > 0,
+        ExprData::Symbol { domain, name, .. } => domain == Domain::Positive || name == "pi",
+        ExprData::Mul(xs) => xs.iter().all(|&x| surely_positive(x, pool)),
+        ExprData::Pow { base, exp } => surely_positive(base, pool) && surely_real(exp, pool),
+        ExprData::Func { name, args } => {
+            name == "exp" && args.len() == 1 && surely_real(args[0], pool)
+        }
+        _ => false,
+    }
+}
+
+/// Merge powers by identities the rational normal form does not apply for
+/// symbolic exponents, bottom-up:
+///
+/// * in a product, `Bᵃ·Bᵇ → B^{a+b}` (`z^a z^b = e^{(a+b) log z}`, every
+///   branch);
+/// * `(B₁⋯Bₖ)ⁿ → B₁ⁿ⋯Bₖⁿ` and `(Bᵃ)ⁿ → B^{an}` for an **integer** `n`;
+/// * `(eˣ)ᶜ → e^{cx}` when `x` is surely real (then `log eˣ = x`).
+///
+/// Every rewrite is an identity wherever both sides are defined, so a zero
+/// test that succeeds on the result proves the original zero.
+pub(crate) fn normalize_powers(e: ExprId, pool: &ExprPool) -> ExprId {
+    let mut cur = e;
+    for _ in 0..3 {
+        let mut memo = std::collections::HashMap::new();
+        let next =
+            crate::simplify::engine::simplify(normalize_powers_rec(cur, pool, &mut memo), pool)
+                .value;
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn is_int(e: ExprId, pool: &ExprPool) -> Option<rug::Integer> {
+    pool.with(e, |d| match d {
+        crate::kernel::ExprData::Integer(n) => Some(n.0.clone()),
+        _ => None,
+    })
+}
+
+/// `bⁿ` for an integer `n`, distributed: over products, into powers
+/// (`(bᵃ)ⁿ = b^{an}`), `√y` with `n` even, and `exp`.
+fn int_pow(b: ExprId, n: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    match pool.get(b) {
+        ExprData::Mul(ys) => pool.mul(ys.iter().map(|&y| int_pow(y, n, pool)).collect()),
+        ExprData::Pow { base, exp } => {
+            let k = crate::simplify::engine::simplify(pool.mul(vec![exp, n]), pool).value;
+            pow_canon(base, k, pool)
+        }
+        ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+            match is_int(n, pool) {
+                Some(m) if m.is_even() && m.to_i64().is_some() => {
+                    let half = pool.integer(m.to_i64().unwrap_or(0) / 2);
+                    int_pow(args[0], half, pool)
+                }
+                _ => pool.pow(b, n),
+            }
+        }
+        ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
+            pool.func("exp", vec![pool.mul(vec![n, args[0]])])
+        }
+        _ => pool.pow(b, n),
+    }
+}
+
+/// `bᵏ` in the canonical form used by [`normalize_powers`]: an integer part
+/// of `k` split off and distributed by [`int_pow`]; `(eˣ)ᵏ = e^{kx}` for real
+/// `x`.
+fn pow_canon(b: ExprId, k: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    if is_int(k, pool).is_some() {
+        return int_pow(b, k, pool);
+    }
+    if !pool.with(b, |d| {
+        matches!(
+            d,
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_)
+        )
+    }) {
+        if let ExprData::Add(ts) = pool.get(k) {
+            let (ints, rest): (Vec<ExprId>, Vec<ExprId>) =
+                ts.iter().partition(|&&t| is_int(t, pool).is_some());
+            if ints.len() == 1 && !rest.is_empty() {
+                let r = pool.add(rest);
+                return pool.mul(vec![pow_canon(b, r, pool), int_pow(b, ints[0], pool)]);
+            }
+        }
+    }
+    match pool.get(b) {
+        ExprData::Func { name, args }
+            if name == "exp" && args.len() == 1 && surely_real(args[0], pool) =>
+        {
+            pool.func("exp", vec![pool.mul(vec![k, args[0]])])
+        }
+        _ => pool.pow(b, k),
+    }
+}
+
+fn normalize_powers_rec(
+    e: ExprId,
+    pool: &ExprPool,
+    memo: &mut std::collections::HashMap<ExprId, ExprId>,
+) -> ExprId {
+    use crate::kernel::ExprData;
+    if let Some(&r) = memo.get(&e) {
+        return r;
+    }
+    let r = match pool.get(e) {
+        ExprData::Add(xs) => pool.add(
+            xs.iter()
+                .map(|&x| normalize_powers_rec(x, pool, memo))
+                .collect(),
+        ),
+        ExprData::Mul(xs) => {
+            let xs: Vec<ExprId> = xs
+                .iter()
+                .map(|&x| normalize_powers_rec(x, pool, memo))
+                .collect();
+            let mut flat = Vec::new();
+            let mut stack = xs;
+            while let Some(x) = stack.pop() {
+                match pool.get(x) {
+                    ExprData::Mul(ys) => stack.extend(ys),
+                    _ => flat.push(x),
+                }
+            }
+            let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+            let mut parts = Vec::new();
+            // e^a·e^b = e^{a+b}, with the exponent expanded so that equal
+            // exponents become one atom.
+            let mut exps = Vec::new();
+            for x in flat {
+                if let ExprData::Func { name, args } = pool.get(x) {
+                    if name == "exp" && args.len() == 1 {
+                        exps.push(args[0]);
+                        continue;
+                    }
+                }
+                let (b, k) = match pool.get(x) {
+                    ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {
+                        parts.push(x);
+                        continue;
+                    }
+                    ExprData::Pow { base, exp } => (base, exp),
+                    _ => (x, pool.integer(1)),
+                };
+                if let Some(g) = groups.iter_mut().find(|g| g.0 == b) {
+                    g.1.push(k);
+                } else {
+                    groups.push((b, vec![k]));
+                }
+            }
+            for (b, ks) in groups {
+                if ks.len() == 1 {
+                    parts.push(pool.pow(b, ks[0]));
+                } else {
+                    let k = crate::simplify::engine::simplify(pool.add(ks), pool).value;
+                    parts.push(pow_canon(b, k, pool));
+                }
+            }
+            if !exps.is_empty() {
+                let arg = crate::simplify::engine::simplify_expanded(pool.add(exps), pool).value;
+                parts.push(pool.func("exp", vec![arg]));
+            }
+            pool.mul(parts)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = normalize_powers_rec(base, pool, memo);
+            let x = normalize_powers_rec(exp, pool, memo);
+            pow_canon(b, x, pool)
+        }
+        ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
+            let a = normalize_powers_rec(args[0], pool, memo);
+            pool.func(
+                "exp",
+                vec![crate::simplify::engine::simplify_expanded(a, pool).value],
+            )
+        }
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| normalize_powers_rec(a, pool, memo))
+                .collect(),
+        ),
+        _ => e,
+    };
+    memo.insert(e, r);
+    r
+}
+
+/// Rewrite every `₂F₁(2, c; c+1; z)` in `e` by the contiguous identity
+///
+/// ```text
+/// ₂F₁(2, c; c+1; z) = c·(1/(1 − z) − ₂F₁(1, c−1; c; z)) / z
+/// ```
+///
+/// (with `b = c − 1` and `F = ₂F₁(1, b; b+1; z)`, compare the coefficients of `zᵐ`: both are
+/// `(m+1)(b+1)/(b+1+m)`).  This is the form the derivative of
+/// `z^b F(1, b; b+1; z)` (an incomplete beta function, the antiderivative of
+/// `tanᵏ`, `tanhᵏ`, `xᵐ/(1 + xⁿ)`) takes after `d/dz F = (b/(b+1))
+/// ₂F₁(2, b+1; b+2; z)`; rewritten, the residual is rational in the one atom
+/// `F` and the zero test can decide it.  An identity on the cut plane, so a
+/// verification that goes through it is exact.
+pub(crate) fn contract_hyper(e: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    use crate::specfun::hyper::{parts, raw_node, HYPER};
+    let mut map = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![e];
+    let two = pool.integer(2);
+    let one = pool.integer(1);
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let ExprData::Func { name, args } = pool.get(n) {
+            if name == HYPER {
+                if let Some((a, b, z)) = parts(&args, pool) {
+                    if a.len() == 2 && b.len() == 1 {
+                        let c = if a[0] == two {
+                            Some(a[1])
+                        } else if a[1] == two {
+                            Some(a[0])
+                        } else {
+                            None
+                        };
+                        if let Some(c) = c {
+                            let gap = pool.add(vec![
+                                b[0],
+                                pool.mul(vec![pool.integer(-1), c]),
+                                pool.integer(-1),
+                            ]);
+                            if crate::simplify::engine::simplify(gap, pool).value == pool.integer(0)
+                            {
+                                let cm1 = crate::simplify::engine::simplify(
+                                    pool.add(vec![c, pool.integer(-1)]),
+                                    pool,
+                                )
+                                .value;
+                                let f = raw_node(&[one, cm1], &[c], z, pool);
+                                let one_minus_z =
+                                    pool.add(vec![one, pool.mul(vec![pool.integer(-1), z])]);
+                                let rep = pool.mul(vec![
+                                    c,
+                                    pool.pow(z, pool.integer(-1)),
+                                    pool.add(vec![
+                                        pool.pow(one_minus_z, pool.integer(-1)),
+                                        pool.mul(vec![pool.integer(-1), f]),
+                                    ]),
+                                ]);
+                                map.insert(n, rep);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        push_children(n, pool, &mut stack);
+    }
+    if map.is_empty() {
+        return e;
+    }
+    crate::kernel::subs::subs(e, &map, pool)
+}
+
 /// A `proved_nonzero` from the rational normal form is a statement about
 /// *independent atoms*.  A `Sum` or `RootOfFamily` is such an atom to the
 /// normal form, but two different sums can still be equal (`Σ(a+b)` and
@@ -288,7 +602,8 @@ fn has_opaque_head(e: ExprId, pool: &ExprPool) -> bool {
             matches!(d, crate::kernel::ExprData::Func { name, .. }
                 if name == super::sum::SUM
                     || name == super::root_family::ROOT_OF_FAMILY
-                    || name == super::integral::INTEGRAL)
+                    || name == super::integral::INTEGRAL
+                    || name == crate::specfun::hyper::HYPER)
         });
         if opaque {
             return true;

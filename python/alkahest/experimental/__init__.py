@@ -40,7 +40,10 @@ PDE foundation layer (milestone M0; see ``alkahest.experimental._pde``):
   :class:`Interval`, :class:`HalfLine`, :class:`Line`, :class:`Box`,
   :class:`Disk`, :class:`Ball` (``*`` builds a :class:`Product`)
 - :func:`classify_pde` → :class:`PdeInfo` (order, linearity, type with regions,
-  named equations); :func:`verify_pde_solution` (statuses mirror
+  named equations), and for a system → :class:`PdeSystemInfo` (order,
+  linearity, hyperbolic / elliptic type of first-order systems from the exact
+  characteristic speeds, shallow water / Euler / Cauchy–Riemann / Maxwell);
+  :func:`verify_pde_solution` (statuses mirror
   ``integrate``'s ``verification``; numeric evidence may only refute);
   :class:`ArbitraryFunctions` (``F1, F2, …``)
 - reserved heads :func:`Sum` (a binder, symbolic bounds), :func:`Indexed` /
@@ -48,6 +51,11 @@ PDE foundation layer (milestone M0; see ``alkahest.experimental._pde``):
   enclosures), with :func:`truncate`, :func:`coefficient`, :func:`expand_sum`,
   :func:`simplify_sums`, :func:`laplacian_indexed`; ``PdeError`` /
   ``E-PDE-001…049``
+- n-D coordinates (D7): :class:`CoordinatesN` (orthogonal charts on ℝⁿ —
+  ``cartesian``, ``polar``, ``hyperspherical``, ``from_embedding`` — with
+  ``gradient`` / ``divergence`` / ``laplacian`` on ``Derivative``-bearing
+  expressions) and :class:`SymbolicCartesian` (ℝᵈ for a symbolic ``d``,
+  coordinates ``Indexed(x, i)``), beside the 3-D :class:`Coordinates`
 
 PDE solver (milestone M1; see ``alkahest.experimental._pdsolve``):
 - :func:`pdsolve` → :class:`PdeSolution` (``value``, ``kind``, ``method``,
@@ -800,6 +808,7 @@ from alkahest.experimental._pde import (
     ArbitraryFunctions,
     Ball,
     Box,
+    CoordinatesN,
     D,
     Disk,
     Function,
@@ -813,9 +822,11 @@ from alkahest.experimental._pde import (
     Line,
     PdeError,
     PdeInfo,
+    PdeSystemInfo,
     Product,
     RootOfFamily,
     Sum,
+    SymbolicCartesian,
     classify_pde,
     coefficient,
     expand_finite_sums,
@@ -1055,6 +1066,7 @@ __all__ = [
     "ConservationLaw",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
+    "CoordinatesN",
     # A complete Todd-Coxeter coset table, and the permutation representation
     # it is. Cosets are 0-based and coset 0 is the subgroup H.
     "CosetTable",
@@ -1176,6 +1188,7 @@ __all__ = [
     "PdeError",
     "PdeInfo",
     "PdeSolution",
+    "PdeSystemInfo",
     "Permutation",
     "PermutationGroup",
     "Place",
@@ -1222,6 +1235,7 @@ __all__ = [
     "SubgroupPresentation",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Sum",
+    "SymbolicCartesian",
     "SymmetryGenerator",
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",

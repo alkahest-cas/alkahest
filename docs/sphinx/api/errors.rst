@@ -290,8 +290,10 @@ Exception subclasses
    - ``E-PDE-010`` — a malformed domain (empty interval, non-positive radius,
      a coordinate that is not an independent variable).
    - ``E-PDE-011`` — a boundary or initial condition that mentions no unknown.
-   - ``E-PDE-012`` — classification of a system (only scalar equations are
-     classified).
+   - ``E-PDE-012`` — the scalar classifier (``PdeProblem::classify`` in Rust)
+     was asked to classify a system; use ``classify_pde_system``
+     (``PdeProblem::classify_system``). In Python, ``classify_pde`` and
+     ``PDE.classify()`` dispatch systems to it.
    - ``E-PDE-013`` — a candidate solution with the wrong number of components.
    - ``E-PDE-020`` — a malformed ``Sum`` (the bound variable is not a symbol,
      or a bound mentions it).
@@ -309,6 +311,11 @@ Exception subclasses
    - ``E-PDE-040`` — a transform cannot act on an unknown because the transform
      variable is not a single bare argument (``u(x, 2t)``, ``u(t²)``); the
      transform raises its own ``TransformError`` carrying this message.
+   - ``E-PDE-041`` — a malformed n-D coordinate chart (``CoordinatesN``):
+     coordinates that are not distinct symbols, an embedding with the wrong
+     number of components, a chart that is not orthogonal, or a scale factor
+     that vanishes or cannot be shown non-zero; also a vector field whose
+     length is not the dimension.
    - ``E-PDE-050`` — ``pdsolve`` has no method for the problem: a system, an
      equation of order other than one (milestone M1 covers first order), a
      single independent variable (use ``dsolve``), or an unknown ``hint``.

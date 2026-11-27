@@ -478,35 +478,51 @@ fn run(
             break;
         }
         applicable += 1;
-        let cands = (tier.solve)(&mut ctx, pool);
-        if cands.is_empty() {
-            ctx.fail(format!("{}: no candidate", tier.name));
-        }
         let mut got = false;
-        let mut expanded: Vec<Candidate> = Vec::new();
-        for cand in cands {
-            if has_data {
-                match cauchy::impose(&mut ctx, cand, pool) {
-                    Ok(cs) => expanded.extend(cs),
-                    Err(e) => {
-                        ctx.fail(format!("{}: {e}", tier.name));
-                        if matches!(e, PdeError::CharacteristicData(_)) || cauchy_err.is_none() {
-                            cauchy_err = Some(e);
-                        }
-                    }
-                }
-            } else {
-                expanded.push(cand);
-            }
-        }
-        for cand in expanded {
-            match finalize(&ctx, tier.name, cand, pool) {
-                Ok(sol) => {
-                    out.push(sol);
-                    got = true;
+        // Pass 0 with the special-function quadratures; pass 1, only when
+        // they were used and nothing verified, without them (an unevaluated
+        // integral that verifies beats a closed form the zero test cannot
+        // confirm).
+        for pass in 0..2 {
+            let _guard = if pass == 1 {
+                if got || !util::special_quadrature_used() || crate::budget::tripped().is_some() {
                     break;
                 }
-                Err(why) => ctx.fail(format!("{}: {why}", tier.name)),
+                Some(util::WithoutSpecialQuadrature::new())
+            } else {
+                util::reset_special_quadrature_used();
+                None
+            };
+            let cands = (tier.solve)(&mut ctx, pool);
+            if cands.is_empty() {
+                ctx.fail(format!("{}: no candidate", tier.name));
+            }
+            let mut expanded: Vec<Candidate> = Vec::new();
+            for cand in cands {
+                if has_data {
+                    match cauchy::impose(&mut ctx, cand, pool) {
+                        Ok(cs) => expanded.extend(cs),
+                        Err(e) => {
+                            ctx.fail(format!("{}: {e}", tier.name));
+                            if matches!(e, PdeError::CharacteristicData(_)) || cauchy_err.is_none()
+                            {
+                                cauchy_err = Some(e);
+                            }
+                        }
+                    }
+                } else {
+                    expanded.push(cand);
+                }
+            }
+            for cand in expanded {
+                match finalize(&ctx, tier.name, cand, pool) {
+                    Ok(sol) => {
+                        out.push(sol);
+                        got = true;
+                        break;
+                    }
+                    Err(why) => ctx.fail(format!("{}: {why}", tier.name)),
+                }
             }
         }
         if got && !all {
