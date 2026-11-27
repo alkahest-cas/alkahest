@@ -383,7 +383,7 @@ def test_dirichlet_energy_matches_its_definition_and_reduces():
     for e, t, lo in zip(es, th, losses):
         if not np.isfinite(lo):
             continue
-        u, g, _ = ev.jets(e, t, xi)
+        _u, g, _ = ev.jets(e, t, xi)
         wv = np.exp(-((xi[:, 0] ** 2 - 1) ** 2))
         ub, _, _ = ev.jets(e, t, xb)
         want = np.mean(wv * (g**2).sum(1)) + 100.0 * np.mean((ub - (1 + xb[:, 0]) / 2) ** 2)
