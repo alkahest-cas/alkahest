@@ -354,7 +354,7 @@ CORPUS = [
         "vars": "xy",
         "eq": "u_xy + x*u_x",
         "kind": "general",
-        "expect": "E-PDE-106",
+        "expect": "general",
     },
     {
         "id": "cascade_xy",
@@ -502,7 +502,7 @@ CORPUS = [
         "eq": "u_tt - u_xx",
         "ics": [("u(x,0)", "f(x)"), ("u_t(x,0)", "g(x)")],
         "kind": "cauchy",
-        "expect": "E-PDE-107",
+        "expect": "particular",
     },
     {
         "id": "abbasi_377_g0",
@@ -592,7 +592,7 @@ CORPUS = [
         "eq": "u_tt - c**2*u_xx",
         "ics": [("u(x,1)", "g(x)"), ("u_t(x,1)", "h(x)")],
         "kind": "cauchy",
-        "expect": "E-PDE-107",
+        "expect": "particular",
     },
     {
         "id": "dalembert_c",

@@ -363,3 +363,42 @@ fn canonical_form_is_an_identity() {
         );
     }
 }
+
+#[test]
+fn dalembert_with_arbitrary_velocity_keeps_an_integral() {
+    // u_tt = u_xx, u(x, 0) = f(x), u_t(x, 0) = g(x): ∫ g stays unevaluated.
+    let c = Ctx::new();
+    let x = c.sym("x");
+    let t = c.sym("t");
+    let u = c.pool.func("u", vec![x, t]);
+    let p = &c.pool;
+    let eq = c.lin(&[
+        (c.int(1), c.d(c.d(u, t), t)),
+        (c.int(-1), c.d(c.d(u, x), x)),
+    ]);
+    let zero = c.int(0);
+    let u0 = p.func("u", vec![x, zero]);
+    let ut0 = crate::diff::undefined::derivative_of(u0, &[0, 1], p).unwrap();
+    let prob = PdeProblem::new(&[eq], &[u], p)
+        .unwrap()
+        .ic(u0, p.func("f", vec![x]), p)
+        .unwrap()
+        .ic(ut0, p.func("g", vec![x]), p)
+        .unwrap();
+    let r = solve_second_order(&prob, p).unwrap();
+    assert!(r.verification.status.is_verified());
+    assert!(crate::pde::integral::has_integral(r.solution, p));
+}
+
+#[test]
+fn cascade_keeps_a_non_separable_quadrature() {
+    // u_xy + x u_x = 0: u = F(y) + ∫ e^{−x t}... no integral-free form.
+    let c = Ctx::new();
+    let (x, _y, u) = xy(&c);
+    let p = &c.pool;
+    let eq = c.lin(&[(c.int(1), c.d(c.d(u, x), _y)), (x, c.d(u, x))]);
+    let r = c.solve(eq, u).unwrap();
+    assert_eq!(r.kind, "general");
+    assert!(crate::pde::integral::has_integral(r.solution, p));
+    assert_eq!(r.arbitrary_functions.len(), 2);
+}

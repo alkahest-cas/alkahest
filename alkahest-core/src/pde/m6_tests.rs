@@ -331,9 +331,14 @@ fn pdsolve_m6_tiers() {
         let one = pdsolve(&prob, &PdsolveOptions::default(), &e.pool).unwrap();
         assert_eq!(one.kind, super::solve::PdeSolutionKind::Special);
     }
-    // A linear second-order equation is still outside every tier.
+    // A linear second-order equation goes to the M2 tier, not the M6 ones.
     let h = eq_of("u_t - u_xx", &["x", "t"]);
     let prob = super::problem::PdeProblem::new(&[h.eq], &[h.u], &h.pool).unwrap();
-    let err = pdsolve(&prob, &PdsolveOptions::default(), &h.pool).unwrap_err();
+    let sol = pdsolve(&prob, &PdsolveOptions::default(), &h.pool).unwrap();
+    assert_eq!(sol.method, "second_order");
+    // A linear third-order equation is still outside every tier.
+    let h3 = eq_of("u_t - u_xxx", &["x", "t"]);
+    let prob = super::problem::PdeProblem::new(&[h3.eq], &[h3.u], &h3.pool).unwrap();
+    let err = pdsolve(&prob, &PdsolveOptions::default(), &h3.pool).unwrap_err();
     assert_eq!(crate::errors::AlkahestError::code(&err), "E-PDE-050");
 }

@@ -181,9 +181,15 @@ fn unknown_hint_and_order_two_refuse() {
     let uxx = crate::diff::diff_impl::diff(dd(&f, f.x), f.x, p)
         .unwrap()
         .value;
-    let prob2 = PdeProblem::new(&[uxx], &[f.u], p).unwrap();
+    let uxxx = crate::diff::diff_impl::diff(uxx, f.x, p).unwrap().value;
+    let prob2 = PdeProblem::new(&[uxxx], &[f.u], p).unwrap();
     let e2 = pdsolve(&prob2, &PdsolveOptions::default(), p).unwrap_err();
     assert_eq!(e2.code(), "E-PDE-050");
+    // second order in two variables goes to the M2 tier
+    let prob3 = PdeProblem::new(&[uxx], &[f.u], p).unwrap();
+    let s3 = pdsolve(&prob3, &PdsolveOptions::default(), p).unwrap();
+    assert_eq!(s3.method, "second_order");
+    assert!(s3.verification.status.is_verified());
 }
 
 /// Solve equations written as strings (`Derivative(u(x, y), x)` etc.); for
