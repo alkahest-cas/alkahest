@@ -1313,9 +1313,11 @@ fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
         "acos" => C64::real(std::f64::consts::FRAC_PI_2)
             .add(I.mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln())),
         "abs" => C64::real(z.abs()),
-        // `erfi(z)` is spelled `−i·erf(i·z)`, so the special second solutions
-        // of Hermite-type equations put `erf` on the imaginary axis.
         "erf" => return erf_complex(z),
+        // `erfi(z) = −i·erf(i·z)` off the real axis (the special second
+        // solutions of Hermite-type equations, sampled at complex points); on
+        // it, the registered real kernel below.
+        "erfi" if z.im != 0.0 => return erf_complex(I.mul(z)).map(|w| I.neg().mul(w)),
         // Any other registered primitive at a *real* argument (the imaginary
         // part exactly zero, as for `Ei(x)` and the Jacobi functions at real
         // data): its own real kernel is the value.

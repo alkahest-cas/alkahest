@@ -2458,13 +2458,17 @@ pub(super) fn strip_log_abs(
     });
     let out = match shape {
         Shape::Leaf => e,
+        // Interned in the original argument order, not re-sorted: the proof's
+        // `hd` must print as the statement does once `simp only [Real.log_abs]`
+        // has removed the `abs`, or `HasDerivAt.congr_deriv` sees two sums in
+        // different orders (`log|x+1|/3 + …` vs `… + log(x+1)/3`).
         Shape::Add(xs) => {
             let ys = xs.iter().map(|&c| strip_log_abs(c, pool, memo)).collect();
-            pool.add(ys)
+            pool.intern(ExprData::Add(ys))
         }
         Shape::Mul(xs) => {
             let ys = xs.iter().map(|&c| strip_log_abs(c, pool, memo)).collect();
-            pool.mul(ys)
+            pool.intern(ExprData::Mul(ys))
         }
         Shape::Pow(b, x) => {
             let b2 = strip_log_abs(b, pool, memo);

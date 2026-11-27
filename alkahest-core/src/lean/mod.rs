@@ -2330,6 +2330,35 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
     walk(f, var, pool, false)
 }
 
+/// `log(abs(a))` → `log(a)` throughout `e`: identical as functions of a
+/// real variable under Mathlib's `Real.log`, which is defined as `log|·|`.
+fn strip_abs_under_log(e: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(e) {
+        ExprData::Func { name, args } if name == "log" && args.len() == 1 => {
+            let inner = match pool.get(args[0]) {
+                ExprData::Func { name: n, args: a } if n == "abs" && a.len() == 1 => a[0],
+                _ => args[0],
+            };
+            pool.func("log", vec![strip_abs_under_log(inner, pool)])
+        }
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter().map(|&a| strip_abs_under_log(a, pool)).collect(),
+        ),
+        ExprData::Add(args) => {
+            pool.add(args.iter().map(|&a| strip_abs_under_log(a, pool)).collect())
+        }
+        ExprData::Mul(args) => {
+            pool.mul(args.iter().map(|&a| strip_abs_under_log(a, pool)).collect())
+        }
+        ExprData::Pow { base, exp } => pool.pow(
+            strip_abs_under_log(base, pool),
+            strip_abs_under_log(exp, pool),
+        ),
+        _ => e,
+    }
+}
+
 /// Emit a Lean certificate for an **indefinite integral** `∫ f dx = F`.
 ///
 /// A bare `f = F` equality is false (`sin x ≠ -cos x`), so an integration
@@ -2365,6 +2394,10 @@ pub fn emit_integration_cert(
     var: ExprId,
     pool: &ExprPool,
 ) -> String {
+    // `integrate` writes real logarithms as `log|a|`.  Mathlib's `Real.log`
+    // already *is* `log|·|` (`Real.log_abs`), so `log(abs(a))` is stated as
+    // `Real.log a`: the same real function, in the fragment `diff_log` closes.
+    let antiderivative = strip_abs_under_log(antiderivative, pool);
     // Withhold antiderivatives whose derivative certificate escapes the
     // reliably-typechecking diff fragment (chain composites, sums nested in
     // products): the reused exporter would emit a non-closing proof for them.
@@ -5363,8 +5396,9 @@ mod tests {
 
     #[test]
     fn integration_cert_inv_x_via_log() {
-        // ∫ x⁻¹ dx = log x, certified as `deriv (fun x => log x) x = x⁻¹`.
-        // Intern-equality holds; pointwise log is in the FTC fragment.
+        // ∫ x⁻¹ dx = log|x|, certified as `deriv (fun x => log x) x = x⁻¹`:
+        // Mathlib's `Real.log` is `log|·|`, so the statement is about the same
+        // function. Intern-equality holds; pointwise log is in the FTC fragment.
         use crate::integrate::integrate;
 
         let pool = p();

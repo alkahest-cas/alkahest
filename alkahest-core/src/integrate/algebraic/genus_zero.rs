@@ -914,6 +914,23 @@ fn integrate_b_sqrt_high_degree(
     // criterion: rational base points with irrational sheets (a compositum of
     // quadratic *sheet* fields) via `try_genus2_alg_log`; a quadratic *base*
     // point (degree-4 tower ℚ(√m,√c)) via `try_alg_base_log`.
+    //
+    // First, the pseudo-elliptic norm equation (`B·√P = (B·P)/√P`): a torsion
+    // log part whose argument `p + q√P` (or `atan(q√P/p)`) solves a linear
+    // system — `∫dt/((1+t²)√(t⁴+3t²+3))` (Charlwood #5) among them.
+    if let Some(f) = super::pseudo_elliptic::integrate_pseudo_elliptic(
+        &poly_mul(&b_num, &p_poly),
+        &b_den,
+        &p_poly,
+        sqrt_id,
+        var,
+        pool,
+    ) {
+        if verify_bsqrt_derivative(f, &h, &p_poly, var, pool) {
+            log.push(RewriteStep::simple("alg_pseudo_elliptic_log", b, f));
+            return Ok(f);
+        }
+    }
     let verdict = if alg_res.iter().all(|r| r.conjugates == 1) {
         try_genus2_alg_log(&p_poly, &divisor.rational, &alg_res)
     } else {

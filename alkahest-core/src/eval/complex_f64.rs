@@ -358,12 +358,17 @@ fn eval_node_uncached(
                             error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
                         })
                 }
-                // `erfi(z)` is spelled `−i·erf(i·z)`, so `erf` meets the
-                // imaginary axis; the Maclaurin series is accurate for
-                // `|z| ≤ 4` and refused beyond (cancellation).
+                // The Maclaurin series is accurate for `|z| ≤ 4` and refused
+                // beyond (cancellation).
                 "erf" => erf_series(x).ok_or_else(|| {
                     error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
                 }),
+                // `erfi(z) = −i·erf(i·z)`.
+                "erfi" => erf_series(ComplexF64::new(-x.im, x.re))
+                    .map(|w| ComplexF64::new(w.im, -w.re))
+                    .ok_or_else(|| {
+                        error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
+                    }),
                 _ => Err(error(UnsupportedReason::UnsupportedFunction {
                     name: name.clone(),
                 })),

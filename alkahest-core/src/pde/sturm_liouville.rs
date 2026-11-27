@@ -642,6 +642,8 @@ impl SturmLiouvilleProblem {
             (c2, cc, dd)
         } else {
             let ratio = simp(div(c1, c2, pool), pool);
+            // `exp(∫B/A)` wants `x`, not `|x|` (a constant factor is free).
+            let _principal = crate::integrate::real_log::PrincipalLogs::enter();
             let integral = crate::integrate::integrate(ratio, x, pool).map_err(|err| {
                 PdeError::SlUnsupported(format!(
                     "the integrating factor exp(∫ B/A) does not close: {err}"

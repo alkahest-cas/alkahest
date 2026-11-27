@@ -50,6 +50,15 @@ const SAMPLES: [f64; 16] = [
 /// tight one.
 const TOL: f64 = 1e-6;
 
+/// `true` when `integrand` takes a finite non-real value at some real sample
+/// (it has a complex branch on the real line that this module checks).
+pub(crate) fn has_complex_branch(integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    may_be_non_real(integrand, pool)
+        && SAMPLES
+            .iter()
+            .any(|&x| eval(integrand, var, x, pool).is_some_and(|f| f.im != 0.0 && f.is_finite()))
+}
+
 /// `Some(x)` when `d/dx candidate` and `integrand` disagree at the real point
 /// `x`, at which the integrand is a finite non-real number; `None` when every
 /// such point agrees or none could be evaluated.

@@ -2531,6 +2531,20 @@ pub mod builtins {
                 0.0
             })
         }
+
+        /// Exact `±1` for a ball that excludes `0`; `None` (no enclosure) for
+        /// one that straddles it.  `d/dx log|a| = sign(a)·a′/|a|` is what makes
+        /// this reachable.
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            let x = unary(args)?;
+            if x.lo() > 0 {
+                Some(ArbBall::from_f64(1.0, x.prec))
+            } else if x.hi() < 0 {
+                Some(ArbBall::from_f64(-1.0, x.prec))
+            } else {
+                None
+            }
+        }
     }
 
     // ── Heaviside (unit step) ──────────────────────────────────────────────────

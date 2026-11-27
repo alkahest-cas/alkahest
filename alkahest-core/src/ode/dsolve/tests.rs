@@ -1671,6 +1671,10 @@ fn autonomous_case(f: impl Fn(&ExprPool, ExprId) -> ExprId, method: &str, head: 
     assert_eq!(sol.constants.len(), 2);
     let shown = p.display(explicit_of(&sol)).to_string();
     assert!(shown.contains(head), "{shown}");
+    // `erfi` is the real primitive, not `−i·erf(i·z)`.
+    if head == "erfi(" {
+        assert!(!shown.contains("erf("), "{shown}");
+    }
 }
 
 #[test]
@@ -1811,6 +1815,10 @@ fn special_second_solution(
     assert_eq!(sol.constants.len(), 2);
     let shown = p.display(explicit_of(&sol)).to_string();
     assert!(shown.contains(head), "{shown}");
+    // `erfi` is the real primitive, not `−i·erf(i·z)`.
+    if head == "erfi(" {
+        assert!(!shown.contains("erf("), "{shown}");
+    }
 }
 
 #[test]
@@ -1825,7 +1833,7 @@ fn hermite_second_solution_uses_erfi() {
                     p.integer(n),
                 )
             },
-            "erf",
+            "erfi(",
         );
     }
 }
@@ -1850,7 +1858,7 @@ fn laguerre_second_solution_uses_ei() {
 #[test]
 fn gaussian_first_solution_gives_an_erfi_second() {
     // y'' + x y' + y = 0: y₁ = e^{−x²/2}, y₂ = e^{−x²/2}·∫e^{x²/2}.
-    special_second_solution(|p, x| (p.integer(1_i32), x, p.integer(1_i32)), "erf");
+    special_second_solution(|p, x| (p.integer(1_i32), x, p.integer(1_i32)), "erfi(");
 }
 
 // ---------------------------------------------------------------------------

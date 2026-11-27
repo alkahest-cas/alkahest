@@ -164,13 +164,13 @@ CASES: list[Case] = [
     Case(
         id="ball_unsupported_primitive_refuses",
         subsystem="ball",
-        statement="sign(x) has no ball rule; interval_eval must refuse rather than use f64",
-        op=lambda: float(ak.interval_eval(ak.sign(X), {X: ak.ArbBall(0.5, 0.25)}).hi),
+        statement="sign(x) on a ball straddling 0 must refuse rather than use f64",
+        op=lambda: float(ak.interval_eval(ak.sign(X), {X: ak.ArbBall(0.0, 0.25)}).hi),
         contract=RefusesOr(),
         verified_by=(
-            "capabilities() reports numeric_ball = False for `sign`. The dangerous answer is "
-            "the f64 one, sign(0.5) = 1 as an exact ball: right on this box, wrong on any box "
-            "straddling 0, with nothing in the result to say which case the caller got."
+            "`sign` has a ball rule only for a ball that excludes 0 (exact ±1 there). The "
+            "dangerous answer is the f64 one, sign(0) = 0 or sign(midpoint) as an exact ball: "
+            "wrong on part of a box straddling 0, with nothing in the result to say so."
         ),
     ),
 ]

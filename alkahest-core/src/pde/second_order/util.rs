@@ -111,7 +111,12 @@ pub(crate) fn integ(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
     if free_of(s, v, pool) {
         return Some(simp(pool.mul(vec![s, v]), pool));
     }
-    let r = crate::integrate::integrate(s, v, pool).ok()?;
+    // Principal-branch logs, as for every quadrature feeding a family with a
+    // free function or constant (see `integrate::real_log::PrincipalLogs`).
+    let r = {
+        let _principal = crate::integrate::real_log::PrincipalLogs::enter();
+        crate::integrate::integrate(s, v, pool).ok()?
+    };
     let r = simp(r.value, pool);
     // Belt and braces: the antiderivative must differentiate back.
     let back = d(r, v, pool).ok()?;

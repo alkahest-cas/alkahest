@@ -117,9 +117,14 @@ pub fn euler_maclaurin(
     let mut terms: Vec<ExprId> = Vec::new();
 
     // ∫ f dk, evaluated at n. The lower endpoint is a constant and folds into C.
-    let antiderivative = integrate(f, k, pool)
-        .map_err(|_| AsymptoticError::UnsupportedScale)?
-        .value;
+    // Principal-branch logs: the expansion is for `n → +∞`, where `log n` and
+    // `log|n|` agree, and `C` absorbs any constant.
+    let antiderivative = {
+        let _principal = crate::integrate::real_log::PrincipalLogs::enter();
+        integrate(f, k, pool)
+            .map_err(|_| AsymptoticError::UnsupportedScale)?
+            .value
+    };
     let integral_at_n = simplify(subs_one(antiderivative, k, n, pool), pool).value;
     derivation.push(format!(
         "∫f dk = {}, evaluated at n",

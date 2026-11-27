@@ -192,6 +192,11 @@ pub const MAX_IBP_STEPS: u32 = 3;
 /// nesting is useful (a residual that is itself a by-parts problem); deeper
 /// nesting has not paid for itself on any measured corpus and is where the
 /// combinatorial blow-up lives.
+///
+/// One exception, [`GROWN_CLOSE`]: the first-step closing attempt of a
+/// by-parts call on the *caller's own* integrand may use one more level
+/// (`∫x·log(x²+1)·atan²x` closes through `∫atan x·log(x²+1)`, itself a by-parts
+/// problem).
 const MAX_REENTRY_DEPTH: u32 = 1;
 
 /// How much larger `∫v·du` may be than `∫u·dv` before the split is judged
@@ -203,6 +208,25 @@ const GROWTH_LIMIT: f64 = 1.6;
 thread_local! {
     /// Re-entry depth of [`integrate_by_parts`] on the current thread.
     static IBP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Set while the outermost by-parts call tries to close its first-step
+    /// residual (see `run_chain`): one extra nesting level is allowed inside it.
+    static GROWN_CLOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard for [`GROWN_CLOSE`].
+struct GrownCloseGuard;
+
+impl GrownCloseGuard {
+    fn enter() -> Self {
+        GROWN_CLOSE.with(|g| g.set(true));
+        GrownCloseGuard
+    }
+}
+
+impl Drop for GrownCloseGuard {
+    fn drop(&mut self) {
+        GROWN_CLOSE.with(|g| g.set(false));
+    }
 }
 
 /// RAII guard restoring [`IBP_DEPTH`] on every exit path.
@@ -1817,6 +1841,26 @@ impl Rat {
     }
 }
 
+/// `true` when a fractional power (or `sqrt`) of something depending on
+/// `var` occurs in `e`.
+fn has_var_radical(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if is_free_of(e, var, pool) {
+        return false;
+    }
+    match pool.get(e) {
+        ExprData::Pow { base, exp } => {
+            matches!(pool.get(exp), ExprData::Rational(_)) || has_var_radical(base, var, pool)
+        }
+        ExprData::Func { name, args } => {
+            name == "sqrt" || args.iter().any(|&a| has_var_radical(a, var, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| has_var_radical(a, var, pool))
+        }
+        _ => false,
+    }
+}
+
 /// Run the by-parts chain starting from the split `first`, maintaining
 /// `I = acc + mult·∫w dx`.
 ///
@@ -1828,6 +1872,13 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
     let mut w = integrand;
     let mut split = first;
     let mut seen: Vec<ExprId> = vec![integrand];
+    // The extra closing work on the caller's own integrand (nested by-parts,
+    // the multi-form close of a grown residual) is for transcendental
+    // integrands: with an algebraic radical the sub-integrals reach the
+    // elliptic and Trager machinery, where one more level of nesting costs
+    // seconds on a decline.
+    // Nor for the `dv = dx` split, whose residual `x·f′` is a fresh composite.
+    let extra_allowed = !first.trivial_dv && !has_var_radical(integrand, var, pool);
 
     for step in 0..MAX_IBP_STEPS {
         crate::budget::check().ok()?;
@@ -1876,6 +1927,33 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         let grew =
             structural_size(next_w, pool) as f64 > GROWTH_LIMIT * structural_size(w, pool) as f64;
         if grew && !(step == 0 && split.trivial_dv) {
+            // A larger residual is still worth one attempt to *close*, without
+            // recursing on it, on the first step of a top-level by-parts chain:
+            // `∫x·cot²x` has `v = −x − cot x`, bigger than `cot²x`, and `∫v dx`
+            // is immediate.  On the caller's own integrand the attempt is the
+            // full `close_integral` with one extra level of by-parts nesting
+            // (`∫x·log(x²+1)·atan²x`); on a sub-integral, one engine call.
+            let top = IBP_DEPTH.with(|d| d.get()) == 1 && !GROWN_CLOSE.with(|g| g.get());
+            if step == 0 && top {
+                let res = if super::engine::in_outermost_integrate() && extra_allowed {
+                    let _g = GrownCloseGuard::enter();
+                    close_integral(raw_w, var, pool)
+                } else {
+                    integrate(next_w, var, pool).ok().map(|r| r.value)
+                };
+                if let Some(res) = res {
+                    return Some(
+                        simplify(
+                            pool.add(vec![
+                                pool.mul(vec![mult.to_expr(pool), uv]),
+                                pool.mul(vec![mult.neg().to_expr(pool), res]),
+                            ]),
+                            pool,
+                        )
+                        .value,
+                    );
+                }
+            }
             return None;
         }
 
@@ -1888,7 +1966,21 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         w = next_w;
 
         // ---- 1. close: can the engine finish `∫w dx` outright? ------------
-        if let Some(res) = close_integral(raw_w, var, pool) {
+        // On the first step of a by-parts call on the caller's own integrand,
+        // the closing attempt may itself use by parts once (`∫(x − tan x)/tan²x`
+        // leaves `∫x·tan²x + tan x`).
+        let closed = if step == 0
+            && extra_allowed
+            && IBP_DEPTH.with(|d| d.get()) == 1
+            && !GROWN_CLOSE.with(|g| g.get())
+            && super::engine::in_outermost_integrate()
+        {
+            let _g = GrownCloseGuard::enter();
+            close_integral(raw_w, var, pool)
+        } else {
+            close_integral(raw_w, var, pool)
+        };
+        if let Some(res) = closed {
             let tail = pool.mul(vec![mult.to_expr(pool), res]);
             return Some(simplify(pool.add(vec![acc, tail]), pool).value);
         }
@@ -1998,7 +2090,8 @@ pub fn try_by_parts(
     // Re-entry guard.  The sub-integrals go through the full engine, which can
     // route back here once the hook is in place.
     let depth = IBP_DEPTH.with(|d| d.get());
-    if depth >= MAX_REENTRY_DEPTH {
+    let limit = MAX_REENTRY_DEPTH + u32::from(GROWN_CLOSE.with(|g| g.get()));
+    if depth >= limit {
         return None;
     }
     IBP_DEPTH.with(|d| d.set(depth + 1));

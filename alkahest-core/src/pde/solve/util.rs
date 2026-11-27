@@ -603,7 +603,13 @@ fn replace_apps(e: ExprId, name: &str, params: &[ExprId], body: ExprId, pool: &E
 }
 
 fn integrate_core(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    let r = crate::integrate::integrate(e, v, pool).ok()?;
+    // Principal-branch logs: first integrals are defined up to a constant, and
+    // the algebra downstream (solving for parameters, exponentiating) wants
+    // `log x`, not `log|x|`.
+    let r = {
+        let _principal = crate::integrate::real_log::PrincipalLogs::enter();
+        crate::integrate::integrate(e, v, pool).ok()?
+    };
     let val = r.value;
     if names_in(&[val], pool).contains("Integral") {
         return None;

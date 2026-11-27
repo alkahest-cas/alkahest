@@ -11,16 +11,23 @@
 //! [`realify_logs`] rewrites each `log(a)` whose argument is negative somewhere
 //! on the integrand's real domain: to `log(−a)` when `a` is never positive
 //! there (smooth, and the same derivative), else to `log(|a|)` (the same
-//! derivative wherever `a ≠ 0`).  The rewritten candidate is re-gated against
-//! the integrand and must evaluate to a finite real number at every sample
-//! where the integrand does; otherwise the original is kept.
+//! derivative wherever `a ≠ 0`) — or to `½·log(a²)` when the integrand has a
+//! complex branch on the real line, where `log|a|` would not differentiate
+//! back to it.  The rewritten candidate must evaluate to a finite real number
+//! at every sample where the integrand does, and differentiate back to it there
+//! (central differences); otherwise the original is kept.
+//!
+//! [`realify_answer`] runs this as the last step of every outermost
+//! `integrate` call, whichever route produced the answer.
 
 use std::collections::HashMap;
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::engine::{is_free_of, verify_antiderivative_status_parametric};
+use super::engine::is_free_of;
+#[cfg(test)]
+use super::engine::verify_antiderivative_status_parametric;
 
 /// Real sample points: dense enough to cross a period of the trigonometric
 /// integrands these routes produce, and irrational-looking to dodge poles.
@@ -28,10 +35,29 @@ fn samples() -> Vec<f64> {
     (0..64).map(|i| -7.31 + 0.2317 * i as f64).collect()
 }
 
+#[cfg(test)]
 fn eval_at(e: ExprId, var: ExprId, at: f64, pool: &ExprPool) -> Option<f64> {
     let mut env = HashMap::new();
     env.insert(var, at);
     crate::jit::eval_interp(e, &env, pool).filter(|v| v.is_finite())
+}
+
+/// `e` compiled once for sampling in `var` (finite values only).
+fn sampler<'a>(e: ExprId, var: ExprId, pool: &'a ExprPool) -> crate::jit::Sampler<'a> {
+    crate::jit::Sampler::new(e, var, &HashMap::new(), pool)
+}
+
+fn at(s: &crate::jit::Sampler<'_>, t: f64) -> Option<f64> {
+    s.eval(t).filter(|v| v.is_finite())
+}
+
+/// The samples where the integrand is a finite real, with its value there.
+fn integrand_points(integrand: ExprId, var: ExprId, pool: &ExprPool) -> Vec<(f64, f64)> {
+    let s = sampler(integrand, var, pool);
+    samples()
+        .into_iter()
+        .filter_map(|t| at(&s, t).map(|v| (t, v)))
+        .collect()
 }
 
 fn collect_logs(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
@@ -61,25 +87,106 @@ fn collect_logs(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) 
 }
 
 /// `true` when `f` evaluates to a finite real number at every sample where
-/// `integrand` does (and at two at least).
-fn real_where_integrand_is(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    let mut checked = 0;
-    for at in samples() {
-        if eval_at(integrand, var, at, pool).is_none() {
-            continue;
-        }
-        if eval_at(f, var, at, pool).is_none() {
-            return false;
-        }
-        checked += 1;
+/// the integrand does (and at two at least).
+fn real_where_integrand_is(f: ExprId, pts: &[(f64, f64)], var: ExprId, pool: &ExprPool) -> bool {
+    let s = sampler(f, var, pool);
+    pts.len() >= 2 && pts.iter().all(|&(t, _)| at(&s, t).is_some())
+}
+
+/// Derivation-log rule name of the final real-log pass in `integrate`.
+pub(crate) const REAL_LOG_RULE: &str = "int_real_valued_logs";
+
+thread_local! {
+    /// Depth of [`PrincipalLogs`] scopes on this thread.
+    static PRINCIPAL_LOGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While alive, the outermost `integrate` keeps principal-branch logarithms
+/// (skips [`realify_answer`]).  For callers whose antiderivatives only ever
+/// feed an expression with a free constant that absorbs the difference —
+/// `dsolve`'s `exp(∫p dx)` is `x`, not `|x|`, for `p = 1/x`, and `C·x` is the
+/// same family as `C·|x|`.
+pub(crate) struct PrincipalLogs;
+
+impl PrincipalLogs {
+    pub(crate) fn enter() -> Self {
+        PRINCIPAL_LOGS.with(|d| d.set(d.get() + 1));
+        PrincipalLogs
     }
-    checked >= 2
+}
+
+impl Drop for PrincipalLogs {
+    fn drop(&mut self) {
+        PRINCIPAL_LOGS.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// The final pass of the outermost `integrate`: [`realify_logs`] on any
+/// answer that carries a `log` of the variable, `None` when nothing changed.
+/// Answers without one (most of them) cost a single tree walk.
+pub(crate) fn realify_answer(
+    f: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    if PRINCIPAL_LOGS.with(|d| d.get()) > 0 {
+        return None;
+    }
+    let mut logs = Vec::new();
+    collect_logs(f, var, pool, &mut logs);
+    if logs.is_empty() || !cheap_to_sample(f, pool) || !cheap_to_sample(integrand, pool) {
+        return None;
+    }
+    let g = realify_logs(f, integrand, var, pool);
+    (g != f).then_some(g)
+}
+
+/// `true` when every function in `e` is elementary (or `erf`/`erfi`), so
+/// sampling it costs microseconds.  The pass samples the answer at some
+/// 200 points; an `EllipticPi` there can take seconds per point, more than
+/// the integration did, and a `RootSum` hides its logarithms anyway.
+fn cheap_to_sample(e: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Func { name, args } => {
+            matches!(
+                name.as_str(),
+                "exp"
+                    | "log"
+                    | "sqrt"
+                    | "abs"
+                    | "sign"
+                    | "sin"
+                    | "cos"
+                    | "tan"
+                    | "asin"
+                    | "acos"
+                    | "atan"
+                    | "sinh"
+                    | "cosh"
+                    | "tanh"
+                    | "asinh"
+                    | "acosh"
+                    | "atanh"
+                    | "erf"
+                    | "erfi"
+            ) && args.iter().all(|&a| cheap_to_sample(a, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().all(|&a| cheap_to_sample(a, pool)),
+        ExprData::Pow { base, exp } => cheap_to_sample(base, pool) && cheap_to_sample(exp, pool),
+        ExprData::Symbol { .. }
+        | ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_) => true,
+        _ => false,
+    }
 }
 
 /// See the module docs.  Returns `f` unchanged when nothing needs rewriting
 /// or the rewrite cannot be confirmed.
 pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
-    if real_where_integrand_is(f, integrand, var, pool) {
+    let pts = integrand_points(integrand, var, pool);
+    if pts.len() < 2 || real_where_integrand_is(f, &pts, var, pool) {
         return f;
     }
     let mut logs = Vec::new();
@@ -87,18 +194,22 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
     if logs.is_empty() {
         return f;
     }
+    // `log|a|` differentiates to `a′/a` only where `a` is real: on a complex
+    // branch of the integrand it is not an antiderivative where `log(a)` was,
+    // and a symbolic `d/dx` (which simplifies `sign(a)/|a|` to `1/a`) cannot
+    // see that.  There the analytic `½·log(a²)` is used instead: the same
+    // real value on the real domain, derivative `a′/a` everywhere.
+    let complex_branch = super::branch_check::has_complex_branch(integrand, var, pool);
     let mut map = HashMap::new();
     for l in logs {
         let ExprData::Func { args, .. } = pool.get(l) else {
             continue;
         };
         let a = args[0];
+        let sa = sampler(a, var, pool);
         let (mut neg, mut pos) = (false, false);
-        for at in samples() {
-            if eval_at(integrand, var, at, pool).is_none() {
-                continue;
-            }
-            match eval_at(a, var, at, pool) {
+        for &(t, _) in &pts {
+            match at(&sa, t) {
                 Some(v) if v < 0.0 => neg = true,
                 Some(v) if v > 0.0 => pos = true,
                 _ => {}
@@ -107,24 +218,57 @@ pub(crate) fn realify_logs(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
         if !neg {
             continue;
         }
-        let arg = if pos {
-            pool.func("abs", vec![a])
+        let replacement = if pos && complex_branch {
+            pool.mul(vec![
+                pool.rational(1, 2),
+                pool.func("log", vec![pool.pow(a, pool.integer(2_i32))]),
+            ])
+        } else if pos {
+            pool.func("log", vec![pool.func("abs", vec![a])])
         } else {
-            simplify(pool.mul(vec![pool.integer(-1_i32), a]), pool).value
+            let minus_a = simplify(pool.mul(vec![pool.integer(-1_i32), a]), pool).value;
+            pool.func("log", vec![minus_a])
         };
-        map.insert(l, pool.func("log", vec![arg]));
+        map.insert(l, replacement);
     }
     if map.is_empty() {
         return f;
     }
     let g = simplify(crate::kernel::subs(f, &map, pool), pool).value;
-    if real_where_integrand_is(g, integrand, var, pool)
-        && verify_antiderivative_status_parametric(g, integrand, var, pool).is_some()
-    {
+    if real_where_integrand_is(g, &pts, var, pool) && differentiates_back(g, &pts, var, pool) {
         g
     } else {
         f
     }
+}
+
+/// `true` when `g′ = integrand` by central differences at every sample where
+/// the integrand is a moderate real number and `g` is real nearby (at least
+/// three of them).
+///
+/// The rewrite only replaces `log(a)` by `Re log(a)` (`log(−a)`, `log|a|`,
+/// `½·log(a²)`), and `Re F` is an antiderivative wherever `F` is and the
+/// integrand is real, so this is a check of the construction, not a search.
+/// It is numeric rather than a second symbolic gate, whose `d/dx`-and-simplify
+/// of `|a|` inside a large answer can cost more than the integration did.
+fn differentiates_back(g: ExprId, pts: &[(f64, f64)], var: ExprId, pool: &ExprPool) -> bool {
+    let sg = sampler(g, var, pool);
+    let mut agreed = 0;
+    for &(t, f) in pts {
+        if f.abs() > 1e6 {
+            continue;
+        }
+        let h = 1e-6 * t.abs().max(1.0);
+        let (Some(gp), Some(gm)) = (at(&sg, t + h), at(&sg, t - h)) else {
+            continue;
+        };
+        let d = (gp - gm) / (2.0 * h);
+        if (d - f).abs() > 1e-5 * (1.0 + f.abs()) {
+            return false;
+        }
+        agreed += 1;
+    }
+    agreed >= 3
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@
       "tests/textbook_gate/"
     ],
     "observations": 337,
-    "shape_classes": 214
+    "shape_classes": 216
   },
   "rows": [
     {
@@ -58,6 +58,31 @@
       ],
       "examples": [
         "Si(x)"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=apply/funcs=abs,log/fn_arg=other/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "abs,log",
+        "fn_arg": "other",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth"
+      ],
+      "examples": [
+        "log(abs(x))"
       ]
     },
     {
@@ -328,32 +353,6 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=apply/funcs=log,sqrt/fn_arg=other/mul=none/pow=nat/pow_base=var",
-      "features": {
-        "form": "apply",
-        "funcs": "log,sqrt",
-        "fn_arg": "other",
-        "mul": "none",
-        "pow": "nat",
-        "pow_base": "var"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_log",
-        "diff_sqrt",
-        "sum_rule"
-      ],
-      "examples": [
-        "log((sqrt((-1 + x^2)) + x))"
-      ]
-    },
-    {
-      "operation": "diff",
       "shape": "diff/form=apply/funcs=log/fn_arg=var/mul=none/pow=none/pow_base=none",
       "features": {
         "form": "apply",
@@ -365,7 +364,7 @@
       },
       "verdict": "certified",
       "observations": {
-        "certified": 3,
+        "certified": 2,
         "withheld": 0,
         "no_derivation": 0
       },
@@ -833,6 +832,58 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=abs,cos,log/fn_arg=other/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "abs,cos,log",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth",
+        "product_rule"
+      ],
+      "examples": [
+        "(-1 * log(abs(cos(x))))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=product/funcs=abs,log/fn_arg=other/mul=scalar/pow=nat/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "abs,log",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "nat",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth",
+        "product_rule"
+      ],
+      "examples": [
+        "(1/2 * log(abs((-1 + x^2))))"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=atan/fn_arg=other/mul=scalar/pow=none/pow_base=none",
       "features": {
         "form": "product",
@@ -876,31 +927,6 @@
       "blocking_rules": [],
       "examples": [
         "((cos(x))^-1 * exp(x))"
-      ]
-    },
-    {
-      "operation": "diff",
-      "shape": "diff/form=product/funcs=cos,log/fn_arg=other/mul=scalar/pow=none/pow_base=none",
-      "features": {
-        "form": "product",
-        "funcs": "cos,log",
-        "fn_arg": "other",
-        "mul": "scalar",
-        "pow": "none",
-        "pow_base": "none"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_log",
-        "product_rule"
-      ],
-      "examples": [
-        "(-1 * log(cos(x)))"
       ]
     },
     {
@@ -1258,6 +1284,35 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=log,sqrt/fn_arg=other/mul=scalar/pow=nat/pow_base=expr",
+      "features": {
+        "form": "product",
+        "funcs": "log,sqrt",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "nat",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "collect_mul_factors",
+        "diff_log",
+        "diff_sqrt",
+        "power_rule",
+        "product_rule",
+        "sum_rule"
+      ],
+      "examples": [
+        "(1/2 * log((sqrt((-1 + x^2)) + x)^2))"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=log/fn_arg=other/mul=scalar/pow=nat/pow_base=var",
       "features": {
         "form": "product",
@@ -1270,7 +1325,7 @@
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 2,
+        "withheld": 1,
         "no_derivation": 0
       },
       "blocking_rules": [
@@ -1278,7 +1333,6 @@
         "product_rule"
       ],
       "examples": [
-        "(1/2 * log((-1 + x^2)))",
         "(1/2 * log((1 + x^2)))"
       ]
     },
@@ -1463,6 +1517,89 @@
       "examples": [
         "((-1 * 2 * x^2) + (-1 * 7) + (3 * x^3) + (5 * x))",
         "((2 * x) + x^3)"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=sum/funcs=abs,log/fn_arg=other/mul=scalar/pow=nat/pow_base=var",
+      "features": {
+        "form": "sum",
+        "funcs": "abs,log",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "nat",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth",
+        "product_rule",
+        "sum_rule"
+      ],
+      "examples": [
+        "((-1 * log(abs((-2 + x)))) + (1/2 * log(abs(((-4 * x) + 3 + x^2)))))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=sum/funcs=abs,log/fn_arg=other/mul=scalar/pow=neg_one/pow_base=expr",
+      "features": {
+        "form": "sum",
+        "funcs": "abs,log",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "neg_one",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth",
+        "power_rule",
+        "product_rule",
+        "sum_rule"
+      ],
+      "examples": [
+        "(((-1 + x)^-1 * -1/2) + (-1/4 * log(abs((-1 + x)))) + (1/4 * log(abs((1 + x)))))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=sum/funcs=abs,log/fn_arg=other/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "sum",
+        "funcs": "abs,log",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_log",
+        "diff_nonsmooth",
+        "product_rule",
+        "sum_rule"
+      ],
+      "examples": [
+        "((-1 * log(abs((-1 + x)))) + log(abs((-2 + x))))",
+        "((-1/2 * log(abs((-3 + x)))) + (-1/6 * log(abs((-1 + x)))) + (1/2 * log(abs((-2 + x)))) + (1/6 * log(abs((-4 + x)))))"
       ]
     },
     {
@@ -1657,86 +1794,6 @@
         "((C1 * exp(x)) + (C2 * exp(x) * x) + (C2 * exp(x)))",
         "((C1 * exp(x)) + (C2 * exp(x) * x))",
         "((C1 * exp(x)) + C2)"
-      ]
-    },
-    {
-      "operation": "diff",
-      "shape": "diff/form=sum/funcs=log/fn_arg=other/mul=scalar/pow=nat/pow_base=var",
-      "features": {
-        "form": "sum",
-        "funcs": "log",
-        "fn_arg": "other",
-        "mul": "scalar",
-        "pow": "nat",
-        "pow_base": "var"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_log",
-        "product_rule",
-        "sum_rule"
-      ],
-      "examples": [
-        "((-1 * log((-2 + x))) + (1/2 * log(((-4 * x) + 3 + x^2))))"
-      ]
-    },
-    {
-      "operation": "diff",
-      "shape": "diff/form=sum/funcs=log/fn_arg=other/mul=scalar/pow=neg_one/pow_base=expr",
-      "features": {
-        "form": "sum",
-        "funcs": "log",
-        "fn_arg": "other",
-        "mul": "scalar",
-        "pow": "neg_one",
-        "pow_base": "expr"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_log",
-        "power_rule",
-        "product_rule",
-        "sum_rule"
-      ],
-      "examples": [
-        "(((-1 + x)^-1 * -1/2) + (-1/4 * log((-1 + x))) + (1/4 * log((1 + x))))"
-      ]
-    },
-    {
-      "operation": "diff",
-      "shape": "diff/form=sum/funcs=log/fn_arg=other/mul=scalar/pow=none/pow_base=none",
-      "features": {
-        "form": "sum",
-        "funcs": "log",
-        "fn_arg": "other",
-        "mul": "scalar",
-        "pow": "none",
-        "pow_base": "none"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 2,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_log",
-        "product_rule",
-        "sum_rule"
-      ],
-      "examples": [
-        "((-1 * log((-1 + x))) + log((-2 + x)))",
-        "((-1/2 * log((-3 + x))) + (-1/6 * log((-1 + x))) + (1/2 * log((-2 + x))) + (1/6 * log((-4 + x))))"
       ]
     },
     {

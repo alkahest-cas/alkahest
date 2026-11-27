@@ -908,6 +908,9 @@ pub(crate) fn integrate_first_of(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, DsolveError> {
+    // Principal-branch logs: a quadrature here feeds a family with a free
+    // constant (`exp(∫dx/x) = x`, not `|x|`), which absorbs the difference.
+    let _principal = crate::integrate::real_log::PrincipalLogs::enter();
     let mut last: Option<String> = None;
     let mut tried: Vec<ExprId> = Vec::new();
     // Stage 1: every candidate exactly as the caller built it.  Rewriting is

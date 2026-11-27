@@ -3328,6 +3328,20 @@ pub fn integrate(
                 pool.display(var),
             )));
         }
+        // Real-valued logarithms, whichever route produced the answer: a
+        // `log(a)` with `a < 0` somewhere on the integrand's real domain is an
+        // antiderivative there only up to an imaginary constant, so it becomes
+        // `log(−a)`, `log|a|` or `½·log(a²)` (see `real_log`, which checks the
+        // rewrite against the answer just verified).
+        if let Some(real) = super::real_log::realify_answer(result.value, expr, var, pool) {
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple(
+                super::real_log::REAL_LOG_RULE,
+                result.value,
+                real,
+            ));
+            result = DerivedExpr::with_log(real, result.log.merge(log));
+        }
         // A substitution antiderivative (`t = tan(x/2)`, `t = tan x`, …) can
         // jump by a constant where the substituted tangent has a pole although
         // the integrand is regular there. Cancel those jumps exactly, so the
@@ -3725,6 +3739,18 @@ fn integrate_dispatch(
                 if let Some(r) = super::prenorm::try_prenormalised(expr, var, pool)? {
                     return Ok(r);
                 }
+                // Two square roots of linear radicands, rationalised together
+                // by `s = √(αx+β₁) + √(αx+β₂)` (`∫asin(√x − √(x+1))`).
+                crate::budget::check()?;
+                if let Some(r) = super::radical_pair::try_radical_pair(expr, var, pool) {
+                    return Ok(r);
+                }
+                // A radical function of one `sin θ` (or `cos θ`) alone:
+                // `s = sin θ` with the sign of `cos θ` kept explicitly.
+                crate::budget::check()?;
+                if let Some(r) = super::sine_subst::try_sine_substitution(expr, var, pool) {
+                    return Ok(r);
+                }
             }
 
             crate::budget::check()?;
@@ -4103,8 +4129,34 @@ pub fn integrate_definite(
 /// The fundamental-theorem path of [`integrate_definite`]: antiderivative,
 /// endpoint values, difference — with the pole, jump and finiteness guards.
 ///
+/// The antiderivative is taken with principal-branch logarithms first (the
+/// limit engine reasons about `log(a)` at `±∞`, not about `log|a|`).  Only
+/// when that one is refused for a **domain hole** — a `log` of a negative
+/// number across the interval, `½·log(x²−1)` for `∫atanh` — is the real-log
+/// antiderivative tried, which has no hole there.
+///
 /// Bounds arrive already simplified.
 fn definite_via_ftc(
+    expr: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    let first = {
+        let _principal = super::real_log::PrincipalLogs::enter();
+        definite_via_ftc_once(expr, var, lower, upper, pool)
+    };
+    match first {
+        Err(IntegrationError::NotImplemented(msg)) if msg.contains("undefined across") => {
+            definite_via_ftc_once(expr, var, lower, upper, pool)
+                .map_err(|_| IntegrationError::NotImplemented(msg))
+        }
+        other => other,
+    }
+}
+
+fn definite_via_ftc_once(
     expr: ExprId,
     var: ExprId,
     lower: ExprId,
@@ -5614,6 +5666,45 @@ fn classify_denominator_root(
 /// A limit whose value still depends on the variable being sent to infinity is
 /// not a limit; it is an unevaluated request. It must never be substituted
 /// into the FTC difference.
+/// `abs(c)` → `±c` for every `abs` whose argument evaluates to a non-zero
+/// real number (no free symbol): the bound values of a `log|a|` antiderivative.
+fn fold_abs_of_constants(e: ExprId, pool: &ExprPool) -> ExprId {
+    fn walk(e: ExprId, pool: &ExprPool, changed: &mut bool) -> ExprId {
+        match pool.get(e) {
+            ExprData::Func { name, args } if name == "abs" && args.len() == 1 => {
+                let a = walk(args[0], pool, changed);
+                match crate::jit::eval_interp(a, &HashMap::new(), pool) {
+                    Some(v) if v.is_finite() && v.abs() > 1e-12 => {
+                        *changed = true;
+                        if v > 0.0 {
+                            a
+                        } else {
+                            pool.mul(vec![pool.integer(-1_i32), a])
+                        }
+                    }
+                    _ => pool.func("abs", vec![a]),
+                }
+            }
+            ExprData::Func { name, args } => {
+                pool.func(name, args.iter().map(|&a| walk(a, pool, changed)).collect())
+            }
+            ExprData::Add(args) => pool.add(args.iter().map(|&a| walk(a, pool, changed)).collect()),
+            ExprData::Mul(args) => pool.mul(args.iter().map(|&a| walk(a, pool, changed)).collect()),
+            ExprData::Pow { base, exp } => {
+                pool.pow(walk(base, pool, changed), walk(exp, pool, changed))
+            }
+            _ => e,
+        }
+    }
+    let mut changed = false;
+    let out = walk(e, pool, &mut changed);
+    if changed {
+        simplify(out, pool).value
+    } else {
+        e
+    }
+}
+
 fn eval_bound(
     f: ExprId,
     var: ExprId,
@@ -5690,6 +5781,8 @@ fn eval_bound(
         super::prenorm::resolve_zero_powers(subs_var(f, var, bound, pool), pool),
         pool,
     );
+    // `log|x|` at `x = 2` is `log(abs(2))`: fold `|c|` of a numeric constant.
+    let substituted = fold_abs_of_constants(substituted, pool);
     // What is left is a `0^e` whose exponent's sign is not established: `0` for
     // `e > 0`, a pole for `e < 0`. `∫₀¹ xⁿ dx` with nothing known about `n`
     // used to come back carrying `0^{n+1}` as though it were a value.
@@ -7130,12 +7223,18 @@ mod tests {
 
     #[test]
     fn integrate_one_over_x() {
-        // ∫ x^(-1) dx = log(x)
+        // ∫ x^(-1) dx = log|x|: the rule gives `log(x)`, complex for x < 0,
+        // and the final real-log pass makes it `log|x|`.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let x_inv = pool.pow(x, pool.integer(-1_i32));
         let r = integrate(x_inv, x, &pool).unwrap();
-        assert_eq!(r.value, pool.func("log", vec![x]));
+        assert_eq!(r.value, pool.func("log", vec![pool.func("abs", vec![x])]));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == super::super::real_log::REAL_LOG_RULE));
         assert!(r.log.steps().iter().any(|s| s.rule_name == "log_rule"));
     }
 
@@ -8362,8 +8461,9 @@ mod tests {
     /// scan needs `F` at both ends of a cell to form its ratio, so a hole makes
     /// every cell undecidable and the scan silent.
     ///
-    /// The correct branch is `x·atanh x + ½·log(1−x²)`; recovering the answer
-    /// needs that, not a wider search.
+    /// The hole rule refuses that antiderivative.  `integrate` itself now
+    /// returns the correct branch `x·atanh x + ½·log(1−x²)` (its final
+    /// real-log pass), so the definite integral is the real value `0`.
     #[test]
     fn definite_domain_hole_across_the_whole_interval_is_refused() {
         let pool = p();
@@ -8371,29 +8471,28 @@ mod tests {
         let f = pool.func("atanh", vec![x]);
         let (lo, hi) = (pool.rational(-1_i32, 2_i32), pool.rational(1_i32, 2_i32));
 
-        // The premise: at x = 0 the integrand is finite and the emitted `F`
-        // is not.
+        // The old answer has a hole across the whole interval.
+        let x2m1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let old = pool.add(vec![
+            pool.mul(vec![x, f]),
+            pool.mul(vec![pool.rational(1, 2), pool.func("log", vec![x2m1])]),
+        ]);
+        let msg = antiderivative_domain_hole(old, f, x, -0.5, 0.5, &pool)
+            .expect("the log of a negative number across the interval is a hole");
+        assert!(msg.contains("undefined across"), "{msg}");
+
+        // The antiderivative `integrate` returns is real at x = 0 …
         let anti = integrate(f, x, &pool).expect("atanh integrates").value;
         let mut env = HashMap::new();
         env.insert(x, 0.0_f64);
         assert!(
-            crate::jit::eval_interp(f, &env, &pool).is_some_and(|v| v.is_finite()),
-            "premise: the integrand must be finite at x = 0"
-        );
-        assert!(
-            crate::jit::eval_interp(anti, &env, &pool).map_or(true, |v| !v.is_finite()),
-            "premise: the antiderivative must be undefined at x = 0, got {}",
+            crate::jit::eval_interp(anti, &env, &pool).is_some_and(|v| v.is_finite()),
+            "the antiderivative must be real at x = 0, got {}",
             pool.display(anti)
         );
-
-        match integrate_definite(f, x, lo, hi, &pool) {
-            Err(IntegrationError::NotImplemented(msg)) => assert!(
-                msg.contains("undefined across"),
-                "expected a domain-hole diagnostic, got: {msg}"
-            ),
-            Err(other) => panic!("expected NotImplemented, got {other:?}"),
-            Ok(v) => panic!("expected a refusal, got {}", pool.display(v.value)),
-        }
+        // … and the odd integrand integrates to 0 over the symmetric interval.
+        let r = integrate_definite(f, x, lo, hi, &pool).expect("proper integral");
+        assert_num(r.value, 0.0, &pool);
     }
 
     /// The control that matters most: a **genuine improper integral** has an

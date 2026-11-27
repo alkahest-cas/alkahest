@@ -49,8 +49,7 @@ def _num(e, env):
     try:
         v = complex(ak.eval_expr(e, env))
     except Exception:
-        # `erfi(z)` answers are spelled `-i*erf(i*z)`: real-valued, but only
-        # through a complex intermediate.
+        # Values reached only through a complex intermediate.
         r = ak.evaluate(e, env, mode="complex")
         if r.status != "ok":
             return None
@@ -218,3 +217,18 @@ def test_system_entry(entry):
             assert a is not None, f"component {i} did not evaluate"
             assert b is not None, f"component {i} did not evaluate"
             assert abs(a - b) <= 1e-8 * (1 + abs(a)), f"component {i}: {a} vs {b} at t = {tv}"
+
+
+@pytest.mark.parametrize("oid", ["sp04", "sp05", "sp10"])
+def test_hermite_second_solutions_use_real_erfi(oid):
+    # `erfi` is a real primitive: no `-i*erf(i*z)` spelling, and the solution
+    # evaluates in plain real arithmetic.
+    entry = next(e for e in CORPUS if e[0] == oid)
+    pool, syms, eq = _setup(entry)
+    sol = ex.dsolve(eq, syms["x"], syms["y"], [syms[d] for d in DSYMS[:2]])[0]
+    shown = str(sol["y_of_x"])
+    assert "erfi(" in shown, shown
+    assert "erf(" not in shown, shown
+    assert "I" not in shown, shown
+    y = _bind(sol["y_of_x"], pool, sol["constants"], {}, syms)
+    assert math.isfinite(ak.eval_expr(y, {syms["x"]: 0.7}))
