@@ -93,6 +93,21 @@ PDE milestone M5 (see ``alkahest.experimental._pde_m5``):
   and variation of parameters) → :class:`GreenFunction`; :func:`green_solve`
   → :class:`GreenSolution` (``u = ∫ G f + boundary terms``); ``E-PDE-250…299``
 
+Nonlinear PDEs (milestone M6; see ``alkahest.experimental._pde_nonlinear``):
+- :func:`pde_symmetries` → :class:`PointSymmetries` (verified generators,
+  structure constants, ``.lie_algebra()``, infinite-dimensional part, group
+  classification by parameter cases), :func:`determining_equations`,
+  :func:`verify_symmetry`, :func:`commutator`
+- :func:`conservation_laws` / :func:`conservation_multipliers` /
+  :func:`conserved_flux` / :func:`verify_conservation_law` (multiplier
+  method; density and flux verified exactly), :func:`euler_operator`
+- :func:`traveling_wave_solutions`, :func:`ansatz_solutions` (tanh / sech /
+  tan), :func:`invariant_solutions`, :func:`similarity_solutions`,
+  :func:`reduce_by_generator` → :class:`ReducedSolution` (each verified)
+- :func:`cole_hopf`, :func:`miura`, :func:`hodograph`, :func:`hopf_lax`;
+  ``pdsolve`` tiers ``cole_hopf``, ``traveling_wave``, ``similarity``;
+  refusals ``E-PDE-300…349``
+
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
   :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
@@ -856,6 +871,32 @@ from alkahest.experimental._pde_m5 import (
     green_solve,
     image_green_function,
 )
+
+# Nonlinear PDEs (milestone M6): symmetries, conservation laws, reductions.
+from alkahest.experimental._pde_nonlinear import (
+    ConservationLaw,
+    PointSymmetries,
+    ReducedSolution,
+    SymmetryGenerator,
+    ansatz_solutions,
+    cole_hopf,
+    commutator,
+    conservation_laws,
+    conservation_multipliers,
+    conserved_flux,
+    determining_equations,
+    euler_operator,
+    hodograph,
+    hopf_lax,
+    invariant_solutions,
+    miura,
+    pde_symmetries,
+    reduce_by_generator,
+    similarity_solutions,
+    traveling_wave_solutions,
+    verify_conservation_law,
+    verify_symmetry,
+)
 from alkahest.experimental._pde_second_order import (
     CanonicalForm,
     SecondOrderSolution,
@@ -1011,6 +1052,7 @@ __all__ = [
     "ComplexBall",
     "ConjugacyClass",
     "ConjugacyClasses",
+    "ConservationLaw",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
     # A complete Todd-Coxeter coset table, and the permutation representation
@@ -1137,6 +1179,7 @@ __all__ = [
     "Permutation",
     "PermutationGroup",
     "Place",
+    "PointSymmetries",
     # Probability (continued)
     "Poisson",
     "PolarDisk",
@@ -1156,6 +1199,7 @@ __all__ = [
     "RecurrenceAsymptotics",
     # M11 — novelty filtering
     "RecurrenceClaim",
+    "ReducedSolution",
     "RiemannRochSpace",
     "RootOfFamily",
     "Scheme",
@@ -1178,6 +1222,7 @@ __all__ = [
     "SubgroupPresentation",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Sum",
+    "SymmetryGenerator",
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
     "ThetaError",
@@ -1190,6 +1235,7 @@ __all__ = [
     # A free-group word: signed, 1-based generator indices, freely reduced on
     # construction.
     "Word",
+    "ansatz_solutions",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arb_backend_available",
@@ -1209,8 +1255,13 @@ __all__ = [
     "classify_pde",
     "coefficient",
     "coefficient_asymptotics",
+    "cole_hopf",
+    "commutator",
     "compile_cuda",
     "conjugate",
+    "conservation_laws",
+    "conservation_multipliers",
+    "conserved_flux",
     "consistency",
     # Joint laws: Cov[e1, e2] under independent blocks
     "covariance",
@@ -1225,6 +1276,7 @@ __all__ = [
     "cyclotomic_polynomial_coeffs",
     "dedekind_eta",
     "delsarte_lp_bound",
+    "determining_equations",
     "digamma",
     "dirac_delta",
     # Vector calculus
@@ -1238,6 +1290,7 @@ __all__ = [
     "entropy_asymptotic",
     "euler_maclaurin",
     "euler_number",
+    "euler_operator",
     "evaluate",
     "expand_finite_sums",
     "expand_sum",
@@ -1257,11 +1310,14 @@ __all__ = [
     "hamming_bound",
     "harmonic_number",
     "heaviside",
+    "hodograph",
+    "hopf_lax",
     "im",
     "image_green_function",
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
     # object, never raises: a declined result is not a non-elementarity verdict.
     "integrate_parallel_risch",
+    "invariant_solutions",
     "inverse_fourier_cosine_transform",
     "inverse_fourier_sine_transform",
     "inverse_fourier_transform",
@@ -1292,6 +1348,7 @@ __all__ = [
     "matgroup_sl_order",
     "matgroup_sp_order",
     "method_of_lines",
+    "miura",
     "modified_equation",
     "modular_discriminant",
     "modular_lambda",
@@ -1308,6 +1365,7 @@ __all__ = [
     "ode_integrate_rk45",
     "order_statistic",
     "partition_number",
+    "pde_symmetries",
     "pdsolve",
     "pdsolve_hints",
     # Hypotheses the last Distribution method / expectation call rests on
@@ -1319,6 +1377,7 @@ __all__ = [
     "qbinomial",
     "qpochhammer",
     "re",
+    "reduce_by_generator",
     "residue",
     "riemann_roch",
     "riemann_theta",
@@ -1332,6 +1391,7 @@ __all__ = [
     "series_solve",
     "siegel_is_reduced",
     "siegel_reduce",
+    "similarity_solutions",
     "simplify_sums",
     "singleton_bound",
     "solve",
@@ -1359,12 +1419,15 @@ __all__ = [
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
     "transform_solve",
+    "traveling_wave_solutions",
     "truncate",
     "truncation_error",
     "variance_affine_independent",
     # Vector calculus
     "vector_laplacian",
+    "verify_conservation_law",
     "verify_pde_solution",
+    "verify_symmetry",
     "von_neumann",
     "weierstrass_invariants",
     "weierstrass_p",

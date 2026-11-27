@@ -322,6 +322,26 @@ Exception subclasses
      wrong dimension, or parameters that could not be eliminated.
    - ``E-PDE-054`` — a malformed ``Integral(f, t, lo, hi)`` / ``Integral(f, x)``
      (the integration variable is not a symbol, or a bound mentions it).
+   - ``E-PDE-300`` — the equation is outside the symmetry / conservation-law
+     layer: a system, several unknowns, or an equation that cannot be solved
+     for a leading derivative.
+   - ``E-PDE-301`` — the symmetry or multiplier condition is not polynomial in
+     the derivatives of the unknown (``sin(u_x)``), so it cannot be split into
+     determining equations.
+   - ``E-PDE-302`` — a reduction (traveling wave, invariant solution under a
+     generator, ansatz) does not apply: the invariants could not be found, the
+     reduced equation still depends on an eliminated variable, or the
+     generator is not a symmetry.
+   - ``E-PDE-303`` — the reduced ODE (or the ansatz system) produced no
+     solution that verified exactly in the original equation; candidates that
+     fail verification are discarded, never returned.
+   - ``E-PDE-304`` — a linearising transformation (Cole–Hopf, Miura,
+     hodograph, Hopf–Lax) does not match the equation's form.
+   - ``E-PDE-305`` — the multiplier computation is outside scope: the equation
+     is not in a supported form, or the multiplier system could not be built.
+   - ``E-PDE-306`` — a multiplier was found but the density/flux pair ``D_t T
+     + D_x X = Λ·F`` could not be recovered (or failed the exact divergence
+     check).
 
    Second-order linear equations in two variables (milestone M2,
    ``canonical_form`` / ``solve_second_order`` / ``laplace_cascade``):

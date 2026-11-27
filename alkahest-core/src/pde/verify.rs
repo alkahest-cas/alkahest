@@ -199,7 +199,21 @@ pub fn verify_solution(
         } else {
             r
         };
-        let zt = guarded(zero_test(r, pool, None), r, pool);
+        let mut zt = guarded(zero_test(r, pool, None), r, pool);
+        if zt.status != ZeroStatus::ProvedZero && zt.status != ZeroStatus::ProvedNonzero {
+            // Exact identities the zero test does not apply by itself
+            // (`(a^(1/q))^q = a`, trig functions of `k·atan(w)`).
+            let r2 = super::nonlinear::expand_exact(r, pool);
+            if r2 != r {
+                let r2 = crate::simplify::engine::simplify(r2, pool).value;
+                let r2 = crate::simplify::engine::simplify_expanded(r2, pool).value;
+                let z2 = zero_test(r2, pool, None);
+                if z2.status == ZeroStatus::ProvedZero {
+                    zt = z2;
+                    zt.method = "exact_identities";
+                }
+            }
+        }
         let mut check = ResidualCheck {
             kind,
             index,

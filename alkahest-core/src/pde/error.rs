@@ -2,7 +2,9 @@
 //! M0 — jets, problem objects, classification, verification, the `Sum` /
 //! `Indexed` / `RootOfFamily` heads and derivative-aware transforms).
 //!
-//! `E-PDE-050 … E-PDE-099` belong to `pdsolve` (milestone M1, first order).
+//! `E-PDE-050 … E-PDE-099` belong to `pdsolve` (milestone M1, first order);
+//! `E-PDE-300 … E-PDE-349` to the nonlinear layer (milestone M6: reductions,
+//! Lie point symmetries, conservation laws).
 //!
 //! Later milestones own their own ranges (M2 `100–149`, …); this
 //! enum is `#[non_exhaustive]` so they can add variants without a semver break.
@@ -206,6 +208,20 @@ pub enum PdeError {
     /// linear equation with a tabulated operator, a domain without a Green's
     /// function here, or boundary / initial data of an unsupported shape.
     GreenProblemUnsupported(String),
+    /// `E-PDE-300` — the equation is outside the symmetry / conservation-law layer: a system, several unknowns, or an equation that cannot be solved for a leading derivative.
+    SymmetryUnsupported(String),
+    /// `E-PDE-301` — the symmetry or multiplier condition is not polynomial in the derivatives of the unknown (`sin(u_x)`), so it cannot be split into determining equations.
+    NotPolynomialInDerivatives(String),
+    /// `E-PDE-302` — a reduction (traveling wave, invariant solution under a generator, ansatz) does not apply: the invariants could not be found, the reduced equation still depends on an eliminated variable, or the generator is not a symmetry.
+    ReductionFailed(String),
+    /// `E-PDE-303` — the reduced ODE (or the ansatz system) produced no solution that verified exactly in the original equation; candidates that fail verification are discarded, never returned.
+    NoReducedSolution(String),
+    /// `E-PDE-304` — a linearising transformation (Cole–Hopf, Miura, hodograph, Hopf–Lax) does not match the equation's form.
+    TransformNotApplicable(String),
+    /// `E-PDE-305` — the multiplier computation is outside scope: the equation is not in a supported form, or the multiplier system could not be built.
+    ConservationUnsupported(String),
+    /// `E-PDE-306` — a multiplier was found but the density/flux pair `D_t T + D_x X = Λ·F` could not be recovered (or failed the exact divergence check).
+    FluxNotRecovered(String),
 }
 
 impl fmt::Display for PdeError {
@@ -272,6 +288,13 @@ impl fmt::Display for PdeError {
             PdeError::GreenDoesNotExist(d) => ("no Green's function exists", d),
             PdeError::GreenVerificationFailed(d) => ("Green's function refuted", d),
             PdeError::GreenProblemUnsupported(d) => ("green_solve does not apply", d),
+            PdeError::SymmetryUnsupported(d) => ("symmetry analysis unsupported", d),
+            PdeError::NotPolynomialInDerivatives(d) => ("not polynomial in the derivatives", d),
+            PdeError::ReductionFailed(d) => ("reduction failed", d),
+            PdeError::NoReducedSolution(d) => ("no verified reduced solution", d),
+            PdeError::TransformNotApplicable(d) => ("transformation not applicable", d),
+            PdeError::ConservationUnsupported(d) => ("conservation-law analysis unsupported", d),
+            PdeError::FluxNotRecovered(d) => ("flux not recovered", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -341,6 +364,13 @@ impl AlkahestError for PdeError {
             PdeError::GreenDoesNotExist(_) => "E-PDE-254",
             PdeError::GreenVerificationFailed(_) => "E-PDE-255",
             PdeError::GreenProblemUnsupported(_) => "E-PDE-256",
+            PdeError::SymmetryUnsupported(_) => "E-PDE-300",
+            PdeError::NotPolynomialInDerivatives(_) => "E-PDE-301",
+            PdeError::ReductionFailed(_) => "E-PDE-302",
+            PdeError::NoReducedSolution(_) => "E-PDE-303",
+            PdeError::TransformNotApplicable(_) => "E-PDE-304",
+            PdeError::ConservationUnsupported(_) => "E-PDE-305",
+            PdeError::FluxNotRecovered(_) => "E-PDE-306",
         }
     }
 
@@ -404,6 +434,24 @@ mod tests {
             let code = e.code();
             let n: u32 = code.strip_prefix("E-PDE-").unwrap().parse().unwrap();
             assert!((50..=99).contains(&n), "{code} outside the M1 range");
+            assert!(e.remediation().is_some(), "{code} not registered");
+        }
+    }
+    #[test]
+    fn m6_codes_are_registered_in_their_range() {
+        let all = [
+            PdeError::SymmetryUnsupported(String::new()),
+            PdeError::NotPolynomialInDerivatives(String::new()),
+            PdeError::ReductionFailed(String::new()),
+            PdeError::NoReducedSolution(String::new()),
+            PdeError::TransformNotApplicable(String::new()),
+            PdeError::ConservationUnsupported(String::new()),
+            PdeError::FluxNotRecovered(String::new()),
+        ];
+        for e in all {
+            let code = e.code();
+            let n: u32 = code.strip_prefix("E-PDE-").unwrap().parse().unwrap();
+            assert!((300..=349).contains(&n), "{code} outside the M6 range");
             assert!(e.remediation().is_some(), "{code} not registered");
         }
     }

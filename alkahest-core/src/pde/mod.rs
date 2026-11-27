@@ -66,11 +66,15 @@
 //!   `E-PDE-250 … E-PDE-299` (M5).
 
 pub mod classify;
+pub mod conservation;
+pub(crate) mod detsys;
 pub mod error;
 pub mod green;
 pub mod integral;
 pub mod jet;
+pub mod linearize;
 pub mod mol;
+pub mod nonlinear;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
@@ -79,11 +83,16 @@ pub mod separation;
 pub mod solve;
 pub mod sturm_liouville;
 pub mod sum;
+pub mod symmetry;
 pub mod transform;
 pub mod transform_methods;
 pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
+pub use conservation::{
+    conservation_laws, conservation_multipliers, conserved_flux, euler_operator,
+    verify_conservation_law, ConservationLaw, Multipliers,
+};
 pub use error::PdeError;
 pub use green::{
     eigen_green_function, fundamental_solution, fundamental_solution_nd, green_solve,
@@ -98,6 +107,11 @@ pub use integral::{
 pub use jet::{
     functions_to_jets, multi_indices, JetCoordinate, JetNaming, JetSpace, JetSymbol, JetSystem,
     MultiIndex,
+};
+pub use linearize::{cole_hopf, hodograph, hopf_lax, miura, ColeHopf, Hodograph, HopfLax, Miura};
+pub use nonlinear::{
+    ansatz_solutions_for, invariant_solutions, reduce_by_generator, similarity_solutions,
+    traveling_wave_solutions, ReducedSolution, Reduction,
 };
 pub use problem::{ArbitraryFunctions, ConditionKind, PdeCondition, PdeDomain, PdeProblem};
 pub use root_family::{
@@ -127,6 +141,10 @@ pub use sum::{
     kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
     INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
+pub use symmetry::{
+    commutator, determining_equations, generator_display, point_symmetries, verify_symmetry,
+    InfiniteSymmetries, PointSymmetries, SymmetryGenerator,
+};
 pub use transform::{transformed_name, TransformKind};
 pub use transform_methods::{
     fourier_method, image_method, laplace_method, transform_solve, KernelTerm, SolutionKind,
@@ -135,3 +153,6 @@ pub use transform_methods::{
 pub use verify::{
     verify_pde_solution, verify_solution, PdeVerification, ResidualCheck, VerificationStatus,
 };
+
+#[cfg(test)]
+mod m6_tests;

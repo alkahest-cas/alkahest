@@ -62,6 +62,7 @@ use super::verify::{verify_pde_solution, PdeVerification, ResidualCheck, Verific
 pub(crate) mod cauchy;
 pub(crate) mod integrals;
 pub(crate) mod linear;
+pub(crate) mod m6;
 pub(crate) mod nonlinear;
 pub(crate) mod riccati;
 pub(crate) mod util;
@@ -83,6 +84,10 @@ pub enum PdeSolutionKind {
     CompleteIntegral,
     /// A singular integral: the envelope of a complete integral.
     SingularIntegral,
+    /// A family of exact special solutions (traveling waves, similarity
+    /// solutions, expansion-method or Cole–Hopf families): verified, but not
+    /// a general solution.
+    Special,
 }
 
 impl PdeSolutionKind {
@@ -95,6 +100,7 @@ impl PdeSolutionKind {
             PdeSolutionKind::Implicit => "implicit",
             PdeSolutionKind::CompleteIntegral => "complete_integral",
             PdeSolutionKind::SingularIntegral => "singular_integral",
+            PdeSolutionKind::Special => "special",
         }
     }
 }
@@ -242,6 +248,28 @@ pub static TIERS: &[Tier] = &[
         applies: |c| c.order == 1 && c.affine.is_none() && c.indep.len() == 2,
         solve: nonlinear::solve_charpit,
     },
+    Tier {
+        name: "cole_hopf",
+        milestone: "M6",
+        description: "Burgers u_t + a u u_x = nu u_xx: Cole-Hopf from heat solutions (fronts)",
+        applies: |c| c.order == 2 && m6::applies_nonlinear(c),
+        solve: m6::solve_cole_hopf,
+    },
+    Tier {
+        name: "traveling_wave",
+        milestone: "M6",
+        description:
+            "u = F(x - ct): exact integration + dsolve, separatrices, tanh/sech/tan expansions",
+        applies: |c| c.order >= 2 && m6::applies_nonlinear(c),
+        solve: m6::solve_traveling_wave,
+    },
+    Tier {
+        name: "similarity",
+        milestone: "M6",
+        description: "invariant solutions under Lie point symmetries (and exact combinations)",
+        applies: |c| c.order >= 2 && m6::applies_nonlinear(c),
+        solve: m6::solve_similarity,
+    },
 ];
 
 /// The valid `hint` names, in preference order.
@@ -278,6 +306,8 @@ pub struct Ctx<'a> {
     pub(crate) taken: HashSet<String>,
     pub(crate) arb: ArbitraryFunctions,
     pub(crate) failures: Vec<String>,
+    /// The equation is not linear (M6 tiers).
+    pub(crate) nonlinear: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -335,6 +365,9 @@ impl<'a> Ctx<'a> {
             taken,
             arb,
             failures: Vec::new(),
+            nonlinear: crate::pde::classify_pde(problem.equations()[0], unknown, pool)
+                .map(|i| i.linearity != crate::pde::Linearity::Linear)
+                .unwrap_or(false),
         };
         if order == 1 {
             ctx.affine = ctx.affine_form(pool);
@@ -427,12 +460,6 @@ fn run(
         }
     }
     let mut ctx = Ctx::new(problem, opts, pool)?;
-    if ctx.order != 1 {
-        return Err(PdeError::PdsolveUnsupported(format!(
-            "order-{} equations are not solved yet (milestone M1 covers first order)",
-            ctx.order
-        )));
-    }
     let has_data = !problem.conditions().is_empty();
     let mut out: Vec<PdeSolution> = Vec::new();
     let mut applicable = 0;
@@ -490,7 +517,11 @@ fn run(
         if applicable == 0 {
             return Err(PdeError::PdsolveUnsupported(match &opts.hint {
                 Some(h) => format!("the hint {h:?} does not apply to this equation"),
-                None => "no first-order method applies to this equation".into(),
+                None => format!(
+                    "no method applies to this order-{} equation (first-order methods, and \
+                     nonlinear reductions for two variables)",
+                    ctx.order
+                ),
             }));
         }
         if let Some(e) = cauchy_err {
