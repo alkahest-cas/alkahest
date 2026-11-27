@@ -69,6 +69,16 @@ PDE milestone M3 (see ``alkahest.experimental._pde_m3``):
   :func:`fourier_sine_transform` / :func:`fourier_cosine_transform` and their
   inverses; ``E-PDE-150…199``, ``E-TRANSFORM-021…024``
 
+PDE milestone M5 (see ``alkahest.experimental._pde_m5``):
+- :func:`fundamental_solution` → :class:`FundamentalSolution`: Laplace, heat
+  (also in ``n`` D with symbolic ``n``), wave (d'Alembert, Poisson,
+  Kirchhoff), Helmholtz / modified Helmholtz, biharmonic, Klein–Gordon and
+  telegraph kernels, each with its derivation, distributional identity and
+  exact checks
+- :func:`image_green_function`, :func:`green_function` (eigenfunction series
+  and variation of parameters) → :class:`GreenFunction`; :func:`green_solve`
+  → :class:`GreenSolution` (``u = ∫ G f + boundary terms``); ``E-PDE-250…299``
+
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
   :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
@@ -806,6 +816,17 @@ from alkahest.experimental._pde_m3 import (
     sturm_liouville,
     transform_solve,
 )
+
+# PDE milestone M5: Green's functions, fundamental solutions, images.
+from alkahest.experimental._pde_m5 import (
+    FundamentalSolution,
+    GreenFunction,
+    GreenSolution,
+    fundamental_solution,
+    green_function,
+    green_solve,
+    image_green_function,
+)
 from alkahest.experimental._pde_second_order import (
     CanonicalForm,
     SecondOrderSolution,
@@ -1000,10 +1021,13 @@ __all__ = [
     "FunctionField",
     "FunctionFieldElement",
     "FunctionFieldError",
+    "FundamentalSolution",
     "Gamma",
     "GbPoly",
     "GfMatrix",
     "GfRref",
+    "GreenFunction",
+    "GreenSolution",
     "GroebnerBasis",
     "GroupError",
     # Lattices. `Lattice.from_gram` is the general constructor — E_8 and the
@@ -1187,11 +1211,15 @@ __all__ = [
     "fourier_transform",
     # Vector calculus
     "functions_to_jets",
+    "fundamental_solution",
     "gradient",
+    "green_function",
+    "green_solve",
     "hamming_bound",
     "harmonic_number",
     "heaviside",
     "im",
+    "image_green_function",
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
     # object, never raises: a declined result is not a non-elementarity verdict.
     "integrate_parallel_risch",

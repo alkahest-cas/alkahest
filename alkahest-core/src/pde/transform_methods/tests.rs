@@ -213,7 +213,7 @@ fn laplace_half_plane_poisson_kernel() {
 }
 
 #[test]
-fn klein_gordon_spectral_representation() {
+fn klein_gordon_light_cone_representation() {
     let s = P::new();
     let p = &s.pool;
     let u = s.u();
@@ -232,12 +232,43 @@ fn klein_gordon_spectral_representation() {
         .unwrap();
     let sol = fourier_method(&prob, p).unwrap();
     assert_eq!(sol.kind, SolutionKind::IntegralRepresentation);
+    // M5: the J₀ light-cone kernel replaces the Fourier integral.
     assert!(
-        sol.checks.iter().any(|c| c.what == "integrand_pde"),
+        sol.checks.iter().any(|c| c.what == "kernel_characteristic"),
         "{:?}",
         sol.checks
     );
-    assert_ne!(sol.status, VerificationStatus::Refuted);
+    assert!(shown(sol.terms[0].kernel, p).contains("bessel_j"));
+    exact(&sol, p);
+}
+
+#[test]
+fn telegraph_light_cone_representation() {
+    let s = P::new();
+    let p = &s.pool;
+    let u = s.u();
+    let a = p.symbol("a", Domain::Positive);
+    let eq = p.add(vec![
+        s.wave(p.integer(1)),
+        p.mul(vec![p.integer(2), a, s.dx(u, s.t(), 1)]),
+    ]);
+    let prob = PdeProblem::new(&[eq], &[u], p)
+        .unwrap()
+        .on(s.line(), p)
+        .unwrap()
+        .ic(s.at(u, s.t(), 0), p.func("f", vec![s.x()]), p)
+        .unwrap()
+        .ic(
+            s.at(s.dx(u, s.t(), 1), s.t(), 0),
+            p.func("g", vec![s.x()]),
+            p,
+        )
+        .unwrap();
+    let sol = fourier_method(&prob, p).unwrap();
+    assert_eq!(sol.kind, SolutionKind::IntegralRepresentation);
+    assert_eq!(sol.terms.len(), 2);
+    assert!(shown(sol.terms[1].kernel, p).contains("bessel_i"));
+    exact(&sol, p);
 }
 
 #[test]

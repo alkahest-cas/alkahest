@@ -156,6 +156,36 @@ pub enum PdeError {
     /// by substitution (a kernel that does not satisfy the PDE, a closed form
     /// that misses a condition).
     TransformVerificationFailed(String),
+    /// `E-PDE-250` — no Green's function / fundamental solution is implemented
+    /// for this operator, dimension or problem (a radial form of a 1-D-only
+    /// operator, a symbolic dimension for an operator other than Laplace and
+    /// heat, an operator that the requested image construction does not
+    /// commute with).
+    GreenUnsupported(String),
+    /// `E-PDE-251` — malformed input to a Green's-function routine: the wrong
+    /// number of space variables for the dimension, a variable that is not a
+    /// symbol, a source point of the wrong length, a missing time variable.
+    GreenInvalidInput(String),
+    /// `E-PDE-252` — the method of images does not apply to this region and
+    /// boundary condition (Neumann on a disk, a strip for an operator whose
+    /// image series is not implemented, a wall axis out of range).
+    GreenRegionUnsupported(String),
+    /// `E-PDE-253` — the eigenfunction series cannot be assembled: a squared
+    /// norm did not close, eigenvalues below the threshold are present or
+    /// conditional, or an eigen-family's own verification did not succeed.
+    GreenSeriesUnsupported(String),
+    /// `E-PDE-254` — the boundary-value problem has no Green's function: the
+    /// homogeneous problem has a nontrivial solution (`λ = 0` is an
+    /// eigenvalue; the Wronskian of the two one-sided solutions vanishes).
+    /// The modified Green's function of the eigenfunction series applies.
+    GreenDoesNotExist(String),
+    /// `E-PDE-255` — a constructed Green's function or representation was
+    /// refuted by its exact check and withheld.
+    GreenVerificationFailed(String),
+    /// `E-PDE-256` — `green_solve` does not recognise the problem: not a
+    /// linear equation with a tabulated operator, a domain without a Green's
+    /// function here, or boundary / initial data of an unsupported shape.
+    GreenProblemUnsupported(String),
 }
 
 impl fmt::Display for PdeError {
@@ -205,6 +235,13 @@ impl fmt::Display for PdeError {
             PdeError::TransformData(d) => ("transform method data", d),
             PdeError::TransformOde(d) => ("transformed equation not solved", d),
             PdeError::TransformVerificationFailed(d) => ("transform solution refuted", d),
+            PdeError::GreenUnsupported(d) => ("Green's function unsupported", d),
+            PdeError::GreenInvalidInput(d) => ("invalid Green's-function input", d),
+            PdeError::GreenRegionUnsupported(d) => ("method of images does not apply", d),
+            PdeError::GreenSeriesUnsupported(d) => ("eigenfunction series unavailable", d),
+            PdeError::GreenDoesNotExist(d) => ("no Green's function exists", d),
+            PdeError::GreenVerificationFailed(d) => ("Green's function refuted", d),
+            PdeError::GreenProblemUnsupported(d) => ("green_solve does not apply", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -257,6 +294,13 @@ impl AlkahestError for PdeError {
             PdeError::TransformData(_) => "E-PDE-161",
             PdeError::TransformOde(_) => "E-PDE-162",
             PdeError::TransformVerificationFailed(_) => "E-PDE-163",
+            PdeError::GreenUnsupported(_) => "E-PDE-250",
+            PdeError::GreenInvalidInput(_) => "E-PDE-251",
+            PdeError::GreenRegionUnsupported(_) => "E-PDE-252",
+            PdeError::GreenSeriesUnsupported(_) => "E-PDE-253",
+            PdeError::GreenDoesNotExist(_) => "E-PDE-254",
+            PdeError::GreenVerificationFailed(_) => "E-PDE-255",
+            PdeError::GreenProblemUnsupported(_) => "E-PDE-256",
         }
     }
 

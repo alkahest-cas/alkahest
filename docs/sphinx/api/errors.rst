@@ -373,6 +373,26 @@ Exception subclasses
    - ``E-PDE-163`` — the candidate built by a transform method was **refuted**
      by substitution and withheld.
 
+   Milestone M5 (Green's functions) owns ``250``–``299``:
+
+   - ``E-PDE-250`` — no fundamental solution / Green's function here: a
+     Klein–Gordon or telegraph kernel in more than one dimension, a symbolic
+     dimension for an operator other than Laplace and heat, or ``dsolve`` does
+     not solve the homogeneous two-point equation.
+   - ``E-PDE-251`` — malformed input: the wrong number of space variables, a
+     non-symbol coordinate, a source point of the wrong length, a missing time
+     variable.
+   - ``E-PDE-252`` — the method of images does not apply to the region,
+     operator and wall conditions (Neumann disk, a strip for Helmholtz, …).
+   - ``E-PDE-253`` — the eigenfunction series cannot be assembled (a norm did
+     not close, eigenvalues below the threshold are present or conditional).
+   - ``E-PDE-254`` — **no Green's function exists**: the homogeneous problem
+     has a nontrivial solution (``λ = 0`` is an eigenvalue).  The modified
+     Green's function of the eigenfunction series applies.
+   - ``E-PDE-255`` — a constructed Green's function or representation was
+     **refuted** by its exact check and withheld.
+   - ``E-PDE-256`` — ``green_solve`` does not recognise the problem.
+
 .. exception:: ProbabilityError
 
    Code prefix ``E-PROB-*``. The :mod:`alkahest.experimental` probability

@@ -26,6 +26,7 @@
 - [Ball arithmetic](./ball-arithmetic.md)
   - [Rigorous global bounds](./validated-bounds.md)
 - [ODE and DAE modeling](./ode-dae.md)
+  - [Green's functions (PDE)](./green-functions.md)
 - [Polynomial system solving](./solving.md)
 - [Positivity certificates (SOS)](./positivity.md)
 - [Exact linear and integer programming](./linear-programming.md)
