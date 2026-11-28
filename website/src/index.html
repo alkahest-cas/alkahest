@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>alkahest – symbolic math</title>
-  <meta name="description" content="alkahest is symbolic math for agents and humans: exact answers in Python and Rust, with derivation logs, Lean 4 certificates where the result supports them, budgets, and coded refusals instead of silent wrong answers." />
+  <meta name="description" content="alkahest is symbolic math for agents and humans: exact answers in Python and Rust, with derivation logs, Lean 4 certificates checked by proof by reflection where the result supports them, budgets, and coded refusals instead of silent wrong answers." />
   <meta property="og:title" content="alkahest – symbolic math" />
   <meta property="og:description" content="Symbolic math for agents and humans. Exact answers, with a derivation you can check." />
   <meta property="og:url" content="https://alkahest-cas.github.io/" />
@@ -101,12 +101,27 @@
               </a>
               <a class="card feat" href="/docs/guide/ode-dae/">
                 <h3>Differential equations &amp; controls</h3>
-                <p>Solve differential equations, simplify differential-algebraic systems and design controllers</p>
+                <p>Solve ODEs in closed form, simplify differential-algebraic systems and design controllers</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/pde/">
+                <h3>Partial differential equations</h3>
+                <p>Characteristics, separation of variables, transforms, Green's functions and symmetries, with every answer substituted back</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/fex/">
+                <h3>PDEs by expression search</h3>
+                <p>Find closed-form solutions of high-dimensional PDEs and prove them for every dimension</p>
                 <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
               </a>
               <a class="card feat" href="/docs/guide/specfun/">
                 <h3>Special functions &amp; tensors</h3>
                 <p>Gamma, zeta, Bessel and hypergeometric functions, and the curvature of any metric</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/linear-programming/">
+                <h3>Optimisation &amp; positivity</h3>
+                <p>Exact linear and integer programming, and sum-of-squares certificates of positivity</p>
                 <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
               </a>
             </div>
@@ -116,7 +131,7 @@
             <div class="grid-3">
               <a class="card feat" href="/docs/guide/codegen/">
                 <h3>Compilation</h3>
-                <p>Compile expressions to native machine code and evaluate them over whole arrays</p>
+                <p>Compile expressions to native machine code, with Horner schemes and SIMD, and evaluate them over whole arrays</p>
                 <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
               </a>
               <a class="card feat" href="/docs/guide/gpu/">
@@ -158,22 +173,24 @@
         <div class="verify-grid">
           <article class="card vcard">
             <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
-            <p>Supported results come with a Lean&nbsp;4 proof that checks independently of alkahest. <code>certifiable()</code> tells you in advance whether a result will get one</p>
-            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre class="shiki"><code><span style="--shiki-light:#D73A49">example</span><span style="--shiki-light:#24292E"> : ∫ x </span><span style="--shiki-light:#D73A49">in</span><span style="--shiki-light:#24292E"> ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ))..((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)), ((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ) = (((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) - (((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) := </span><span style="--shiki-light:#D73A49">by</span>
-<span style="--shiki-light:#D73A49">  have</span><span style="--shiki-light:#24292E"> hderiv : ∀ x ∈ Set.uIcc ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)),</span>
-<span style="--shiki-light:#24292E">      HasDerivAt (</span><span style="--shiki-light:#D73A49">fun</span><span style="--shiki-light:#24292E"> (x : ℝ) => (x) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) (((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ)) x := </span><span style="--shiki-light:#D73A49">by</span>
-<span style="--shiki-light:#24292E">    </span><span style="--shiki-light:#D73A49">intro</span><span style="--shiki-light:#24292E"> x _</span>
-<span style="--shiki-light:#24292E">    </span><span style="--shiki-light:#D73A49">simpa</span><span style="--shiki-light:#24292E"> </span><span style="--shiki-light:#D73A49">using</span><span style="--shiki-light:#24292E"> (hasDerivAt_pow </span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> x).div_const </span><span style="--shiki-light:#005CC5">3</span>
-<span style="--shiki-light:#D73A49">  have</span><span style="--shiki-light:#24292E"> hint : IntervalIntegrable (</span><span style="--shiki-light:#D73A49">fun</span><span style="--shiki-light:#24292E"> (x : ℝ) => ((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ)) MeasureTheory.volume ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)) :=</span>
-<span style="--shiki-light:#24292E">    (continuous_pow </span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E">).intervalIntegrable _ _</span>
-<span style="--shiki-light:#24292E">  </span><span style="--shiki-light:#D73A49">exact</span><span style="--shiki-light:#24292E"> intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</span></code></pre></div>
-            <p class="stat"><strong>121</strong> kinds of result certified, listed in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a> and checked against Mathlib in CI</p>
+            <p>Supported results come with a Lean&nbsp;4 proof that checks independently of alkahest. Integrals and ODE/PDE solutions are proved by reflection through a verified checker, with a tactic fallback. <code>certifiable()</code> tells you in advance whether a result will get one</p>
+            <div class="code"><div class="label">r = ak.integrate(x**2, x); r.certificate  # tail of the Lean file</div><pre class="shiki"><code><span style="--shiki-light:#D73A49">open</span><span style="--shiki-light:#24292E"> Alkahest.Kernel </span><span style="--shiki-light:#D73A49">in</span>
+<span style="--shiki-light:#D73A49">theorem</span><span style="--shiki-light:#6F42C1"> alkahest_integral</span><span style="--shiki-light:#24292E"> (x : ℝ) :</span>
+<span style="--shiki-light:#24292E">    HasDerivAt (</span><span style="--shiki-light:#D73A49">fun</span><span style="--shiki-light:#24292E"> (x : ℝ) => (((x : ℝ) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ)) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℝ))) (((x : ℝ) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ))) x :=</span>
+<span style="--shiki-light:#24292E">  integral_sound (H := [])</span>
+<span style="--shiki-light:#24292E">    (F := (.div (.pow (.var (nat_lit </span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E">)) (nat_lit </span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) (.lit (nat_lit </span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">))))</span>
+<span style="--shiki-light:#24292E">    (f := (.pow (.var (nat_lit </span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E">)) (nat_lit </span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E">)))</span>
+<span style="--shiki-light:#24292E">    (w := ⟨[⟨(.var (nat_lit </span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E">)), .zero⟩],</span>
+<span style="--shiki-light:#24292E">      [],</span>
+<span style="--shiki-light:#24292E">      []⟩)</span>
+<span style="--shiki-light:#24292E">    (</span><span style="--shiki-light:#D73A49">by</span><span style="--shiki-light:#24292E"> </span><span style="--shiki-light:#D73A49">decide</span><span style="--shiki-light:#24292E"> +kernel) [] x trivial</span></code></pre></div>
+            <p class="stat"><strong>137</strong> kinds of result certified, listed in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a> and checked against Mathlib in CI; <strong>95%</strong> of certified integrals go through the <a href="/docs/guide/lean-kernel/">reflective kernel</a></p>
           </article>
 
           <article class="card vcard">
             <h3>Refuses instead of guessing <span class="pill warn">E-INT-004</span></h3>
             <p>When there is no answer, alkahest says so and says why. Every error has a stable code and a hint for what to do next</p>
-            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="shiki wrap"><code><span class="tok-k">[E-INT-004]</span> <span class="tok-f">integrate:</span> no elementary antiderivative exists: <span class="tok-n">∫ e^(x²) dx</span> …
+            <div class="code"><div class="label">ak.integrate(ak.exp(x**3), x)  # raises IntegrationError</div><pre class="shiki wrap"><code><span class="tok-k">[E-INT-004]</span> <span class="tok-f">integrate:</span> no elementary antiderivative exists: <span class="tok-n">∫ e^(x³) dx</span> …
 <span class="tok-c">Remediation:</span> this integrand has no closed-form antiderivative in terms of elementary functions; use a numeric integrator or elliptic-integral library</code></pre></div>
             <p class="stat">Time, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> so a long call never hangs your program</p>
           </article>

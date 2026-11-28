@@ -1,7 +1,7 @@
 # Method of lines: from a symbolic PDE to a compiled ODE/DAE
 
 `alkahest.experimental.method_of_lines` takes a PDE problem written with the
-[PDE foundation layer](./numeric-pde.md) — `PDE(...).on(domain).bc(...).ic(...)`
+[PDE foundation layer](./pde.md) — `PDE(...).on(domain).bc(...).ic(...)`
 — discretises it in space, and returns a `MolSystem`: a compiled semi-discrete
 system `M y' = f(t, y)` with an exact sparse Jacobian, native time
 integrators, JAX/StableHLO export, and a von Neumann stability check. The API

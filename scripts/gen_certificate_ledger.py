@@ -169,6 +169,20 @@ def render_markdown(ledger: dict) -> str:
         + "."
     )
     out.append("")
+    out.append(
+        "**Which checker proves a certified row.** A certificate for an indefinite "
+        "integral is, by default, checked by *proof by reflection*: it is data (an "
+        "expression AST plus a witness) that the verified checker `Alkahest.Kernel` "
+        "decides with `decide +kernel`, and the soundness theorem `integral_sound` turns "
+        "that verdict into the `HasDerivAt` statement. Integrals the kernel does not "
+        "encode (special functions, `RootSum`, roots other than `√`) fall back to a "
+        "`HasDerivAt` tactic proof, and the other operations on this page (derivatives, "
+        "definite integrals, limits, sums, rewrites) use their tactic emitters. "
+        '`certificate_status["path"]` names the checker of each result (`"kernel"`, '
+        '`"kernel_native"` or `"tactic"`); see '
+        "[The reflective certificate kernel](./lean-kernel.md)."
+    )
+    out.append("")
     out.append("## Reading a row")
     out.append("")
     out.append(

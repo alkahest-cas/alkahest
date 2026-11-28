@@ -4,6 +4,8 @@ Alkahest provides symbolic infrastructure for ordinary differential equations (O
 
 Every snippet on this page is executed by `tests/test_docs_ode_dae.py`, so it runs against the version of Alkahest it ships with.
 
+For closed-form solutions of a single ODE (`dsolve`) see [Calculus](./calculus.md#closed-form-ode-solutions-dsolve); for partial differential equations, [Partial differential equations](./pde.md).
+
 ## ODE
 
 `ODE` represents an explicit first-order system `d(state_vars)/dt = rhs`. The constructor takes three **positional** arguments — state variables, right-hand sides, and the independent variable — and `ODE(...)` and `ODE.new(...)` are the same thing:

@@ -191,13 +191,21 @@ RationalFunction
 Polynomial utilities
 --------------------
 
-.. function:: horner(expr: Expr, var: Expr) -> Expr
+.. function:: horner(expr: Expr, var: Expr | list[Expr] | None) -> Expr
    :no-index:
 
    Rewrite a polynomial expression in Horner's form::
 
       # x^3 + 2x^2 + 3x + 4 → x*(x*(x + 2) + 3) + 4
       h = horner(x**3 + pool.integer(2)*x**2 + pool.integer(3)*x + pool.integer(4), x)
+
+   With a list or tuple of variables, or ``None`` (every free symbol), *expr*
+   is a multivariate polynomial and the result is a nested Horner scheme: the
+   variable occurring in the most terms is factored out first, ties going to the
+   one listed first. Coefficients may be rationals, floats, constants or
+   parameters::
+
+      horner(x**2*y + x*y**2 + x + 1, [x, y])   # 1 + x*(y^2 + 1 + x*y)
 
    Horner's form requires fewer multiplications and is numerically
    better conditioned than the expanded form.

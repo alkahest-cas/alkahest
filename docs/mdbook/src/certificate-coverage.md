@@ -8,6 +8,8 @@
 
 Corpus: **337 observations** over **216 shape classes** — 137 certified, 2 conditional, 0 partial, 77 withheld.
 
+**Which checker proves a certified row.** A certificate for an indefinite integral is, by default, checked by *proof by reflection*: it is data (an expression AST plus a witness) that the verified checker `Alkahest.Kernel` decides with `decide +kernel`, and the soundness theorem `integral_sound` turns that verdict into the `HasDerivAt` statement. Integrals the kernel does not encode (special functions, `RootSum`, roots other than `√`) fall back to a `HasDerivAt` tactic proof, and the other operations on this page (derivatives, definite integrals, limits, sums, rewrites) use their tactic emitters. `certificate_status["path"]` names the checker of each result (`"kernel"`, `"kernel_native"` or `"tactic"`); see [The reflective certificate kernel](./lean-kernel.md).
+
 ## Reading a row
 
 A *shape class* is an operation plus a structural fingerprint of its arguments: which primitive functions occur (`funcs`), whether they are applied to the bare variable, to an integer power of it, or to something else (`fn_arg`), what kinds of exponents appear (`pow`, `pow_base`), how factors combine (`mul`), and the top-level form of the expression (`form`, plus the outermost function, `head`, for a variable-free operation on a function application).

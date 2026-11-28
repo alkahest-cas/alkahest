@@ -275,7 +275,7 @@ import alkahest
 
 pool = alkahest.ExprPool()
 x = pool.symbol("x")
-expr = alkahest.exp(x**2)
+expr = alkahest.exp(x**3)
 
 try:
     result = alkahest.integrate(expr, x)

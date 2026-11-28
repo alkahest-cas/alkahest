@@ -130,6 +130,20 @@ is present at runtime, and it is in no published wheel. There is **no
 was unfalsifiable from Python and was removed in contract v3. Read
 [GPU support](./gpu.md) before branching on `cuda`.
 
+### Optional: NumPy (required by `alkahest.fex`)
+
+`pip install alkahest` does not install NumPy. The experimental
+[Finite Expression Method](./fex.md) module imports it at import time, so
+`import alkahest.fex` fails with `ModuleNotFoundError: No module named 'numpy'`
+until you install it:
+
+```bash
+pip install numpy
+```
+
+The array entry points (`numpy_eval`, compiled functions called on arrays) also
+expect NumPy arrays.
+
 ### Optional: RL environments (`alkahest[rl]`)
 
 Reinforcement-learning environments (symbolic integration, Prime Intellect Hub) are an

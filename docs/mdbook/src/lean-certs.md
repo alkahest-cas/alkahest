@@ -4,13 +4,75 @@ Alkahest can emit Lean 4 source for derivations. Generated source becomes a
 machine-checked proof only after it typechecks with the pinned Lean/Mathlib
 toolchain and without admitted placeholders.
 
+## How a certificate is checked: reflection, with a tactic fallback
+
+Certificates come in two kinds, and `certificate_status["path"]` says which one
+a result has.
+
+* **Proof by reflection (`"kernel"`).** The certificate is *data*: the claim as
+  an expression AST plus a witness (an atom table, the relations used, the
+  cofactors). A checker written in Lean, [`Alkahest.Kernel`](./lean-kernel.md),
+  decides it with `decide +kernel`, and a soundness theorem proved once in the
+  library (`integral_sound`, `ode_sound`, `pde_sound`) turns `check = true`
+  into the statement. The checker computes derivatives itself, so nothing
+  Alkahest computed is trusted: a wrong witness makes the check fail. This is
+  the default for indefinite integrals, for `dsolve` solutions
+  (`experimental.dsolve_certificate`) and for the PDE residuals of
+  `fex.finalize`.
+* **Tactic proofs (`"tactic"`).** A Mathlib proof script built node by node
+  (`HasDerivAt` lemmas, `linear_combination`, `simp`, interval FTC, …). Integrals
+  whose answer the kernel does not encode (special functions such as `erf` and
+  `Si`, `RootSum`, roots other than `√`) fall back to it, and derivatives,
+  definite integrals, limits, sums, resultants and rewrite logs use it
+  throughout.
+
+On the published 3.15.0 wheel, 218 of the 230 indefinite-integral certificates
+emitted over three corpora (272 integrands) take the kernel path. The table
+and the method are in
+[How often each path is taken](./lean-kernel.md#how-often-each-path-is-taken).
+
+```python
+import alkahest as ak
+
+x = ak.symbol("x")
+r = ak.integrate(x**2, x)
+r.certificate_status["path"]                 # "kernel"
+"decide +kernel" in r.certificate            # True
+
+r = ak.integrate(ak.exp(-x**2), x)           # sqrt(pi)/2 * erf(x)
+r.certificate_status["path"]                 # "tactic"
+r.certificate_status["kernel_detail"]        # "withheld_special_function"
+```
+
+`alkahest.set_lean_certificate_mode("tactic")` emits tactic proofs only, and
+`"kernel_native"` closes kernel certificates with `native_decide`, which is
+faster on very large certificates but adds Lean's compiler to the trusted base.
+That mode is opt-in, and CI rejects it in the default corpora. See
+[The trusted base](./lean-kernel.md#the-trusted-base).
+
+### Checking a certificate
+
+Use the pinned toolchain in the repository's `lean/` directory. Kernel
+certificates also need the `Alkahest` library built once:
+
+```bash
+cd lean
+lake exe cache get        # Mathlib's prebuilt oleans
+lake build Alkahest       # only needed for kernel certificates
+lake env lean -DwarningAsError=true -DautoImplicit=false path/to/cert.lean
+```
+
+Then read the theorem statement: it is what was proved. A certificate with
+`sorry`, `admit` or `axiom` is not a proof, and Alkahest never emits one.
+
 ## Three levels of evidence
 
 **Derivation logs** — always on, always cheap. Records every rewrite rule applied, with rule name and arguments. Human-readable; machine-parseable; forms the basis for Lean export.
 
-**Lean certificate export** — for computations expressible as sequences of
-rewrites tagged with Lean theorem names. The library emits a `.lean` file
-containing a proof term. Emission makes a certificate *available*; it does not
+**Lean certificate export** — for the operations listed under
+[Coverage](#coverage). The library emits a `.lean` file containing a theorem
+and its proof, checked either by the reflective kernel or by Mathlib tactics
+(above). Emission makes a certificate *available*; it does not
 by itself mean Lean has checked the source.
 
 In the agent contract, `certificate_available` has this same meaning. Only a
@@ -72,10 +134,22 @@ theorem alkahest_diff_sin_sq (x : ℝ) :
 
 ## Strict Lean CI
 
-The CI pipeline (`.github/workflows/lean.yml`) generates a deliberately small,
-strict corpus of basic arithmetic rewrites and `d/dx x³`. Every corpus entry
-must have the expected non-empty derivation log, must contain no `sorry`,
-`admit`, or `axiom`, and must typecheck with warnings treated as errors. The
+The CI pipeline (`.github/workflows/lean.yml`) builds `Alkahest.Kernel`,
+rejects admissions in it, runs `lean/test/KernelSmoke.lean`, and compiles
+these corpora:
+
+| corpus | what it emits |
+|---|---|
+| `tests/lean_corpus.py` | the strict corpus: rewrites, `d/dx x³`, chain rules, FTC integrals, sums |
+| `tests/lean_tendsto_corpus.py` | `Filter.Tendsto` limits |
+| `tests/lean_gosper_corpus.py` | Gosper `Finset.sum` telescopes and `∏ k = n!` |
+| `tests/lean_integrate_corpus.py` | indefinite integrals, twice: the default mode and `--mode tactic` |
+| `tests/lean_ode_corpus.py` | `dsolve` solutions through the kernel |
+| `tests/lean_fex_corpus.py` | `fex.finalize` PDE residuals through the kernel |
+| `tests/lean_corpus_sample.py`, `tests/lean_sos_corpus.py` | the textbook-gate pool and SOS certificates |
+
+Every corpus entry must contain no `sorry`, `admit`, `axiom` or
+`native_decide`, and must typecheck with warnings treated as errors. The
 Lean compiler has no `--no-sorries` command-line flag, so the source admission
 check is explicit in both the generator and CI.
 
@@ -195,10 +269,22 @@ The strict CI corpus currently covers:
   `g` a power `xⁿ` (`n ≥ 2`), a linear form `c·x` / `x+c` / `a+bx` (including
   interned `-x` as `x * -1`), or a pointwise `sin`/`cos`/`exp` of the variable
   (`sin(cos x)`, `exp(-x)`, `cos(2x)`, `exp(-x²)`)
-- Indefinite integrals of `sin`, `cos`, `exp`, `log`, and `xⁿ`, certified via the FTC
-  derivative relation `deriv (fun x => F) x = f`. `∫ log x` reuses the
-  product/sum certificate for `d/dx (x log x − x)`. Definite `∫_a^b log x`
-  certifies when both endpoints are strictly positive.
+- Most indefinite integrals, as `HasDerivAt (fun x => F) f x` under explicit
+  domain hypotheses (`log` arguments `≠ 0`, `sqrt` and rational-power bases
+  `> 0`, denominators `≠ 0`, `arcsin`/`arccos` arguments in `(-1, 1)`, `cos u ≠ 0`
+  under `tan u`). Polynomial × exp/sin/cos, rational functions with log/atan
+  parts, log/exp towers, inverse trig, hyperbolic functions, multiple-angle
+  trig and algebraic answers are covered, through the kernel where it encodes
+  the answer and by tactics otherwise. `erf`, `erfi` and `Si` answers are
+  certified by tactics, defining each function by its integral in the same
+  file. `Ei`, `li`, `Shi`, `Ci`, Fresnel and elliptic answers and `RootSum`
+  answers are withheld, and `certificate_status["detail"]` names the reason
+  (`withheld_special_function`, `withheld_rootsum`,
+  `withheld_identity_not_reduced`, …).
+- Solutions of `dsolve` (`experimental.dsolve_certificate`) and the PDE
+  residuals of `fex.finalize` (Poisson, cubic Schrödinger, the eigenproblem
+  and linear transport), through the kernel. See
+  [The reflective certificate kernel](./lean-kernel.md).
 - Products and sums that mix the everywhere-differentiable fragment with
   pointwise `log(x)` / `sqrt(x)` (`x log x`, `exp x · log x`, `log x + x`,
   `x sqrt x`), with an explicit `(hx : 0 < x)` binder. Composites
@@ -254,8 +340,8 @@ The strict CI corpus currently covers:
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, nested two-deep composites (`sin(cos(x²))`), `log`/`tan`/`sqrt`
-chain, conditional logarithm/power rewrites, integration outside the FTC
-fragment, limits, and unsupported expression forms can require side conditions
+chain, conditional logarithm/power rewrites, limits outside the `Tendsto`
+fragment, and unsupported expression forms can require side conditions
 or currently use a placeholder tactic. They must remain unverified until their
 proof encoding and strict corpus coverage are added.
 
@@ -266,6 +352,10 @@ Planned algorithmic certificates include:
 
 ## Side conditions in proofs
 
-Side conditions (domain constraints and branch-cut restrictions) are recorded in
-the derivation log. They are not yet translated into Lean hypotheses by the
-exporter, so conditional rewrites are excluded from the strict corpus.
+Integration certificates state their domain as hypotheses of the theorem
+(`(h1 : x ≠ 0)`, `(h2 : 0 < x ^ 2 - 1)`, …), discharge the ones that hold
+everywhere (`x² + 1 > 0`, `exp u > 0`) instead, and withhold a certificate
+whose domain has no sample point, so the theorem cannot be vacuous. For other
+operations, side conditions (domain constraints and branch-cut restrictions)
+are recorded in the derivation log but not translated into Lean hypotheses, so
+conditional rewrites are excluded from the strict corpus.
