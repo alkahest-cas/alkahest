@@ -1,6 +1,6 @@
 # Landing-page benchmarks: full results
 
-Generated 2026-11-11 by `benchmarks/website/run_all.py` against Alkahest 3.13.2, the published PyPI wheel (tag v3.13.2, commit `067a88f5519a`); benchmark scripts at commit `067a88f5519ab5b5924d9f8ec343bf0dc045b06c`.
+Generated 2026-11-28 by `benchmarks/website/run_all.py` against Alkahest 3.15.0, the published PyPI wheel (tag v3.15.0, commit `3511845c3ba9`); benchmark scripts at commit `3511845c3ba9931e80b47dca7b2c55be86354213`.
 
 These are the numbers shown on the landing page (`website/src/data/benchmarks.json`), with every timed run, the check applied to each answer, and the losses.
 
@@ -8,8 +8,8 @@ These are the numbers shown on the landing page (`website/src/data/benchmarks.js
 
 - CPU: AMD Ryzen Threadripper PRO 3955WX 16-Cores (16 cores, 32 threads)
 - RAM: 252 GiB; OS: Ubuntu 22.04.5 LTS, Linux 6.8.0-138-generic; Python 3.10.12
-- Resource cap: 8 CPUs (systemd CPUQuota=800%), MemoryMax=24G, `MALLOC_ARENA_MAX=8`
-- Alkahest: 3.13.2
+- Resource cap: 8 CPUs (systemd CPUQuota=800%), MemoryMax=40G, `MALLOC_ARENA_MAX=8`; the machine's load average (other users) was 6.2 at the start of the run and 28 at the end
+- Alkahest: 3.15.0
 - Mathematica: 14.3.0
 - mpmath: 1.3.0
 - NumPy: 2.2.6
@@ -35,12 +35,12 @@ Fateman's polynomial-expansion benchmark: 4 variables, 135,751 terms in the resu
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 308.1 ms | 303.8 ms | 322.4 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 198.1 ms | 195.0 ms | 200.3 ms | 5 | ok | matches reference (independent reference) |
 | SymPy | 1.14.0 | timeout > 300 s | — | — | 0 | timeout |  |
-| SymEngine | 0.14.1 | 122.16 s | 122.16 s | 122.16 s | 1 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 872.1 ms | 833.9 ms | 936.5 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 128.42 s | 128.42 s | 128.42 s | 1 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 947.2 ms | 911.3 ms | 984.1 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 396.5× faster than SymEngine; 2.8× faster than Mathematica.
+Alkahest is 648.3× faster than SymEngine; 4.8× faster than Mathematica.
 
 Note: SymPy is timed with sympy.expand, its standard expansion entry point. SymPy did not finish within 300 s.
 
@@ -52,11 +52,11 @@ Product of three random dense polynomials of degree 60, 60, 80 with 20-bit coeff
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 16.2 ms | 16.2 ms | 16.6 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 3.02 s | 3.01 s | 3.04 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 24.7 ms | 24.6 ms | 25.0 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 16.4 ms | 16.3 ms | 17.2 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 3.09 s | 3.05 s | 3.17 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 25.6 ms | 25.0 ms | 26.0 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 186.6× faster than SymPy; 1.5× faster than Mathematica.
+Alkahest is 188.7× faster than SymPy; 1.6× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -66,11 +66,11 @@ Product of three random sparse 4-variable polynomials (25 terms, total degree <=
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 17.6 ms | 17.1 ms | 18.7 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 4.41 s | 4.30 s | 4.50 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 44.4 ms | 42.8 ms | 47.4 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 17.3 ms | 16.3 ms | 21.5 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 4.61 s | 4.48 s | 4.65 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 46.7 ms | 43.6 ms | 48.1 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 250.2× faster than SymPy; 2.5× faster than Mathematica.
+Alkahest is 265.8× faster than SymPy; 2.7× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -80,11 +80,11 @@ g·a and g·b with g, a, b random sparse 4-variable polynomials (61 terms, total
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 5.26 ms | 5.25 ms | 5.50 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 73.7 ms | 73.2 ms | 74.4 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 26.1 ms | 25.7 ms | 26.4 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 5.42 ms | 5.13 ms | 5.47 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 77.0 ms | 75.1 ms | 80.4 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 27.0 ms | 26.7 ms | 27.6 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 14.0× faster than SymPy; 5.0× faster than Mathematica.
+Alkahest is 14.2× faster than SymPy; 5.0× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -94,11 +94,11 @@ Script: `benchmarks/website/core.py`
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 6.67 ms | 6.48 ms | 6.77 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 1.02 s | 1.00 s | 1.06 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 285.2 ms | 272.1 ms | 301.5 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 10.4 ms | 10.2 ms | 15.3 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 1.08 s | 1.03 s | 1.10 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 298.7 ms | 292.1 ms | 325.3 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 153.5× faster than SymPy; 42.8× faster than Mathematica.
+Alkahest is 103.7× faster than SymPy; 28.7× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -108,11 +108,11 @@ Reduced Gröbner basis, grevlex, 5 variables, over Q. Checked: number of basis e
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 3.43 ms | 2.94 ms | 3.67 ms | 3 | ok | matches reference (consensus of 3 systems) |
-| SymPy | 1.14.0 | 424.9 ms | 422.4 ms | 433.1 ms | 3 | ok | matches reference (consensus of 3 systems) |
-| Mathematica | 14.3.0 | 9.69 ms | 9.66 ms | 9.73 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| Alkahest | 3.15.0 | 2.07 ms | 2.03 ms | 2.08 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| SymPy | 1.14.0 | 440.4 ms | 436.5 ms | 447.7 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| Mathematica | 14.3.0 | 10.3 ms | 9.98 ms | 10.7 ms | 3 | ok | matches reference (consensus of 3 systems) |
 
-Alkahest is 123.9× faster than SymPy; 2.8× faster than Mathematica.
+Alkahest is 212.8× faster than SymPy; 5.0× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -122,11 +122,11 @@ Reduced Gröbner basis, grevlex, 6 variables, over Q. Checked: number of basis e
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 6.54 ms | 5.49 ms | 6.92 ms | 3 | ok | matches reference (consensus of 3 systems) |
-| SymPy | 1.14.0 | 998.4 ms | 992.8 ms | 1.00 s | 3 | ok | matches reference (consensus of 3 systems) |
-| Mathematica | 14.3.0 | 26.7 ms | 26.5 ms | 26.7 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| Alkahest | 3.15.0 | 3.89 ms | 3.82 ms | 4.14 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| SymPy | 1.14.0 | 1.03 s | 1.03 s | 1.06 s | 3 | ok | matches reference (consensus of 3 systems) |
+| Mathematica | 14.3.0 | 27.6 ms | 27.3 ms | 27.6 ms | 3 | ok | matches reference (consensus of 3 systems) |
 
-Alkahest is 152.7× faster than SymPy; 4.1× faster than Mathematica.
+Alkahest is 265.7× faster than SymPy; 7.1× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -136,11 +136,11 @@ Reduced Gröbner basis, grevlex, 7 variables, over Q. Checked: number of basis e
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 32.0 ms | 29.9 ms | 34.3 ms | 3 | ok | matches reference (consensus of 3 systems) |
-| SymPy | 1.14.0 | 11.95 s | 11.94 s | 11.98 s | 3 | ok | matches reference (consensus of 3 systems) |
-| Mathematica | 14.3.0 | 277.9 ms | 277.9 ms | 279.3 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| Alkahest | 3.15.0 | 21.1 ms | 20.2 ms | 23.8 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| SymPy | 1.14.0 | 12.60 s | 12.57 s | 12.62 s | 3 | ok | matches reference (consensus of 3 systems) |
+| Mathematica | 14.3.0 | 287.8 ms | 286.3 ms | 295.8 ms | 3 | ok | matches reference (consensus of 3 systems) |
 
-Alkahest is 373.5× faster than SymPy; 8.7× faster than Mathematica.
+Alkahest is 595.9× faster than SymPy; 13.6× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -150,11 +150,11 @@ Reduced Gröbner basis, grevlex, 6 variables, over Q. Checked: number of basis e
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 34.1 ms | 30.0 ms | 34.7 ms | 3 | ok | matches reference (consensus of 3 systems) |
-| SymPy | 1.14.0 | 47.96 s | 47.96 s | 47.96 s | 1 | ok | matches reference (consensus of 3 systems) |
-| Mathematica | 14.3.0 | 185.7 ms | 184.5 ms | 189.1 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| Alkahest | 3.15.0 | 15.3 ms | 14.5 ms | 15.3 ms | 3 | ok | matches reference (consensus of 3 systems) |
+| SymPy | 1.14.0 | 50.06 s | 50.06 s | 50.06 s | 1 | ok | matches reference (consensus of 3 systems) |
+| Mathematica | 14.3.0 | 191.7 ms | 187.4 ms | 192.1 ms | 3 | ok | matches reference (consensus of 3 systems) |
 
-Alkahest is 1406.9× faster than SymPy; 5.4× faster than Mathematica.
+Alkahest is 3274.2× faster than SymPy; 12.5× faster than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -164,11 +164,11 @@ Script: `benchmarks/website/core.py`
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 185.2 ms | 182.3 ms | 190.5 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 3.57 s | 3.56 s | 3.58 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 43.3 ms | 43.1 ms | 44.1 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 180.2 ms | 179.5 ms | 181.8 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 3.63 s | 3.60 s | 3.65 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 45.2 ms | 45.0 ms | 45.3 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 19.3× faster than SymPy; 4.3× slower than Mathematica.
+Alkahest is 20.2× faster than SymPy; 4.0× slower than Mathematica.
 
 Script: `benchmarks/website/core.py`
 
@@ -182,11 +182,11 @@ Symbolic 3×3 matrix exponential of the depot/central/peripheral rate matrix wit
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 33.5 ms | 33.3 ms | 34.3 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 3.31 s | 3.28 s | 3.35 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 27.2 ms | 27.1 ms | 27.6 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 33.9 ms | 33.7 ms | 34.5 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 3.46 s | 3.39 s | 3.56 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 28.3 ms | 28.2 ms | 28.6 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 98.6× faster than SymPy; 1.2× slower than Mathematica.
+Alkahest is 101.8× faster than SymPy; 1.2× slower than Mathematica.
 
 Script: `benchmarks/website/pharma.py`
 
@@ -196,11 +196,11 @@ Exact improper integrals ∫₀^∞ C(t) dt and ∫₀^∞ t·C(t) dt of the Bat
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 337 µs | 326 µs | 343 µs | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 450.5 ms | 447.1 ms | 454.6 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 1.56 s | 1.54 s | 1.59 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 311 µs | 298 µs | 345 µs | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 483.5 ms | 476.1 ms | 500.5 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 1.58 s | 1.57 s | 1.60 s | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 1335.6× faster than SymPy; 4618.1× faster than Mathematica.
+Alkahest is 1553.1× faster than SymPy; 5061.4× faster than Mathematica.
 
 Note: A small problem (two closed-form integrals); the differences are integrator overhead, not algorithmic scaling. Mathematica is timed with Integrate[..., Assumptions -> ...].
 
@@ -212,12 +212,12 @@ All 5 first and 15 second partial derivatives of the closed-form 2-compartment o
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 6.16 ms | 6.12 ms | 6.71 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 657.6 ms | 653.2 ms | 663.9 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 1000 µs | 997 µs | 1.15 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 5.86 ms | 5.75 ms | 6.06 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 5.95 ms | 5.94 ms | 5.96 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 676.0 ms | 672.7 ms | 691.9 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 1.02 ms | 991 µs | 1.32 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 6.10 ms | 6.06 ms | 6.41 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 106.7× faster than SymPy; 6.2× slower than SymEngine; 1.1× slower than Mathematica.
+Alkahest is 113.6× faster than SymPy; 5.8× slower than SymEngine; 1.0× faster than Mathematica.
 
 Note: Raw (unsimplified) derivatives in every system; timing is differentiation only.
 
@@ -229,13 +229,13 @@ The closed-form 2-compartment oral concentration with per-subject ka, k10, k12, 
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 31.5 ms | 30.5 ms | 31.7 ms | 5 | ok | matches reference (independent reference) |
-| NumPy | 2.2.6 | 56.3 ms | 55.6 ms | 61.8 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 64.8 ms | 62.3 ms | 71.9 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 25.5 ms | 25.3 ms | 25.9 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 332.2 ms | 258.5 ms | 369.1 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 23.3 ms | 22.2 ms | 27.4 ms | 5 | ok | matches reference (independent reference) |
+| NumPy | 2.2.6 | 56.8 ms | 56.1 ms | 62.8 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 67.9 ms | 65.7 ms | 77.0 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 26.8 ms | 26.6 ms | 27.6 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 950.8 ms | 740.3 ms | 1.10 s | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 1.8× faster than NumPy; 2.1× faster than SymPy; 1.2× slower than SymEngine; 10.5× faster than Mathematica.
+Alkahest is 2.4× faster than NumPy; 2.9× faster than SymPy; 1.2× faster than SymEngine; 40.9× faster than Mathematica.
 
 Script: `benchmarks/website/pharma.py`
 
@@ -249,11 +249,11 @@ Derive the 4 equations of motion d/dt(∂L/∂q̇ᵢ) − ∂L/∂qᵢ of a plan
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 2.01 ms | 1.92 ms | 2.70 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 676.7 ms | 672.1 ms | 703.6 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 1.15 ms | 1.14 ms | 1.16 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 1.90 ms | 1.87 ms | 1.93 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 730.6 ms | 718.0 ms | 766.8 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 1.17 ms | 1.16 ms | 1.19 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 336.7× faster than SymPy; 1.7× slower than Mathematica.
+Alkahest is 384.5× faster than SymPy; 1.6× slower than Mathematica.
 
 Script: `benchmarks/website/engineering.py`
 
@@ -263,11 +263,11 @@ Derive the 6 equations of motion d/dt(∂L/∂q̇ᵢ) − ∂L/∂qᵢ of a plan
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 4.17 ms | 4.06 ms | 4.47 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 1.99 s | 1.95 s | 2.00 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 2.71 ms | 2.68 ms | 2.97 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 3.96 ms | 3.93 ms | 5.17 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 2.02 s | 1.99 s | 2.05 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 2.77 ms | 2.73 ms | 3.17 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 478.0× faster than SymPy; 1.5× slower than Mathematica.
+Alkahest is 509.4× faster than SymPy; 1.4× slower than Mathematica.
 
 Script: `benchmarks/website/engineering.py`
 
@@ -277,12 +277,12 @@ PUMA-560 Denavit–Hartenberg chain with symbolic joint angles and link paramete
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 2.89 ms | 2.88 ms | 2.93 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 117.8 ms | 117.1 ms | 117.9 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 352 µs | 343 µs | 354 µs | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 775 µs | 763 µs | 812 µs | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 2.88 ms | 2.85 ms | 2.89 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 127.2 ms | 125.7 ms | 130.4 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 364 µs | 348 µs | 379 µs | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 808 µs | 776 µs | 841 µs | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 40.7× faster than SymPy; 8.2× slower than SymEngine; 3.7× slower than Mathematica.
+Alkahest is 44.2× faster than SymPy; 7.9× slower than SymEngine; 3.6× slower than Mathematica.
 
 Script: `benchmarks/website/engineering.py`
 
@@ -292,12 +292,12 @@ The 18 entries of the PUMA-560 position Jacobian (derived once with SymPy, so ev
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 151.1 ms | 148.4 ms | 155.7 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 294.7 ms | 293.6 ms | 305.7 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 131.4 ms | 129.4 ms | 132.0 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 1.07 s | 1.02 s | 1.41 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 140.0 ms | 138.7 ms | 146.7 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 319.1 ms | 313.5 ms | 325.4 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 131.7 ms | 131.4 ms | 132.8 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 1.69 s | 1.41 s | 2.11 s | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 2.0× faster than SymPy; 1.1× slower than SymEngine; 7.1× faster than Mathematica.
+Alkahest is 2.3× faster than SymPy; 1.1× slower than SymEngine; 12.1× faster than Mathematica.
 
 Script: `benchmarks/website/engineering.py`
 
@@ -311,11 +311,11 @@ R_abcd R^abcd from the Schwarzschild metric in Boyer–Lindquist/Schwarzschild c
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 1.19 ms | 1.18 ms | 1.23 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 489.1 ms | 482.9 ms | 494.8 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 63.3 ms | 62.4 ms | 63.8 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 1.17 ms | 1.16 ms | 1.19 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 547.3 ms | 507.5 ms | 567.1 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 68.6 ms | 67.1 ms | 72.6 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 411.0× faster than SymPy; 53.2× faster than Mathematica.
+Alkahest is 467.8× faster than SymPy; 58.7× faster than Mathematica.
 
 Script: `benchmarks/website/physics.py`
 
@@ -325,7 +325,7 @@ R_abcd R^abcd from the Kerr metric in Boyer–Lindquist/Schwarzschild coordinate
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 33.6 ms | 33.3 ms | 47.0 ms | 3 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 33.9 ms | 33.7 ms | 33.9 ms | 3 | ok | matches reference (independent reference) |
 | SymPy | 1.14.0 | timeout > 120 s | — | — | 0 | timeout |  |
 | Mathematica | 14.3.0 | timeout > 120 s | — | — | 0 | timeout |  |
 
@@ -339,11 +339,11 @@ Every ⟨j1 m1; j2 m2 | J M⟩ with j1, j2 ∈ {0, 1/2, …, 3} (2,408 coefficie
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 11.8 ms | 11.4 ms | 12.4 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 322.9 ms | 322.1 ms | 324.3 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 799.0 ms | 784.5 ms | 819.0 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 10.7 ms | 10.6 ms | 10.9 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 349.9 ms | 344.2 ms | 352.7 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 866.5 ms | 857.9 ms | 926.2 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 27.3× faster than SymPy; 67.7× faster than Mathematica.
+Alkahest is 32.8× faster than SymPy; 81.1× faster than Mathematica.
 
 Script: `benchmarks/website/physics.py`
 
@@ -353,12 +353,12 @@ Script: `benchmarks/website/physics.py`
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 63.8 ms | 62.6 ms | 65.0 ms | 5 | ok | matches reference (independent reference) |
-| mpmath | 1.3.0 | 5.03 s | 5.01 s | 5.05 s | 3 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 5.02 s | 5.01 s | 5.03 s | 3 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 240.1 ms | 236.2 ms | 241.7 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 63.6 ms | 63.2 ms | 63.9 ms | 5 | ok | matches reference (independent reference) |
+| mpmath | 1.3.0 | 5.17 s | 5.12 s | 5.17 s | 3 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 5.12 s | 5.10 s | 5.13 s | 3 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 250.4 ms | 248.1 ms | 254.6 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 79.0× faster than mpmath; 78.7× faster than SymPy; 3.8× faster than Mathematica.
+Alkahest is 81.2× faster than mpmath; 80.5× faster than SymPy; 3.9× faster than Mathematica.
 
 Note: mpmath and Arb cache constants such as π across calls; the warm-up run populates those caches for every system alike.
 
@@ -374,12 +374,12 @@ European call written with erf; all 4 first (delta, vega, theta, rho) and 10 sec
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 2.88 ms | 2.85 ms | 3.18 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 227.3 ms | 216.1 ms | 231.4 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 460 µs | 457 µs | 463 µs | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 2.01 ms | 1.97 ms | 2.20 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 2.86 ms | 2.82 ms | 3.01 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 227.3 ms | 224.5 ms | 232.0 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 478 µs | 468 µs | 485 µs | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 2.06 ms | 2.04 ms | 2.07 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 78.9× faster than SymPy; 6.3× slower than SymEngine; 1.4× slower than Mathematica.
+Alkahest is 79.5× faster than SymPy; 6.0× slower than SymEngine; 1.4× slower than Mathematica.
 
 Note: A small expression: this measures per-derivative overhead more than algorithmic scaling.
 
@@ -391,12 +391,12 @@ Hagan et al. (2002) lognormal SABR implied-volatility formula; all 4 first and 1
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 4.04 ms | 4.00 ms | 4.14 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 352.9 ms | 352.3 ms | 353.4 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 704 µs | 696 µs | 732 µs | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 3.42 ms | 3.40 ms | 3.63 ms | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 4.03 ms | 4.00 ms | 5.10 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 370.6 ms | 365.3 ms | 376.4 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 720 µs | 706 µs | 734 µs | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 3.50 ms | 3.47 ms | 3.65 ms | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 87.4× faster than SymPy; 5.7× slower than SymEngine; 1.2× slower than Mathematica.
+Alkahest is 91.9× faster than SymPy; 5.6× slower than SymEngine; 1.2× slower than Mathematica.
 
 Script: `benchmarks/website/finance.py`
 
@@ -406,13 +406,13 @@ Four closed-form Black–Scholes outputs evaluated for 1,000,000 options with pe
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 67.5 ms | 65.4 ms | 70.0 ms | 5 | ok | matches reference (independent reference) |
-| NumPy | 2.2.6 | 63.3 ms | 62.9 ms | 63.5 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 76.5 ms | 73.3 ms | 84.2 ms | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 51.5 ms | 51.3 ms | 52.1 ms | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 1.55 s | 1.50 s | 1.62 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 61.5 ms | 61.2 ms | 62.0 ms | 5 | ok | matches reference (independent reference) |
+| NumPy | 2.2.6 | 66.3 ms | 66.0 ms | 66.7 ms | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 77.5 ms | 74.3 ms | 82.9 ms | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 52.6 ms | 52.0 ms | 59.0 ms | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 1.56 s | 1.54 s | 1.68 s | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 1.1× slower than NumPy; 1.1× faster than SymPy; 1.3× slower than SymEngine; 23.0× faster than Mathematica.
+Alkahest is 1.1× faster than NumPy; 1.3× faster than SymPy; 1.2× slower than SymEngine; 25.4× faster than Mathematica.
 
 Script: `benchmarks/website/finance.py`
 
@@ -426,13 +426,13 @@ A sum of 24 damped sin/cos/sqrt·log terms in x, y, z (~250 nodes) at 10,000,000
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 2.44 s | 2.38 s | 2.52 s | 5 | ok | matches reference (independent reference) |
-| NumPy | 2.2.6 | 4.39 s | 4.32 s | 4.41 s | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 3.85 s | 3.83 s | 3.88 s | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 2.30 s | 2.25 s | 2.31 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 4.40 s | 4.26 s | 4.46 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 2.62 s | 2.60 s | 2.67 s | 5 | ok | matches reference (independent reference) |
+| NumPy | 2.2.6 | 4.61 s | 4.59 s | 4.67 s | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 4.01 s | 3.99 s | 4.04 s | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 2.37 s | 2.34 s | 2.44 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 5.45 s | 5.07 s | 5.47 s | 3 | ok | matches reference (independent reference) |
 
-Alkahest is 1.8× faster than NumPy; 1.6× faster than SymPy; 1.1× slower than SymEngine; 1.8× faster than Mathematica.
+Alkahest is 1.8× faster than NumPy; 1.5× faster than SymPy; 1.1× slower than SymEngine; 2.1× faster than Mathematica.
 
 Script: `benchmarks/website/numeric.py`
 
@@ -442,12 +442,12 @@ As above, but Alkahest uses numpy_eval_par (Rayon, 8 threads under the 8-CPU cap
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 323.0 ms | 317.8 ms | 328.4 ms | 5 | ok | matches reference (independent reference) |
-| NumPy | 2.2.6 | 4.43 s | 4.37 s | 4.46 s | 5 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 2.32 s | 2.31 s | 2.32 s | 5 | ok | matches reference (independent reference) |
-| Mathematica | 14.3.0 | 4.50 s | 4.44 s | 4.57 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 336.0 ms | 334.5 ms | 358.3 ms | 5 | ok | matches reference (independent reference) |
+| NumPy | 2.2.6 | 4.57 s | 4.53 s | 4.75 s | 5 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 2.44 s | 2.39 s | 2.48 s | 5 | ok | matches reference (independent reference) |
+| Mathematica | 14.3.0 | 5.61 s | 5.43 s | 6.04 s | 3 | ok | matches reference (independent reference) |
 
-Alkahest is 13.7× faster than NumPy; 7.2× faster than SymEngine; 13.9× faster than Mathematica.
+Alkahest is 13.6× faster than NumPy; 7.3× faster than SymEngine; 16.7× faster than Mathematica.
 
 Note: Not a like-for-like thread count: this row shows what the parallel path buys.
 
@@ -459,11 +459,11 @@ Time to turn a ~20,000-node expression (2000 damped oscillatory terms in x, y, z
 
 | System | Version | Median | Min | Max | Runs | Status | Check |
 |---|---|---|---|---|---|---|---|
-| Alkahest | 3.13.2 | 276.1 ms | 261.1 ms | 286.7 ms | 5 | ok | matches reference (independent reference) |
-| SymPy | 1.14.0 | 6.87 s | 6.81 s | 6.96 s | 3 | ok | matches reference (independent reference) |
-| SymEngine | 0.14.1 | 2.40 s | 2.36 s | 2.43 s | 5 | ok | matches reference (independent reference) |
+| Alkahest | 3.15.0 | 1.01 s | 984.3 ms | 1.02 s | 5 | ok | matches reference (independent reference) |
+| SymPy | 1.14.0 | 7.75 s | 7.35 s | 7.75 s | 3 | ok | matches reference (independent reference) |
+| SymEngine | 0.14.1 | 2.56 s | 2.52 s | 2.63 s | 5 | ok | matches reference (independent reference) |
 
-Alkahest is 24.9× faster than SymPy; 8.7× faster than SymEngine.
+Alkahest is 7.7× faster than SymPy; 2.5× faster than SymEngine.
 
 Script: `benchmarks/website/numeric.py`
 
@@ -482,5 +482,5 @@ python benchmarks/website/run_all.py --cases expand_fateman --systems sympy
 python benchmarks/website/run_all.py --render-only
 ```
 
-On the reference machine every invocation was wrapped as `flock ~/.cache/alkahest-build/heavy.lock systemd-run --user --scope -q -p MemoryMax=24G -p CPUQuota=800% …` so that only one benchmark ran at a time.
+On the reference machine every invocation was wrapped as `flock ~/.cache/alkahest-build/heavy.lock systemd-run --user --scope -q -p MemoryMax=40G -p CPUQuota=800% …` so that only one benchmark ran at a time.
 
