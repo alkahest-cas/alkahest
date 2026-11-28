@@ -133,7 +133,10 @@ Integration
    Raises :exc:`IntegrationError` (``E-INT-001``) for integrands outside
    the supported classes (e.g. mixed algebraic+transcendental).
    Raises :exc:`IntegrationError` (``E-INT-004``) when the integrand is
-   provably non-elementary (``sin(x)/x``, ``exp(x)/x``, ``exp(x²)``, etc.).
+   provably non-elementary (``exp(x³)``, ``exp(x)/(x²+1)``, ``exp(x)/log(x)``, etc.).
+   Integrands with a named special-function antiderivative get it instead
+   (``sin(x)/x`` → ``Si(x)``, ``exp(x)/x`` → ``Ei(x)``, ``exp(x²)`` →
+   ``(√π/2)·erfi(x)``).
 
    :param expr: The integrand.
    :param var: The variable of integration.

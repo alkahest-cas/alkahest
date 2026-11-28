@@ -25,9 +25,10 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 
 ## Highlights
 
-- **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
+- **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification. Integrals and ODE/PDE solutions are proved by reflection: the certificate is data that a checker verified in Lean (`Alkahest.Kernel`) decides, so Lean checks the answer without trusting Alkahest, with a Mathlib tactic proof as the fallback for shapes the kernel does not encode ([how certificates are checked](docs/mdbook/src/lean-certs.md#how-a-certificate-is-checked-reflection-with-a-tactic-fallback)).
+- **Verified PDE solvers.** `alkahest.experimental.pdsolve`, separation of variables, transform methods, Sturm–Liouville problems, Green's functions and Lie symmetries return a symbolic answer only after substituting it back; on 400 first-order problems of Abbasi's PDE benchmark `pdsolve` answers 262, against 188 for Mathematica 14.3 ([PDE guide](docs/mdbook/src/pde.md)). `alkahest.fex` finds closed forms of high-dimensional PDEs by expression search and proves them for every dimension `d` ([FEX guide](docs/mdbook/src/fex.md)).
 - **Fast on real workloads, with the losses published.** On 28 benchmark cases across core CAS, PK/PD, robotics, physics, finance and JIT evaluation, it is faster than SymPy 1.14 on all 27 it was compared on, faster than Mathematica 14.3 on 19 of 27, and the fastest system overall on 16 of 28. Examples: Fateman's 135,751-term expansion in 0.31 s (Mathematica 0.87 s, SymPy did not finish in 300 s), the Kerr Kretschmann scalar in 34 ms, and Gröbner cyclic-6 in 34 ms (Mathematica 0.19 s). SymEngine differentiates faster (it wins 8 of the 11 cases it is in), and Mathematica isolates real roots and builds equations of motion faster. Every answer is checked; see [benchmarks/website/RESULTS.md](benchmarks/website/RESULTS.md).
-- **Multimodular Gröbner bases**: F4 modulo word-size primes, lifted and verified over ℚ, then FGLM for zero-dimensional lex — cyclic-6 in 0.05 s and katsura-7 in 0.2 s under grevlex, katsura-6 lex in 0.5 s, where SymPy 1.14 takes 48 s, > 120 s and > 120 s ([measured table](docs/mdbook/src/solving.md#performance)). For inhomogeneous input the result is probabilistic, and `GroebnerBasis.proof_status` says so ([how sure is this answer?](docs/mdbook/src/solving.md#how-sure-is-this-answer)).
+- **Multimodular Gröbner bases**: F4 modulo word-size primes, lifted and verified over ℚ, then FGLM (sparse FGLM in shape position) for zero-dimensional lex — cyclic-6 in 0.016 s and katsura-7 in 0.11 s under grevlex, katsura-6 lex in 0.14 s, where SymPy 1.14 takes 48 s, > 120 s and > 120 s; cyclic-7 in 0.95 s ([measured table](docs/mdbook/src/solving.md#performance)). For inhomogeneous input the result is probabilistic, and `GroebnerBasis.proof_status` says so ([how sure is this answer?](docs/mdbook/src/solving.md#how-sure-is-this-answer)).
 - **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
 - **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
@@ -76,7 +77,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.13.2+jit` or `3.13.2+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.13.2` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.15.0+jit` or `3.15.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.15.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -91,13 +92,13 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.13.2/alkahest-3.13.2+full-cp311-cp311-manylinux_2_38_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.13.2/alkahest-3.13.2+jit-cp311-cp311-manylinux_2_38_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.15.0/alkahest-3.15.0+full-cp311-cp311-manylinux_2_38_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.15.0/alkahest-3.15.0+jit-cp311-cp311-manylinux_2_38_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
-If your client chokes on `+` in the URL, use percent-encoding (`3.13.2%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.15.0%2Bfull` in the filename segment).
 
 After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** it is also `True` (LLVM, in place of Cranelift); **`+full`** carries both backends. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
@@ -106,7 +107,7 @@ After installing the **default** wheel, `alkahest.jit_is_available()` is `True` 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.13.2+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.15.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -249,13 +250,15 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | [Solving](docs/mdbook/src/solving.md) | Gröbner bases (multimodular F4 for `grevlex`, FGLM for zero-dimensional `lex`, Buchberger, F5), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
 | Sums and products | Gosper and [Zeilberger creative telescoping](docs/mdbook/src/telescoping.md), WZ pair verification, linear recurrence solving | `sum_indefinite` · `sum_definite` · `zeilberger` · `verify_wz_pair` · `rsolve` |
 | Linear algebra | Symbolic matrices, eigenvalues and eigenvectors, Jacobians, Routh–Hurwitz stability | `Matrix.eigenvals` · `jacobian` · `routh_hurwitz` |
-| [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
+| [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling; closed-form [`dsolve`](docs/mdbook/src/calculus.md#closed-form-ode-solutions-dsolve) (Airy, Bessel, elliptic, exact characteristic roots) *(experimental)* | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` · `experimental.dsolve` |
+| [PDEs](docs/mdbook/src/pde.md) *(experimental)* | Classification, `pdsolve` (first-order, second-order and nonlinear tiers), separation of variables, transforms and Sturm–Liouville problems, [Green's functions](docs/mdbook/src/green-functions.md), [Lie symmetries and conservation laws](docs/mdbook/src/pde-nonlinear.md), [method of lines](docs/mdbook/src/method-of-lines.md), [stencils and von Neumann analysis](docs/mdbook/src/numeric-pde.md); every symbolic answer substituted back | `experimental.classify_pde` · `pdsolve` · `separation_solve` · `transform_solve` · `green_solve` · `pde_symmetries` · `method_of_lines` |
+| [Finite Expression Method](docs/mdbook/src/fex.md) *(experimental, needs NumPy)* | Expression search for high-dimensional PDE solutions, `finalize` to exact closed forms proved for symbolic dimension `d`, PIDEs | `fex.search` · `fex.solve` · `fex.finalize` |
 | Number theory | FLINT-backed integer theory, Diophantine equations, LLL lattice reduction, PSLQ integer-relation detection | `number_theory` · `diophantine` · `lattice` · `guess_relation` |
 | Algebra and discrete structures *(experimental)* | Linear algebra over GF(q); permutation, matrix and finitely presented groups, group cohomology, exact character tables; algebraic number fields; lattices (exact SVP/CVP, E₈, Leech); linear and stabilizer codes with a certified Delsarte LP bound; divisors and Riemann–Roch on hyperelliptic curves; Riemann theta and modular functions as rigorous balls | `experimental.FiniteField` · `PermutationGroup` · `FpGroup` · `CharacterTable` · `NumberField` · `Lattice` · `LinearCode` · `StabilizerCode` · `riemann_roch` · `riemann_theta` |
 | [Rigorous numerics](docs/mdbook/src/ball-arithmetic.md) | Arb ball arithmetic — every float carries a proven error bound | `ArbBall` · `interval_eval` · `refine_root` |
 | [Code generation](docs/mdbook/src/codegen.md) | JIT to native CPU code (Cranelift or LLVM), [NVPTX GPU kernels](docs/mdbook/src/gpu.md), C source, StableHLO, vectorized NumPy | `compile_expr` · `jit` · `numpy_eval` · `emit_c` · `to_stablehlo` · `compile_cuda` |
 | Program transforms | JAX-style `trace` / `grad` / `jit` over Python functions, plus symbolic gradients and forward-mode dual-number AD | `trace_fn` · `grad` · `symbolic_grad` · `diff_forward` |
-| [Verification](docs/mdbook/src/lean-certs.md) | [Derivation logs](docs/mdbook/src/derivations.md) on every result, Lean 4 certificate export, [coverage reporting](docs/mdbook/src/certificate-coverage.md) | `DerivedResult.steps` · `to_lean` · `certifiable` · `certificate_coverage` |
+| [Verification](docs/mdbook/src/lean-certs.md) | [Derivation logs](docs/mdbook/src/derivations.md) on every result, Lean 4 certificate export (proof by reflection through the [verified kernel](docs/mdbook/src/lean-kernel.md), tactic fallback), [coverage reporting](docs/mdbook/src/certificate-coverage.md) | `DerivedResult.steps` · `to_lean` · `certifiable` · `certificate_coverage` · `set_lean_certificate_mode` |
 | [Agent loops](docs/mdbook/src/search-plumbing.md) | String parsing, [budgets and cancellation](docs/mdbook/src/budgets.md), [batched fan-out](docs/mdbook/src/batch.md), [claim graphs](docs/mdbook/src/claim-graphs.md) for session provenance | `parse` · `Budget` · `batch_map` · `research` |
 | Assumptions | Domain-aware reasoning (`x > 0`, ℤ vs ℝ) with a decision procedure over quantified statements | `Assumptions` · `Domain` · `Forall` · `decide` · `satisfiable` |
 | Output | LaTeX, Unicode pretty-printing, plots (2D/3D, implicit, parametric, DAG structure) | `latex` · `unicode_str` · `plot` · `plot3d` · `plot_dag` |

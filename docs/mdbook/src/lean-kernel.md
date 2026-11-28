@@ -3,10 +3,19 @@
 Indefinite-integration certificates are, by default, checked by a small
 verified checker in the repository's Lean library
 [`Alkahest.Kernel`](https://github.com/alkahest-cas/alkahest/tree/main/lean/Alkahest)
-instead of by a tree of Mathlib tactics. The certificate is *data*: an
-expression AST for the claim plus a witness. A Boolean checker decides it, and
-one soundness theorem, proved once in the library, turns
-`check data = true` into the mathematical statement.
+instead of by a tree of Mathlib tactics. This is *proof by reflection*. The
+certificate is *data*: an expression AST for the claim plus a witness. A
+Boolean checker, written and proved correct in Lean, decides it, and one
+soundness theorem, proved once in the library, turns `check data = true` into
+the mathematical statement. The same kernel checks `dsolve` solutions
+(`alkahest.experimental.dsolve_certificate`, below) and the PDE residuals of
+`alkahest.fex.finalize` ([PDE residuals](#pde-residuals-fex-solutions)).
+
+Not every certificate takes this path. Answers the kernel does not encode fall
+back to the `HasDerivAt` tactic emitter, and the other certified operations
+(derivatives, definite integrals, limits, sums, resultants, rewrites) have
+tactic emitters only. `certificate_status["path"]` says which checker a
+result's certificate uses.
 
 ```lean
 import Alkahest.Kernel
@@ -52,6 +61,28 @@ integrand, are the same atom without any trusted matching. Inverses distribute
 over monomials unconditionally (`(c·a²)⁻¹ = c⁻¹·(a⁻¹)²` holds in Lean's ℝ,
 where `0⁻¹ = 0`). Facts that need a nonzero denominator enter only through the
 relation `u·u⁻¹ = 1`, whose condition the checker decides.
+
+## The trusted base
+
+To accept a kernel certificate you trust:
+
+* Lean's kernel, which type-checks the proof term and evaluates the checker
+  when it reduces `decide +kernel`;
+* the Mathlib definitions the statement mentions (`HasDerivAt`, `Real.exp`,
+  `Real.log`, …);
+* the *statement* itself, which you read: the theorem says what it proves in
+  ordinary notation.
+
+You do not trust Alkahest, the Rust emitter, the atom table or the cofactors in
+the witness: if any of them is wrong, the checker returns `false` and the
+certificate does not compile. The checker and its soundness theorems
+(`D_hasDerivAt`, `integral_sound`, `ode_sound`, `pde_sound`) are themselves
+proved in Lean, and CI rejects any `sorry`, `admit` or `axiom` in
+`Alkahest.Kernel`.
+
+The opt-in `kernel_native` mode (below) closes the same certificate with
+`native_decide`, which adds Lean's compiler and `Lean.ofReduceBool` to that
+list. The default never uses it.
 
 ## Kernel reducibility
 
@@ -99,7 +130,30 @@ exactly: the same `D`, the same normal form and the same sign rules. It
 computes the atom table, relations and cofactors the checker will accept, and
 re-verifies the identity before emitting. When it cannot encode an answer
 (special functions, `RootSum`, roots other than `√`, constants of unproved
-sign), `integrate`'s certificate falls back to the `HasDerivAt` tactic emitter.
+sign), `integrate`'s certificate falls back to the `HasDerivAt` tactic emitter,
+and `certificate_status["kernel_detail"]` gives the reason
+(`withheld_special_function`, `withheld_unsupported_node`, …). Definite
+integrals are certified through Mathlib's interval FTC
+(`intervalIntegral.integral_eq_sub_of_hasDerivAt`) by the tactic emitter.
+
+### How often each path is taken
+
+Measured on the published 3.15.0 wheel in the default `"auto"` mode,
+indefinite integrals only. "Certified" counts the answers that came with a
+certificate; the Lean CI job compiles the integration corpus in both modes.
+
+| corpus | integrands | certified | kernel | tactic |
+|---|---|---|---|---|
+| `tests/lean_integrate_corpus.py` | 50 | 50 | 45 | 5 |
+| calculus suite, standard tier | 51 | 44 | 41 | 3 |
+| calculus suite, Rubi hard tier | 171 | 136 | 132 | 4 |
+| **total** | **272** | **230** | **218 (95%)** | **12** |
+
+Every tactic fallback in these corpora is a special-function answer (`erf`,
+`erfi`, `Si`; reason `withheld_special_function`) or an answer with a cube or
+other non-square root (`withheld_unsupported_node`). The calculus suites are
+the integral tiers of the CAS comparison benchmark (the standard tier, and the
+hard tier drawn from the Rubi test suite).
 
 ```python
 import alkahest
@@ -120,14 +174,43 @@ Certificates are built lazily, only when `.certificate` or
 
 ## Checking a kernel certificate yourself
 
-Kernel certificates `import Alkahest.Kernel`, so build the library once:
+Kernel certificates `import Alkahest.Kernel`, so build the library once from a
+checkout of the repository:
 
 ```bash
 cd lean
 lake exe cache get        # Mathlib's prebuilt oleans
 lake build Alkahest       # the kernel (about a minute)
-lake env lean my_certificate.lean
+lake env lean -DwarningAsError=true -DautoImplicit=false my_certificate.lean
 ```
+
+A certificate that compiles with no errors is checked. Before trusting it, read
+its theorem statement, and check that the file contains no `sorry`, `admit`,
+`axiom` or `native_decide` (the last appears only in `kernel_native` mode).
+
+## ODE solutions
+
+`alkahest.experimental.dsolve_certificate(equation, x, y, derivs, y_of_x)`
+certifies that a solution returned by `dsolve` satisfies its equation. The
+certificate states the derivative chain `S, S', …` of the solution (each link a
+`HasDerivAt`, computed by the kernel's `D`) and that the equation with them
+substituted is identically zero, through `ode_sound`. Free constants `C1, C2,
+…` are universally quantified.
+
+```python
+import alkahest as ak
+from alkahest import experimental as ex
+
+x, y, yp, ypp = (ak.symbol(n) for n in ("x", "y", "yp", "ypp"))
+eq = ak.parse("ypp + y")
+sol = ex.dsolve(eq, x, y, [yp, ypp])[0]["y_of_x"]
+out = ex.dsolve_certificate(eq, x, y, [yp, ypp], sol)
+out["path"]                                 # "kernel"
+"ode_sound" in out["certificate"]           # True
+```
+
+`native=True` closes it with `native_decide` instead. The Lean CI job compiles
+the ODE corpus `tests/lean_ode_corpus.py`.
 
 ## PDE residuals (FEX solutions)
 
@@ -173,9 +256,8 @@ at every point of `ℝ^d`; boundary conditions are not part of it.
 
 ## Next steps
 
-* ODE solutions: `deriv_sound` already states `(d/dx) F = G` from the same
-  checker. A residual certificate for `dsolve` composes it with `checkEq` on
-  the ODE's left-hand side.
+* Definite integrals, derivatives and sums through the kernel; today they use
+  the tactic emitters.
 * PDE certificates for `verify_pde_solution` through `checkPde`, and for
   symbolic `d` (FEX's `Sum` forms), which needs a kernel notion of an
   `n`-fold sum.

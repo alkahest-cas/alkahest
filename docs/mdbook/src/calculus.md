@@ -125,6 +125,59 @@ is never assumed).
 `y(t)` and `diff(y(t), t)` of any order, reduce them to first order, and
 return the closed form also as `result["functions"] == {y(t): ...}`.
 
+## Closed-form ODE solutions (`dsolve`)
+
+`alkahest.experimental.dsolve(equation, x, y, derivs)` solves an ordinary
+differential equation `equation = 0` written in plain symbols: `y` is the
+unknown and `derivs[k]` stands for `y⁽ᵏ⁺¹⁾`. It returns a list of solution
+dicts with `form` (`"explicit"`, `"implicit"` or `"parametric"`), `y_of_x`,
+`constants`, `method` and `side_conditions`. Every solution is substituted back
+into the equation before it is returned.
+
+```python
+import alkahest as ak
+from alkahest import experimental as ex
+
+x, y, yp, ypp, yppp = (pool.symbol(n) for n in ("x", "y", "yp", "ypp", "yppp"))
+
+ex.dsolve(ypp - x * y, x, y, [yp, ypp])[0]["y_of_x"]
+# C1·airy_ai(x) + C2·airy_bi(x)
+ex.dsolve(x**2 * ypp + x * yp + (x**2 - 4) * y, x, y, [yp, ypp])[0]["method"]
+# 'bessel': C1·J₂(x) + C2·Y₂(x)
+ex.dsolve(yppp - y, x, y, [yp, ypp, yppp])[0]["y_of_x"]
+# C1·eˣ + e^(−x/2)·(C2·cos(√3x/2) + C3·sin(√3x/2)), exact roots, no floats
+ex.dsolve(ypp - 6 * y**2, x, y, [yp, ypp])[0]["y_of_x"]
+# WeierstrassP(x + C2, 0, C1)
+```
+
+The classes, beyond first-order and linear constant-coefficient equations:
+
+* **Exact characteristic roots** for constant-coefficient and Euler–Cauchy
+  equations of any order: the characteristic polynomial is factored over ℚ and
+  each factor's roots are given by radicals (Cardano and Ferrari included), or
+  as `RootOf` from degree five. Undetermined coefficients are exact, including
+  resonance.
+* **Airy and Bessel**: `y'' + p·y' − (a·x + b)·y = 0` gives Airy functions, and
+  the Bessel family `x²y'' + (1 − 2α)x y' + (±β²γ²x^{2γ} + α² − ν²γ²)y = 0`
+  gives `x^α·J_ν/Y_ν(βx^γ)` or `I_ν/K_ν`.
+* **Autonomous equations** `F(y, y', y'') = 0`, reduced through `p(y) = y'`.
+  Elliptic energy integrals are inverted: `y'' = f(y)` with quadratic `f` gives
+  a Weierstrass `℘`, suitable cubics give Jacobi `cn`, and the pendulum
+  `y'' + k sin y = 0` gives `2·am(…)`. These use the primitives `jacobi_sn`,
+  `jacobi_cn`, `jacobi_dn`, `jacobi_am`, `weierstrass_wp` and
+  `weierstrass_wp_prime`.
+* **`y`-free equations** `F(x, y', y'') = 0`, reduced to first order in `y'`.
+* **Polynomial and weighted polynomial solutions** of linear equations with
+  polynomial coefficients (Legendre and Chebyshev at integer parameter), and
+  **second solutions by reduction of order** with one `Ei`, `erf` or `erfi`
+  term (Hermite's and Laguerre's equations).
+* **Lagrange (d'Alembert) equations** `y = x·f(y') + g(y')` in parametric form
+  (`form == "parametric"`, with `x_of_p`, `y_of_p` and `singular_solutions`).
+
+`ex.dsolve_certificate(equation, x, y, derivs, y_of_x)` emits a Lean 4
+certificate that the solution satisfies the equation, checked by proof by
+reflection; see [ODE solutions](./lean-kernel.md#ode-solutions).
+
 ## Forward-mode automatic differentiation
 
 `diff_forward` computes the derivative using forward-mode AD (dual numbers). It produces the same result as `diff` but through a different computational path:
@@ -183,7 +236,7 @@ r = integrate(exp(x), x)
 print(r.value)    # exp(x)
 
 r = integrate(x**pool.integer(-1), x)
-print(r.value)    # log(x)
+print(r.value)    # log(abs(x)): real-valued logarithms on every route
 ```
 
 ### Integration rules
@@ -238,13 +291,13 @@ number field is used only if that check fails. On
 `∫ (x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx` this takes the log part from minutes to about
 a second.
 
-**Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `exp(x²)`, `exp(exp(x))`, `exp(x)/(x²+1)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented". (Integrands with a named special-function antiderivative get it instead: `sin(x)/x` → `Si(x)`, `exp(x)/x` → `Ei(x)`, `1/log(x)` → `li(x)`.)
+**Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `exp(x³)`, `exp(x)/(x²+1)`, `exp(x)/log(x)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented". (Integrands with a named special-function antiderivative get it instead: `sin(x)/x` → `Si(x)`, `exp(x)/x` → `Ei(x)`, `1/log(x)` → `li(x)`, `exp(x²)` → `(√π/2)·erfi(x)`, `exp(exp(x))` → `Ei(eˣ)`.)
 
 ```python
 from alkahest import IntegrationError
 
 try:
-    integrate(exp(x**2), x)
+    integrate(exp(x**3), x)
 except IntegrationError as e:
     print(e.code)         # E-INT-004
     print(e.remediation)  # "this integrand has no closed-form antiderivative in terms of elementary functions; ..."

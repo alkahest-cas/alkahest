@@ -11,10 +11,14 @@ Installation
    python -m pip install -U pip
    pip install alkahest
 
-That wheel includes the Gröbner solver (``groebner``) and egglog (``egraph``) by default, so
-``alkahest.solve`` and related APIs work out of the box. It omits LLVM JIT, Cranelift, and
-``parallel`` (numeric APIs fall back to the interpreter). There is **no** pip extra that swaps
-in a different native binary.
+That wheel includes the Gröbner solver (``groebner``), egglog (``egraph``), the Cranelift JIT
+and the ``parallel`` multi-core paths, so ``alkahest.solve`` and related APIs work out of the
+box. It omits the LLVM JIT and ``cuda``. There is **no** pip extra
+that swaps in a different native binary.
+
+NumPy is not installed with ``alkahest``. The experimental ``alkahest.fex`` module
+imports it at import time, so install it first (``pip install numpy``) or
+``import alkahest.fex`` fails with ``ModuleNotFoundError``.
 
 For **Linux x86_64** opt-in wheels with local versions ``+jit`` or ``+full``, use assets attached to
 `GitHub Releases <https://github.com/alkahest-cas/alkahest/releases>`_. Other platforms: build from

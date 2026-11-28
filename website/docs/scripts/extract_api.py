@@ -1246,6 +1246,10 @@ EXTRA_SECTIONS = {
             "sin_integral "
             "cos_integral sinh_integral cosh_integral fresnels fresnelc lambert_w lambert_wm1",
         ),
+        (
+            "Elliptic functions and harmonic numbers",
+            "jacobi_sn jacobi_cn jacobi_dn jacobi_am weierstrass_wp weierstrass_wp_prime erfi harmonic",
+        ),
     ],
     "matrix": [("Side conditions", "matrix_exp_side_conditions matrix_inverse_side_conditions")],
     "ode": [
@@ -1271,7 +1275,7 @@ EXTRA_SECTIONS = {
     "noncommutative": [("Lie algebras", "LieAlgebra")],
     "tensor": [("Indices", "TensorIndex")],
     "certificates": [
-        ("Lean certificates", "to_lean"),
+        ("Lean certificates", "to_lean set_lean_certificate_mode lean_certificate_mode"),
         ("Certifiability", "certifiable Certifiability require_certificate certificate_coverage"),
     ],
 }

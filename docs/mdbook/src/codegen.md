@@ -71,6 +71,12 @@ and compiles faster (3 ms instead of 10; a 10 000-term polynomial in 0.3 s
 instead of 6 s);
 `Σ sin(kx)·cos(ky)/k` has nothing to factor and is unchanged.
 
+A Horner chain is a serial dependency, so a long one runs at about half the
+rate the FMA units allow. Every chain longer than eight links is therefore cut
+into blocks of four, combined by a second chain in `v⁴` (with the squarings
+shared per variable). Expanded `(1+x)^60` drops from 36 to 11 ns per point.
+The public `horner(expr, [x, y, …])` still builds one chain per variable.
+
 A rewritten sum rounds differently from the expanded form, so its value can
 differ from `eval_expr` in the last few bits. Horner evaluation is backward
 stable, so for a well-conditioned polynomial the result is at least as accurate
@@ -95,6 +101,13 @@ untouched. On a dense polynomial it finds nothing to add to the Horner scheme:
 231 distinct coefficients need about 230 multiply-adds either way. Switch it off
 alone with `ALKAHEST_JIT_CPE=0` (or `CodegenOptions::with_cpe(false)`);
 `optimize=False` and `ALKAHEST_JIT_HORNER=0` switch off both passes.
+
+On x86-64 with hardware FMA, the Cranelift backend also evaluates **two points
+per loop iteration** with `f64x2` SIMD when every node is arithmetic, a power
+or a one-argument math function. The results are bitwise identical to the
+scalar loop; `ALKAHEST_JIT_SIMD=0` disables it. With the blocked Horner chains
+and common-pair elimination, expanded `(1+x+y)^20` (231 terms) evaluates in
+about 35 ns per point on one Zen 2 core (CHANGELOG, 3.15.0).
 
 ### Real values through complex intermediates
 

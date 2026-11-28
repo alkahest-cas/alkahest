@@ -53,7 +53,7 @@ const SECTIONS: [string, string[]][] = [
   ["Core concepts", ["kernel", "representations", "parsing"]],
   ["Simplification", ["simplification"]],
   ["Mathematics", ["calculus", "transformations", "probability", "vector-quaternion", "units", "tensor", "controls", "orthopoly", "noncommutative", "specfun"]],
-  ["Numerics and codegen", ["codegen", "ball-arithmetic", "ode-dae"]],
+  ["Numerics and codegen", ["codegen", "ball-arithmetic", "ode-dae", "pde"]],
   ["Solving and optimisation", ["solving", "positivity", "linear-programming"]],
   ["Ecosystem", ["interop", "rl"]],
   ["Trust and verification", ["derivations", "claim-graphs", "lean-certs", "errors"]],
