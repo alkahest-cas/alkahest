@@ -1248,7 +1248,8 @@ EXTRA_SECTIONS = {
         ),
         (
             "Elliptic functions and harmonic numbers",
-            "jacobi_sn jacobi_cn jacobi_dn jacobi_am weierstrass_wp weierstrass_wp_prime erfi harmonic",
+            "jacobi_sn jacobi_cn jacobi_dn jacobi_am weierstrass_wp weierstrass_wp_prime "
+            "erfi harmonic",
         ),
     ],
     "matrix": [("Side conditions", "matrix_exp_side_conditions matrix_inverse_side_conditions")],
